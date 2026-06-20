@@ -1,0 +1,33 @@
+# Secrets — never commit
+.env
+.scioly_cookies.json
+auth_users.json
+ssh-key-*.key
+ssh-key-*.key.pub
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editor / tool metadata
+.claude/
+.playwright-mcp/
+
+# Live event data — runtime-generated, not source. Generic one-level-deep
+# patterns so any event directory (built-in or user-registered via the UI,
+# e.g. physics_basics/) is covered without listing each one by name.
+*/*.pdf
+*/*.md
+*/images/
+*/texts/
+*/text/
+*/.qbank_state.json*
+*/*.chapters.json
+
+# Other local-only data
+events_custom.json
+scioly_tests.json
+large test packets/

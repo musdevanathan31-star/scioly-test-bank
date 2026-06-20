@@ -1,0 +1,1566 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Generate · NCMS Sci-Oly Question Banks</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:1100px;margin:0 auto}
+.panel{background:#fff;border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:16px}
+.panel h2{margin:0 0 8px 0;font-size:15px}
+.panel p{margin:4px 0;color:#444;font-size:13px}
+.src-table{width:100%;border-collapse:collapse}
+.src-table th,.src-table td{padding:7px 10px;border-bottom:1px solid var(--line);
+  text-align:left;font-size:13px;vertical-align:middle}
+.src-table th{background:#fafafa;font-weight:600;color:#444}
+.src-table td.actions{text-align:right;white-space:nowrap}
+.src-table button{margin-left:4px;padding:3px 9px;font-size:12px}
+.gen-form{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.gen-form label{display:flex;flex-direction:column;font-size:12px;color:#444;gap:3px}
+.gen-form select,.gen-form input{padding:5px 8px;border:1px solid var(--line);
+  border-radius:3px;font:inherit;font-size:13px;min-width:180px}
+.gen-form .types{display:flex;gap:8px;align-items:center}
+.gen-form .types label{flex-direction:row;align-items:center;gap:4px}
+.cand{background:#fff;border:1px solid var(--line);border-radius:6px;
+  padding:12px;margin-bottom:8px}
+.cand.rejected{background:#faf0f0;border-color:#e7c0c0;opacity:.85}
+.cand .row{display:flex;gap:8px;align-items:center;margin-bottom:5px;
+  font-size:12px;color:#666;flex-wrap:wrap}
+.cand .topic{background:#eaf3fb;color:#0066cc;padding:2px 8px;border-radius:10px;
+  font-weight:600;font-size:11px}
+.cand .type{background:#f0eee5;color:#666;padding:2px 8px;border-radius:10px;
+  font-size:11px;text-transform:uppercase}
+.cand .stem{font-size:14px;margin:6px 0;line-height:1.4}
+.cand ul{margin:4px 0;padding-left:22px;font-size:13px}
+.cand .ans{background:#eef7ef;color:#1f6f3a;padding:6px 10px;border-radius:4px;
+  margin-top:6px;font-size:13px}
+.cand .ratio{font-size:12px;color:#555;margin-top:6px;font-style:italic}
+.cand .src-snip{font-size:11px;color:#888;margin-top:4px;border-left:2px solid #ccc;
+  padding-left:8px}
+.cand .actions{margin-top:8px;display:flex;gap:6px}
+.cand .actions button{padding:4px 10px;font-size:12px}
+.row-info{font-size:12px;color:#666;margin:8px 0}
+.row-info .kw{background:#eee;padding:1px 6px;border-radius:3px;font-family:monospace}
+.upload-form{display:flex;gap:8px;align-items:center}
+.upload-form input[type=file]{font-size:12px}
+.btn-tiny{padding:2px 8px;font-size:11px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="/event/{{ event_slug }}/" title="Back to event review" style="font-size:18px">←</a>
+  <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Sources &amp; Generation</h1>
+  <span id="status" class="muted"></span>
+  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
+  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+</header>
+<div class="wrap">
+
+  <div class="panel">
+    <h2>Source materials</h2>
+    <p class="muted">Source texts live in
+       <code id="texts_dir"></code>. Drop PDFs or markdown files in there
+       and they'll appear below. PDFs need a one-click "Process" to be usable
+       for question generation.</p>
+    <div class="row-info">
+      <button id="btn_scrape" class="primary" title="Scrape the scioly.org wiki page for this event and save the markdown into texts/wiki.md">Scrape Sci-Oly wiki</button>
+      <span class="muted">→ <a href="{{ wiki_url }}" target="_blank">{{ wiki_url }}</a></span>
+    </div>
+    <div class="row-info upload-form">
+      <form id="upload_form" enctype="multipart/form-data">
+        <label class="muted">Upload a PDF/MD/TXT:
+          <input type="file" name="file" accept=".pdf,.md,.txt" required>
+        </label>
+        <button type="submit" title="Upload the selected file into texts/. PDFs need a follow-up Process step.">Upload</button>
+        <span class="muted">— or drop files anywhere on this page</span>
+      </form>
+    </div>
+    <div id="drop_overlay" style="display:none;position:fixed;inset:0;
+       background:rgba(0,102,204,.18);border:6px dashed var(--accent);
+       z-index:300;pointer-events:none;align-items:center;justify-content:center;
+       font-size:24px;color:var(--accent);font-weight:600">
+      Drop to upload (.pdf .md .txt)
+    </div>
+    <table class="src-table" id="src_tbl">
+      <thead><tr>
+        <th data-sort="name">File<span class="arrow"></span></th>
+        <th data-sort="kind">Kind<span class="arrow"></span></th>
+        <th data-sort="size">Size<span class="arrow"></span></th>
+        <th data-sort="md">Markdown<span class="arrow"></span></th>
+        <th></th>
+      </tr></thead>
+      <tbody id="src_rows"><tr><td colspan="5">
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row" style="width:70%"></div>
+      </td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Shared textbooks</h2>
+    <p class="muted">Uploaded once, usable from <b>any</b> event — split by
+       chapter so generation can target one chapter instead of the whole
+       book. Stored separately from this event's own source materials above.</p>
+    <div class="row-info upload-form">
+      <form id="textbook_upload_form" enctype="multipart/form-data">
+        <label class="muted">Upload a textbook PDF:
+          <input type="file" name="file" accept=".pdf" required>
+        </label>
+        <button type="submit" title="Upload this PDF to the shared textbook library and try to detect its chapters">Upload</button>
+      </form>
+    </div>
+    <table class="src-table" id="textbook_tbl">
+      <thead><tr>
+        <th>Textbook</th><th>Size</th><th>Chapters</th><th></th>
+      </tr></thead>
+      <tbody id="textbook_rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table>
+    <div id="textbook_manual_panel" style="display:none;margin-top:10px;padding:12px;
+         background:var(--bg-alt);border-radius:6px">
+      <h3 style="margin:0 0 6px 0;font-size:13px">
+        Set chapters for <span id="textbook_manual_name"></span>
+      </h3>
+      <p class="muted" style="font-size:12px;margin:0 0 8px 0">
+        No chapters were detected automatically (no PDF bookmarks, no "Chapter N"
+        style headings found). One chapter per line:
+        <code>Chapter title, start page</code>. End pages are inferred from
+        the next chapter's start page.
+      </p>
+      <textarea id="textbook_manual_text" rows="6" style="width:100%;font:inherit;
+                font-size:12px;padding:8px;border:1px solid var(--line);border-radius:4px"
+                placeholder="Forces and Motion, 1
+Energy and Work, 24
+Thermodynamics, 58"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button id="textbook_manual_save" class="primary btn-tiny">Save chapters</button>
+        <button id="textbook_manual_cancel" class="btn-tiny" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Pull from scio.ly/practice</h2>
+    <p class="muted">
+      Fetches public practice questions from
+      <a href="https://scio.ly/practice" target="_blank">scio.ly/practice</a>'s API.
+      scio.ly questions <b>never include images</b>, and many are partial or
+      missing context — leave <i>Validate with Haiku</i> on so the LLM can
+      flag the unsolvable ones for you. Polite rate-limit (~2 req/s).
+    </p>
+    <div class="gen-form">
+      <label>scio.ly event name
+        <input type="text" id="sc_event" value="{{ event_name }}">
+      </label>
+      <label>How many?
+        <input type="number" id="sc_n" value="20" min="1" max="50">
+      </label>
+      <label>Division
+        <select id="sc_div">
+          <option value="">Both</option>
+          <option value="B">Div B</option>
+          <option value="C">Div C</option>
+        </select>
+      </label>
+      <label id="sc_focus_wrap" style="display:none">Focus
+        <select id="sc_focus"></select>
+      </label>
+      <div class="types">
+        <span class="muted">Types:</span>
+        <label><input type="checkbox" id="sc_mcq" checked> MCQ</label>
+        <label><input type="checkbox" id="sc_frq" checked> FRQ</label>
+      </div>
+      <label class="types"><input type="checkbox" id="sc_validate" checked> Validate with Haiku</label>
+      <button id="btn_sc_scrape" class="primary" title="Fetch questions from scio.ly/practice for this event">Scrape</button>
+      <button id="btn_sc_scrape_cancel" class="danger" style="display:none" title="Abort the current scio.ly scrape">Cancel</button>
+      <span class="muted" id="sc_cost" style="font-size:11px">est. cost: $0.00</span>
+    </div>
+  </div>
+
+  <div class="panel" id="scrape_progress" style="display:none">
+    <h2>Scraping <span class="spinner"></span></h2>
+    <p class="muted">
+      <span id="sc_phase">Hitting scio.ly API…</span>
+      Elapsed: <b id="sc_elapsed">0s</b>.
+    </p>
+  </div>
+
+  <!-- Full-screen blocking overlay shown while a scio.ly/practice scrape is
+       running. Prevents accidental input on a page that otherwise looks idle
+       (the scrape can take 30-120s for a 200-question batch with validation). -->
+  <div id="scrape_overlay" style="display:none;position:fixed;inset:0;
+       background:rgba(0,0,0,.55);z-index:400;align-items:center;
+       justify-content:center;padding:32px">
+    <div style="background:var(--bg-card);border:1px solid var(--line);
+         border-radius:10px;padding:24px 30px;min-width:380px;max-width:560px;
+         box-shadow:0 10px 40px rgba(0,0,0,.4);color:var(--fg)">
+      <h3 style="margin:0 0 6px 0">
+        Scraping scio.ly <span class="spinner"></span>
+      </h3>
+      <p class="muted" style="margin:0 0 14px 0;font-size:13px">
+        Pulling questions and validating with Haiku. Please don't navigate away.
+      </p>
+      <div style="font-size:13px;line-height:1.6">
+        <div><b>Phase:</b> <span id="sc_phase_modal">Hitting scio.ly API…</span></div>
+        <div><b>Elapsed:</b> <span id="sc_elapsed_modal">0s</span></div>
+        <div id="sc_progress_modal" class="muted" style="font-size:12px;margin-top:4px"></div>
+      </div>
+      <div style="text-align:right;margin-top:18px">
+        <button id="btn_sc_scrape_cancel_modal" class="danger"
+                title="Abort the current scio.ly scrape">Cancel scrape</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="scrape_results" style="display:none">
+    <h2>scio.ly candidates <span id="sc_meta" class="muted"></span></h2>
+    <div style="margin:6px 0 12px">
+      <button id="sc_keep_correct" class="primary" title="Mark only the candidates Haiku flagged as correct">Keep only ✓ Correct</button>
+      <button id="sc_keep_all" title="Mark every scraped candidate as kept">Keep all</button>
+      <button id="sc_drop_unsolvable" title="Drop candidates flagged as 'definitely wrong' or 'unable to evaluate'">Drop ⚠/?</button>
+      <button id="sc_reject_all" class="danger" title="Mark every scraped candidate as rejected">Drop all</button>
+      <span class="muted" style="margin-left:8px">→</span>
+      <button id="sc_accept" class="primary" title="Persist the kept candidates into the question bank (_scioly_*.pdf bucket)">Accept kept &amp; save</button>
+    </div>
+    <div id="sc_candidates"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Generate new questions</h2>
+    <p class="muted">Send a source text to Haiku to draft fresh questions.
+       Candidates are deduped against the existing bank using Jaccard
+       similarity before they reach you.</p>
+    <div class="gen-form">
+      <label>Source
+        <select id="gen_source"></select>
+      </label>
+      <label id="gen_chapter_wrap" style="display:none">Chapter
+        <select id="gen_chapter"></select>
+      </label>
+      <button id="gen_preview_btn" type="button" title="Show the first ~800 chars of the picked source so you can see what the LLM will see">Preview source</button>
+      <label>How many?
+        <input type="number" id="gen_n" value="5" min="1" max="20">
+      </label>
+      <label title="Send the source as 1–5 chunks. More chunks = broader coverage at higher cost. Each chunk asks Haiku for ceil(n/chunks) questions.">Source chunks
+        <input type="number" id="gen_chunks" value="1" min="1" max="5">
+      </label>
+      <div class="types">
+        <span class="muted">Types:</span>
+        <label><input type="checkbox" id="t_mc" checked> Multiple choice</label>
+        <label><input type="checkbox" id="t_short" checked> Short answer</label>
+        <label><input type="checkbox" id="t_num" checked> Numerical</label>
+      </div>
+      <button id="btn_generate" class="primary" title="Ask Haiku to draft N new questions from the picked source material">Generate</button>
+      <button id="btn_cancel" class="danger" style="display:none" title="Abort the in-progress generation">Cancel</button>
+      <span class="muted" id="gen_cost" style="font-size:11px">est. cost: $0.00</span>
+    </div>
+  </div>
+
+  <div class="panel" id="gen_preview_panel" style="display:none">
+    <h2>Source preview <span class="muted" id="gen_preview_meta"></span></h2>
+    <pre id="gen_preview_text" style="white-space:pre-wrap;font-size:12px;
+        background:var(--bg-alt);padding:14px;border-radius:4px;
+        max-height:400px;overflow:auto;line-height:1.4"></pre>
+  </div>
+
+  <div class="panel" id="gen_progress" style="display:none">
+    <h2>Generating <span class="spinner"></span></h2>
+    <p class="muted">
+      Calling <code id="prog_model">Haiku</code> with <span id="prog_n"></span> question(s) requested.
+      Elapsed: <b id="prog_elapsed">0s</b>.
+    </p>
+    <p class="muted" id="prog_phase">Sending request…</p>
+  </div>
+
+  <div class="panel" id="gen_results" style="display:none">
+    <h2>Candidates <span id="gen_meta" class="muted"></span></h2>
+    <div id="gen_actions" style="margin:6px 0 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button id="accept_all" class="primary" title="Persist every kept candidate into the question bank (_generated_*.pdf bucket)">Accept all kept</button>
+      <button id="validate_then_accept" title="Validate every kept candidate with Haiku, then auto-accept only the ones flagged correct">⚡ Validate &amp; auto-accept correct</button>
+      <button id="reject_all" class="danger" title="Throw away every generated candidate">Reject all</button>
+    </div>
+    <div id="candidates"></div>
+    <h3 style="font-size:13px;color:#888;margin:14px 0 4px">
+      Auto-rejected during generation:
+    </h3>
+    <div id="rejected"></div>
+  </div>
+
+  <div class="panel" id="import_panel">
+    <h2>Import questions (from another LLM or hand-written JSON)</h2>
+    <p class="muted">
+      Paste or upload questions in <a href="#" id="import_schema_link"
+         title="See the schema">qgen output format</a> —
+      either the full <code>{"candidates": [...]}</code> envelope or just a bare
+      list of candidate objects. Each candidate is run through the same
+      dedup/normaliser as generated questions, then appended to the
+      <code>_generated_{{ event_slug }}.pdf</code> bucket so it shows up in
+      Browse and Quiz alongside everything else.
+    </p>
+    <div class="gen-form" style="margin-bottom:10px">
+      <label title="Upload a .json file from disk">From file
+        <input id="imp_file" type="file" accept=".json,application/json">
+      </label>
+      <label class="types"
+             title="If on, every imported question's validation.status is set to 'correct'. Use when you trust the source; leave off and validate via Haiku later if you don't.">
+        <input type="checkbox" id="imp_validated"> Mark all as validated
+      </label>
+      <button id="btn_import" class="primary"
+              title="Import the questions in the textarea (file picker auto-fills it). Server runs the same dedup pass as Generate.">
+        Import
+      </button>
+      <span class="muted" id="imp_status" style="font-size:11px"></span>
+    </div>
+    <label class="muted" style="font-size:12px">…or paste JSON here:</label>
+    <textarea id="imp_text" rows="8" spellcheck="false"
+              style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                     font-size:12px;line-height:1.45;padding:8px 10px;
+                     border:1px solid var(--line);border-radius:4px;
+                     background:var(--bg-alt);resize:vertical"
+              placeholder='{"candidates": [
+  {"type":"mc","topic":"Capacitors",
+   "text":"What is the time constant of an RC circuit?",
+   "choices":[{"letter":"A","text":"RC"},{"letter":"B","text":"R/C"},{"letter":"C","text":"R+C"},{"letter":"D","text":"1/(RC)"}],
+   "answer":"A","rationale":"…","source_snippet":"…"}
+]}'></textarea>
+    <pre id="imp_schema" style="display:none;background:var(--bg-alt);padding:12px;border-radius:4px;font-size:11px;margin-top:10px;overflow:auto"></pre>
+    <div id="imp_results" style="display:none;margin-top:14px">
+      <h3 style="font-size:13px;color:#888;margin:0 0 6px">Imported into the bank:</h3>
+      <div id="imp_candidates"></div>
+    </div>
+  </div>
+
+</div>
+<script>
+const EVENT_SLUG = "{{ event_slug }}";
+const API = `/event/${EVENT_SLUG}/api`;
+let LAST_RESULT = null;
+let KEPT = new Set();   // indices into LAST_RESULT.candidates that are still accepted
+
+// ---------- Global busy-lock ----------
+// Disables every action button on this page while any async operation is
+// in flight, so two actions (e.g. Generate + Import) can't race against
+// each other or against a page reload mid-write. The 3 dedicated Cancel
+// buttons stay clickable so a long-running call can still be aborted.
+let PAGE_BUSY = 0;
+const BUSY_EXEMPT_IDS = new Set(["btn_cancel", "btn_sc_scrape_cancel", "btn_sc_scrape_cancel_modal"]);
+function pushBusy(){
+  PAGE_BUSY++;
+  if(PAGE_BUSY === 1) applyPageBusy(true);
+}
+function popBusy(){
+  PAGE_BUSY = Math.max(0, PAGE_BUSY - 1);
+  if(PAGE_BUSY === 0) applyPageBusy(false);
+}
+function applyPageBusy(busy){
+  document.querySelectorAll(".wrap button").forEach(btn => {
+    if(BUSY_EXEMPT_IDS.has(btn.id)) return;
+    if(busy){
+      btn.dataset.preBusyDisabled = btn.disabled ? "1" : "0";
+      btn.disabled = true;
+    } else if(btn.dataset.preBusyDisabled !== undefined){
+      btn.disabled = btn.dataset.preBusyDisabled === "1";
+      delete btn.dataset.preBusyDisabled;
+    }
+  });
+  if(!busy) checkGenSource();
+}
+
+function setStatus(s, kind){
+  const el = document.getElementById("status");
+  el.innerHTML = s;
+  el.style.color = kind === "err" ? "var(--bad)" : "var(--muted)";
+  if(s) setTimeout(()=>{ if(el.innerHTML === s) el.innerHTML = ""; }, 5000);
+}
+function esc(s){
+  return (s||"").toString().replaceAll("&","&amp;").replaceAll("<","&lt;")
+                          .replaceAll(">","&gt;").replaceAll('"',"&quot;");
+}
+function renderMath(el){
+  if(typeof renderMathInElement === "function"){
+    try{ renderMathInElement(el, {
+      delimiters:[{left:"$$",right:"$$",display:true},
+                  {left:"$", right:"$", display:false}],
+      throwOnError:false}); } catch(e){}
+  }
+}
+
+let CURRENT_FOCI = [];
+let CURRENT_EVENT_NAME = "";
+async function loadSources(){
+  const r = await fetch(`${API}/sources`);
+  const d = await r.json();
+  document.getElementById("texts_dir").textContent = d.texts_dir;
+  CURRENT_FOCI = d.foci || [];
+  CURRENT_EVENT_NAME = d.event_name || "";
+  // If event declares rotating foci, show the focus dropdown on the
+  // scrape form. Otherwise hide it.
+  const focusWrap = document.getElementById("sc_focus_wrap");
+  const focusSel = document.getElementById("sc_focus");
+  if(CURRENT_FOCI.length){
+    focusWrap.style.display = "";
+    focusSel.innerHTML = `<option value="">(none — scrape mixed)</option>`
+      + CURRENT_FOCI.map(f => `<option>${esc(f)}</option>`).join("");
+  } else {
+    focusWrap.style.display = "none";
+  }
+  const sel = document.getElementById("gen_source");
+  sel.innerHTML = "";
+  // Estimate words from byte count: ~5.5 bytes per English word in plaintext markdown
+  const wordCount = (sz) => sz > 0 ? Math.round(sz / 5.5).toLocaleString() : "0";
+  // Apply sort if user picked one
+  if(window._srcSort){
+    const k = _srcSort.key, dir = _srcSort.dir;
+    d.sources.sort((a, b) => {
+      let av, bv;
+      if(k === "name"){ av = a.name; bv = b.name; }
+      else if(k === "kind"){ av = a.kind; bv = b.kind; }
+      else if(k === "size"){ av = a.size; bv = b.size; }
+      else if(k === "md"){ av = a.markdown_size || 0; bv = b.markdown_size || 0; }
+      if(typeof av === "number") return (av - bv) * dir;
+      return String(av || "").localeCompare(String(bv || "")) * dir;
+    });
+  }
+  const rows = d.sources.map(s => `
+    <tr>
+      <td><a href="${API}/sources/${encodeURIComponent(s.name)}/raw" target="_blank"
+             title="Open the raw source in a new tab">${esc(s.name)} ↗</a></td>
+      <td>${s.kind.toUpperCase()}</td>
+      <td>${(s.size/1024).toFixed(1)} KB</td>
+      <td>${s.has_markdown
+            ? `<span class="badge processed" title="Processed markdown: ${esc(s.markdown_name)} (~${wordCount(s.markdown_size)} words)">${esc(s.markdown_name)} · ~${wordCount(s.markdown_size)} words</span>`
+            : '<span class="badge fresh">needs processing</span>'}</td>
+      <td class="actions">
+        ${s.kind === "pdf" ? `<button data-process="${esc(s.name)}" title="Extract text from this PDF and write a sibling .md file">${s.has_markdown ? "Re-process" : "Process → MD"}</button>` : ""}
+      </td>
+    </tr>`).join("");
+  document.getElementById("src_rows").innerHTML = rows
+    || '<tr><td colspan="5" class="empty"><b>No source files yet.</b><br><span class="muted">Click <i>Scrape Sci-Oly wiki</i> above, upload a PDF or drop one anywhere on this page, or copy markdown files into the texts/ directory.</span></td></tr>';
+  // Generation dropdown (only sources with markdown)
+  d.sources.filter(s => s.has_markdown).forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = s.markdown_name || s.name;
+    opt.textContent = s.markdown_name || s.name;
+    sel.appendChild(opt);
+  });
+  if(sel.options.length === 0){
+    const opt = document.createElement("option");
+    opt.value = ""; opt.textContent = "(no usable sources yet)";
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById("btn_scrape").addEventListener("click", async ()=>{
+  pushBusy();
+  setStatusHtml(`Scraping wiki... <span class='spinner'></span>`);
+  try {
+    const r = await fetch(`${API}/sources/scrape-wiki`, {method:"POST"});
+    const j = await r.json();
+    if(j.ok){ setStatus(`Wiki saved (${(j.size/1024).toFixed(1)} KB)`); loadSources(); }
+    else { setStatus("Error: " + (j.error || "scrape failed"), "err"); }
+  } finally { popBusy(); }
+});
+
+document.getElementById("upload_form").addEventListener("submit", async e => {
+  e.preventDefault();
+  pushBusy();
+  const fd = new FormData(e.target);
+  setStatus("Uploading...");
+  try {
+    const r = await fetch(`${API}/sources/upload`, {method:"POST", body: fd});
+    const j = await r.json();
+    if(j.ok){ setStatus(`Uploaded ${j.name}`); e.target.reset(); loadSources(); }
+    else { setStatus("Upload failed: " + (j.error || ""), "err"); }
+  } finally { popBusy(); }
+});
+
+document.addEventListener("click", async e => {
+  const name = e.target.dataset.process;
+  if(!name) return;
+  pushBusy();
+  setStatusHtml(`Processing ${escHtml(name)}... <span class='spinner'></span>`);
+  e.target.disabled = true;
+  try {
+    const r = await fetch(`${API}/sources/${encodeURIComponent(name)}/process`, {method:"POST"});
+    const j = await r.json();
+    if(j.ok){ setStatus(`Wrote ${j.path} (${(j.size/1024).toFixed(1)} KB)`); }
+    else { setStatus("Error: " + (j.error || ""), "err"); }
+    loadSources();
+  } finally { popBusy(); }
+});
+
+// ============================================================
+// scio.ly scraping
+// ============================================================
+let SC_BUSY = false;
+let SC_ABORT = null;
+let SC_TIMER = null;
+let SC_RESULT = null;
+let SC_KEEP = new Set();   // indices of kept candidates in SC_RESULT.candidates
+
+function setScBusy(busy){
+  SC_BUSY = busy;
+  const btnS = document.getElementById("btn_sc_scrape");
+  const btnC = document.getElementById("btn_sc_scrape_cancel");
+  const prog = document.getElementById("scrape_progress");
+  const ovr  = document.getElementById("scrape_overlay");
+  btnS.disabled = busy;
+  btnS.textContent = busy ? "Scraping…" : "Scrape";
+  btnC.style.display = busy ? "" : "none";
+  prog.style.display = busy ? "" : "none";
+  if(ovr) ovr.style.display = busy ? "flex" : "none";
+  const reqCount = parseInt(document.getElementById("sc_n")?.value || "0") || 0;
+  const validateOn = !!document.getElementById("sc_validate")?.checked;
+  const progLine = document.getElementById("sc_progress_modal");
+  if(progLine){
+    progLine.textContent = reqCount
+      ? `Requested: ${reqCount} questions${validateOn ? " · Haiku validation ON (slower)" : ""}`
+      : "";
+  }
+  if(busy){
+    const t0 = Date.now();
+    const phaseEl = document.getElementById("sc_phase");
+    const elapsedEl = document.getElementById("sc_elapsed");
+    const phaseElModal = document.getElementById("sc_phase_modal");
+    const elapsedElModal = document.getElementById("sc_elapsed_modal");
+    if(phaseEl) phaseEl.textContent = "Hitting scio.ly API…";
+    if(elapsedEl) elapsedEl.textContent = "0s";
+    if(phaseElModal) phaseElModal.textContent = "Hitting scio.ly API…";
+    if(elapsedElModal) elapsedElModal.textContent = "0s";
+    clearInterval(SC_TIMER);
+    SC_TIMER = setInterval(() => {
+      const s = Math.round((Date.now() - t0)/1000);
+      const phaseTxt =
+        (s < 3)              ? "Hitting scio.ly API…" :
+        (s < 10)             ? "Fetching question batches…" :
+        (s < 30 && validateOn) ? "Validating answers with Haiku (this is the slow part)…" :
+        (s < 30)             ? "Processing candidates…" :
+        (validateOn)         ? "Still working — large batches with validation can take a minute or two." :
+                               "Still working…";
+      const elapsedTxt = s + "s";
+      if(elapsedEl) elapsedEl.textContent = elapsedTxt;
+      if(phaseEl)   phaseEl.textContent = phaseTxt;
+      if(elapsedElModal) elapsedElModal.textContent = elapsedTxt;
+      if(phaseElModal)   phaseElModal.textContent = phaseTxt;
+    }, 1000);
+  } else {
+    clearInterval(SC_TIMER); SC_TIMER = null;
+  }
+}
+
+document.getElementById("btn_sc_scrape_cancel").addEventListener("click", () => {
+  if(SC_ABORT) SC_ABORT.abort();
+});
+document.getElementById("btn_sc_scrape_cancel_modal").addEventListener("click", () => {
+  if(SC_ABORT) SC_ABORT.abort();
+});
+
+// --- sortable sources table ---
+window._srcSort = null;
+document.querySelectorAll("#src_tbl th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    if(!_srcSort || _srcSort.key !== k) _srcSort = {key:k, dir:1};
+    else _srcSort.dir = -_srcSort.dir;
+    document.querySelectorAll("#src_tbl th .arrow").forEach(a => a.textContent = "");
+    th.querySelector(".arrow").textContent = _srcSort.dir > 0 ? "▲" : "▼";
+    loadSources();
+  });
+});
+
+// --- cost estimates ---
+function updateGenCost(){
+  const n = parseInt(document.getElementById("gen_n").value) || 0;
+  const chunks = parseInt(document.getElementById("gen_chunks").value) || 1;
+  const total = n; // user-requested total; backend redistributes across chunks
+  const cost = (chunks * 0.012).toFixed(3); // ~$0.012 per chunk call
+  const el = document.getElementById("gen_cost");
+  if(el) el.textContent = chunks > 1
+    ? `est. cost: $${cost} (${chunks} chunks × ~$0.012; ~${Math.ceil(n/chunks)} q each)`
+    : `est. cost: $${(n * 0.0025).toFixed(3)} (${n} × ~$0.0025)`;
+}
+function updateScrapeCost(){
+  const n = parseInt(document.getElementById("sc_n").value) || 0;
+  const val = document.getElementById("sc_validate").checked;
+  // Validation is the cost driver; raw scrape is free
+  const cost = val ? (n * 0.003).toFixed(3) : "0.000";
+  const el = document.getElementById("sc_cost");
+  if(el) el.textContent = val ? `est. cost: $${cost} (${n} × ~$0.003 validation)`
+                              : `est. cost: $0.000 (validation off)`;
+}
+["gen_n","gen_chunks"].forEach(id => {
+  const el = document.getElementById(id); if(el) el.addEventListener("input", updateGenCost);
+});
+["sc_n","sc_validate"].forEach(id => document.getElementById(id).addEventListener("input", updateScrapeCost));
+["sc_n","sc_validate"].forEach(id => document.getElementById(id).addEventListener("change", updateScrapeCost));
+updateGenCost(); updateScrapeCost();
+
+// --- live preview of source markdown ---
+document.getElementById("gen_preview_btn").addEventListener("click", async () => {
+  const name = document.getElementById("gen_source").value;
+  if(!name){ toast("Pick a source first", "err"); return; }
+  if(currentTextbook()){ toast("Preview isn't available for textbook chapters yet — just hit Generate.", "warn"); return; }
+  pushBusy();
+  // .pdf in dropdown actually maps to the sibling .md
+  const mdName = name.endsWith(".pdf") ? name.slice(0, -4) + ".md" : name;
+  try {
+    const r = await fetch(`${API}/sources/${encodeURIComponent(mdName)}/raw`);
+    if(!r.ok){ toast("Preview failed: HTTP " + r.status, "err"); return; }
+    const txt = await r.text();
+    document.getElementById("gen_preview_meta").textContent =
+      `· ${(txt.length / 1024).toFixed(1)} KB · ~${Math.round(txt.length / 5.5)} words`;
+    document.getElementById("gen_preview_text").textContent = txt.slice(0, 4000)
+      + (txt.length > 4000 ? `
+
+[…${(txt.length - 4000).toLocaleString()} more chars]` : "");
+    document.getElementById("gen_preview_panel").style.display = "block";
+  } catch(err){ toast("Preview failed: " + err.message, "err"); }
+  finally { popBusy(); }
+});
+
+// --- enable Generate only when a source is picked ---
+function checkGenSource(){
+  const v = document.getElementById("gen_source").value;
+  const tb = currentTextbook();
+  const needsChapter = !!(tb && (tb.chapters || []).length);
+  const chapterPicked = !needsChapter || document.getElementById("gen_chapter").value !== "";
+  document.getElementById("btn_generate").disabled = !v || (needsChapter && !chapterPicked);
+}
+document.getElementById("gen_source").addEventListener("change", () => {
+  updateChapterPicker();
+  checkGenSource();
+});
+document.getElementById("gen_chapter").addEventListener("change", checkGenSource);
+// Run after first load too (fires after fillSelect in loadSources)
+const _origLoad = loadSources;
+loadSources = async function(){
+  await _origLoad();
+  // loadSources() resets #gen_source's innerHTML while repopulating it,
+  // which would otherwise wipe out the "Shared textbooks" optgroup on
+  // every reload triggered by upload/scrape/process actions, not just the
+  // initial page load.
+  if(typeof loadTextbooks === "function") await loadTextbooks();
+  checkGenSource();
+};
+
+// --- preserve form values across reload (localStorage) ---
+const _persistedFields = ["sc_event","sc_n","sc_div","sc_mcq","sc_frq","sc_validate",
+                          "gen_n","t_mc","t_short","t_num"];
+_persistedFields.forEach(id => {
+  const el = document.getElementById(id);
+  if(!el) return;
+  const key = "src_form:" + id;
+  const saved = localStorage.getItem(key);
+  if(saved !== null){
+    if(el.type === "checkbox") el.checked = (saved === "1");
+    else el.value = saved;
+  }
+  el.addEventListener("change", () => {
+    localStorage.setItem(key, el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value);
+  });
+});
+// Re-fire cost recalcs after restoring values
+updateGenCost(); updateScrapeCost();
+
+// --- drag-drop file upload anywhere on the page ---
+const dropOverlay = document.getElementById("drop_overlay");
+let dragCounter = 0;
+window.addEventListener("dragenter", e => {
+  if(!e.dataTransfer || ![...(e.dataTransfer.types||[])].includes("Files")) return;
+  dragCounter++;
+  dropOverlay.style.display = "flex";
+});
+window.addEventListener("dragover", e => {
+  if(e.dataTransfer && [...(e.dataTransfer.types||[])].includes("Files")) e.preventDefault();
+});
+window.addEventListener("dragleave", () => {
+  dragCounter--;
+  if(dragCounter <= 0){ dragCounter = 0; dropOverlay.style.display = "none"; }
+});
+window.addEventListener("drop", async e => {
+  e.preventDefault();
+  dragCounter = 0;
+  dropOverlay.style.display = "none";
+  const files = [...(e.dataTransfer.files || [])];
+  if(!files.length) return;
+  pushBusy();
+  try {
+    for(const f of files){
+      if(!/[.](pdf|md|txt)$/i.test(f.name)){
+        toast(`Skipped ${f.name} (only .pdf/.md/.txt)`, "warn");
+        continue;
+      }
+      const fd = new FormData();
+      fd.append("file", f);
+      setStatus(`Uploading ${f.name}…`);
+      try {
+        const r = await fetch(`${API}/sources/upload`, {method:"POST", body:fd});
+        const j = await r.json();
+        if(j.ok) toast(`Uploaded ${j.name}`, "ok");
+        else toast("Upload failed: " + (j.error || ""), "err");
+      } catch(err){ toast("Upload failed: " + err.message, "err"); }
+    }
+    loadSources();
+  } finally { popBusy(); }
+});
+
+document.getElementById("btn_sc_scrape").addEventListener("click", async () => {
+  if(SC_BUSY) return;
+  let event_name = document.getElementById("sc_event").value.trim();
+  const count = parseInt(document.getElementById("sc_n").value) || 20;
+  const division = document.getElementById("sc_div").value;
+  const types = [];
+  if(document.getElementById("sc_mcq").checked) types.push("mcq");
+  if(document.getElementById("sc_frq").checked) types.push("frq");
+  const validate = document.getElementById("sc_validate").checked;
+  // Focus handling: when the event has rotating foci configured and the user
+  // picked one in the dropdown, append "- <focus>" to the scio.ly event name
+  // (so scio.ly returns just that sub-category) AND send `focus` so every
+  // scraped question gets tagged with it.
+  const focusSel = document.getElementById("sc_focus");
+  const focus = (focusSel && focusSel.value) || "";
+  if(focus && !event_name.includes(" - ")){
+    // Strip any " & " in our display name to match scio.ly's "Anatomy" not "Anatomy & Physiology"
+    const base = event_name.split(" & ")[0];
+    event_name = `${base} - ${focus}`;
+  }
+  if(!event_name){ setStatus("Enter the scio.ly event name first", "err"); return; }
+  if(types.length === 0){ setStatus("Pick MCQ, FRQ, or both", "err"); return; }
+
+  pushBusy();
+  try {
+    setScBusy(true);
+    document.getElementById("scrape_results").style.display = "none";
+    setStatus(`Scraping ${count} candidate(s) from scio.ly…`);
+    SC_ABORT = new AbortController();
+    let r, j;
+    try {
+      r = await fetch(`${API}/scioly/scrape`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({event_name, count, types, division, validate, focus}),
+        signal: SC_ABORT.signal,
+      });
+      j = await r.json();
+    } catch (err) {
+      setScBusy(false);
+      if(err.name === "AbortError") setStatus("Scrape cancelled.", "err");
+      else setStatus("Scrape failed: " + (err.message || err), "err");
+      return;
+    } finally {
+      SC_ABORT = null;
+    }
+    setScBusy(false);
+
+    if(j.error){
+      setStatus("scio.ly error: " + esc(j.error), "err");
+      return;
+    }
+    if(!j.candidates || j.candidates.length === 0){
+      if(j.rejected_text_dups && j.rejected_text_dups.length){
+        // We did get results, but they all looked like questions already in the bank.
+        // Show the rejected list so the user can inspect what matched.
+        SC_RESULT = j;
+        SC_KEEP = new Set();
+        renderScrapeResults();
+        setStatus(`scio.ly returned ${j.raw_count || 0} question(s), but all were duplicates of existing bank entries (see rejected list).`, "err");
+      } else if(j.skipped_id_dups){
+        setStatus(`scio.ly returned only questions already scraped before. Try again to walk deeper into the archive.`, "err");
+      } else {
+        setStatus(`scio.ly returned 0 questions for "${esc(j.event_name)}". Check the event name (e.g. "Anatomy - Endocrine") or division.`, "err");
+      }
+      return;
+    }
+
+    SC_RESULT = j;
+    SC_KEEP = new Set(j.candidates.map((_, i) => i));
+    renderScrapeResults();
+    let parts = [`<b>${j.candidates.length}</b> scraped from scio.ly`];
+    if(j.skipped_id_dups){
+      parts.push(`${j.skipped_id_dups} skipped (already scraped before)`);
+    }
+    if(j.rejected_text_dups && j.rejected_text_dups.length){
+      parts.push(`${j.rejected_text_dups.length} rejected as duplicates of existing bank`);
+    }
+    if(j.validated) parts.push(`validated with Haiku`);
+    setStatus(parts.join(" · "));
+  } finally { popBusy(); }
+});
+
+function wordDiff(a, b){
+  // Highlight words in `a` that also appear in `b` (case-insensitive).
+  const tokens = String(a).slice(0, 300).split(/([ \t\n]+)/);
+  const set = new Set(String(b).toLowerCase().match(/[a-z0-9_]+/g) || []);
+  return tokens.map(t => {
+    const lower = t.toLowerCase();
+    if(set.has(lower) && /[a-z0-9_]/i.test(t)){
+      return `<span style="background:#e6f4e9;color:#1f6f3a;padding:0 2px;border-radius:2px">${esc(t)}</span>`;
+    }
+    return esc(t);
+  }).join("");
+}
+
+function vStatusBadge(v){
+  if(!v) return '<span class="muted">unvalidated</span>';
+  const map = {correct:"✓ correct", incorrect:"⚠ likely wrong",
+               uncertain:"? incomplete", unavailable:"· n/a"};
+  const cls = {correct:"processed", incorrect:"fresh",
+               uncertain:"edited", unavailable:""};
+  return `<span class="badge ${cls[v.status]||''}">${map[v.status]||esc(v.status)}</span>`;
+}
+
+function renderScrapeResults(){
+  if(!SC_RESULT) return;
+  const root = document.getElementById("sc_candidates");
+  const metaBits = [`${SC_KEEP.size} kept of ${SC_RESULT.candidates.length}`];
+  if(SC_RESULT.raw_count) metaBits.push(`raw API returned ${SC_RESULT.raw_count}`);
+  if(SC_RESULT.skipped_id_dups) metaBits.push(`${SC_RESULT.skipped_id_dups} skipped by id`);
+  if(SC_RESULT.rejected_text_dups && SC_RESULT.rejected_text_dups.length){
+    metaBits.push(`${SC_RESULT.rejected_text_dups.length} rejected as text duplicates`);
+  }
+  if(SC_RESULT.validated) metaBits.push(`validated`);
+  document.getElementById("sc_meta").textContent = "· " + metaBits.join(" · ");
+  document.getElementById("scrape_results").style.display = "block";
+  // Build the rejected-duplicates block (collapsed details element) with
+  // word-level diff highlighting between the scio.ly candidate and the
+  // matched bank question.
+  const dups = SC_RESULT.rejected_text_dups || [];
+  const dupsHtml = dups.length ? `
+    <details style="margin-top:14px">
+      <summary class="muted" style="cursor:pointer">
+        ${dups.length} scraped question(s) auto-rejected as duplicates of existing bank questions —
+        click to inspect (words in <span style="background:#e6f4e9;color:#1f6f3a;padding:0 3px;border-radius:2px">green</span> are shared)
+      </summary>
+      <div style="margin-top:10px">
+        ${dups.map(d => {
+          const sLeft = wordDiff(d.text || "", d.matched_q_text || "", false);
+          const sRight = wordDiff(d.matched_q_text || "", d.text || "", false);
+          return `
+          <div class="cand rejected">
+            <div class="row">
+              <span class="muted">matched: Q${esc(d.matched_q_number || "?")}
+                ${d.matched_q_source ? `(${esc(d.matched_q_source)})` : ""}</span>
+            </div>
+            <div class="stem"><b>scio.ly:</b> ${sLeft}</div>
+            ${d.matched_q_text ? `<div class="stem"><b>bank:</b>
+              <span class="muted">${sRight}</span></div>` : ""}
+          </div>`;
+        }).join("")}
+      </div>
+    </details>` : "";
+  root.innerHTML = dupsHtml + SC_RESULT.candidates.map((c, i) => {
+    const v = c.validation;
+    const kept = SC_KEEP.has(i);
+    const f = c._flag || "";
+    const editing = c._editing || false;
+    let validBox = "";
+    if(v){
+      const cls = v.status || "unavailable";
+      validBox = `<div class="validate-bar ${cls === "correct" ? "correct" : cls === "incorrect" ? "incorrect" : cls === "uncertain" ? "uncertain" : ""}">
+        <span class="vstatus">${vStatusBadge(v)}</span>
+        ${v.correct_answer && v.status !== "correct" ? `<span>→ likely: <b>${esc(v.correct_answer)}</b></span>` : ""}
+        ${v.rationale ? `<div class="rationale">${esc(v.rationale)}</div>` : ""}
+        ${v.source ? `<div class="src">Source: ${esc(v.source)}</div>` : ""}
+      </div>`;
+    }
+    const flagBadge = f === "likely-wrong"     ? `<span class="badge edited" title="Marked likely-wrong; will be saved with quality_flag='likely-wrong'.">⚠ likely-wrong</span>`
+                    : f === "definitely-wrong" ? `<span class="badge fresh" title="Marked definitely-wrong; will be saved with quality_flag='definitely-wrong'.">✗ definitely-wrong</span>`
+                    : "";
+    const editPanel = editing ? `
+      <div style="margin-top:8px;padding:10px;background:var(--bg-alt);border:1px dashed var(--line);border-radius:5px">
+        <div style="margin-bottom:6px"><b>Edit candidate</b>
+          <span class="muted" style="font-size:11px">— changes persist when you save; original is preserved as _orig_*</span>
+        </div>
+        <label style="display:block;font-size:12px;color:var(--fg-soft)">Question text</label>
+        <textarea data-sci-edit="text" data-sci="${i}" style="width:100%;min-height:60px">${esc(c.text || "")}</textarea>
+        ${(c.choices && c.choices.length) ? `
+          <div style="margin-top:6px;font-size:12px;color:var(--fg-soft)">Choices</div>
+          ${c.choices.map((ch, ci) => `
+            <div style="display:flex;gap:6px;align-items:center;margin:2px 0">
+              <b style="width:18px">${esc(ch.letter)}.</b>
+              <input data-sci-edit="choice" data-sci="${i}" data-ci="${ci}" value="${esc(ch.text || "")}" style="flex:1">
+            </div>`).join("")}` : ""}
+        <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:12px;color:var(--fg-soft)">Correct answer
+            <input data-sci-edit="answer" data-sci="${i}" value="${esc(c.answer || "")}" style="width:90px;margin-left:4px">
+          </label>
+          <label style="font-size:12px;color:var(--fg-soft)">Quality flag
+            <select data-sci-edit="flag" data-sci="${i}" style="margin-left:4px">
+              <option value=""                 ${f === "" ? "selected" : ""}>ok</option>
+              <option value="likely-wrong"     ${f === "likely-wrong" ? "selected" : ""}>likely-wrong</option>
+              <option value="definitely-wrong" ${f === "definitely-wrong" ? "selected" : ""}>definitely-wrong</option>
+              <option value="needs-review"     ${f === "needs-review" ? "selected" : ""}>needs-review</option>
+            </select>
+          </label>
+        </div>
+        <div style="margin-top:6px">
+          <label style="display:block;font-size:12px;color:var(--fg-soft)">
+            Reviewer note / correction explanation
+            <span class="muted">(stored alongside the question for later review)</span>
+          </label>
+          <textarea data-sci-edit="note" data-sci="${i}" style="width:100%;min-height:42px"
+                    placeholder="Why is this likely/definitely wrong, and what's the correct answer?"
+            >${esc(c._reviewer_note || "")}</textarea>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:4px">
+          ✱ Click <b>${kept ? "Save edits" : "Keep + Save edits"}</b> below to lock in.
+        </div>
+      </div>` : "";
+    return `
+    <div class="cand ${kept ? "" : "rejected"}" data-sci="${i}">
+      <div class="row">
+        <span class="topic">${esc(c.topic)}</span>
+        <span class="type">${c.choices && c.choices.length ? "MCQ" : "FRQ"}</span>
+        ${flagBadge}
+        <span class="muted">#${i+1} · ${esc(c.source || "")}</span>
+      </div>
+      <div class="stem">${esc(c.text)}</div>
+      ${c.choices && c.choices.length ? `<ul>${c.choices.map(ch =>
+        `<li><b>${esc(ch.letter)}.</b> ${esc(ch.text)}</li>`).join("")}</ul>` : ""}
+      <div class="ans"><b>Answer:</b> ${esc(c.answer || "(none)")}</div>
+      ${validBox}
+      ${editPanel}
+      <div class="actions">
+        ${editing
+          ? `<button data-scact="save" data-sci="${i}" class="primary" title="Apply the inline edits to this candidate (text/choices/answer/flag)">Save edits</button>
+             <button data-scact="canceledit" data-sci="${i}" title="Discard inline edits and collapse the editor">Cancel</button>`
+          : `<button data-scact="edit" data-sci="${i}" title="Edit this candidate's text, choices, answer, or flag it as likely-wrong / definitely-wrong">✎ Edit / Flag</button>`}
+        ${kept
+          ? `<button data-scact="drop" data-sci="${i}" title="Mark this candidate as rejected (won't be saved on Accept)">Drop</button>`
+          : `<button data-scact="keep" data-sci="${i}" class="primary" title="Mark this candidate as kept (will be saved on Accept)">Keep</button>`}
+      </div>
+    </div>`;
+  }).join("");
+  renderMath(root);
+}
+
+document.addEventListener("click", e => {
+  const i = Number(e.target.dataset.sci);
+  const act = e.target.dataset.scact;
+  if(!act || Number.isNaN(i)) return;
+  const c = SC_RESULT && SC_RESULT.candidates[i];
+  if(!c) return;
+  if(act === "drop")            SC_KEEP.delete(i);
+  else if(act === "keep")       SC_KEEP.add(i);
+  else if(act === "edit")       c._editing = true;
+  else if(act === "canceledit") c._editing = false;
+  else if(act === "save"){
+    // Pull values out of the in-DOM inputs for this candidate
+    const root = document.querySelector(`.cand[data-sci="${i}"]`);
+    if(root){
+      const t  = root.querySelector(`[data-sci-edit="text"][data-sci="${i}"]`);
+      const an = root.querySelector(`[data-sci-edit="answer"][data-sci="${i}"]`);
+      const fl = root.querySelector(`[data-sci-edit="flag"][data-sci="${i}"]`);
+      const no = root.querySelector(`[data-sci-edit="note"][data-sci="${i}"]`);
+      if(t)  c.text   = t.value;
+      if(an) c.answer = an.value;
+      if(fl) c._flag  = fl.value;
+      if(no) c._reviewer_note = no.value;
+      root.querySelectorAll(`[data-sci-edit="choice"][data-sci="${i}"]`).forEach(inp => {
+        const ci = Number(inp.dataset.ci);
+        if(c.choices && c.choices[ci]) c.choices[ci].text = inp.value;
+      });
+    }
+    c._editing = false;
+    SC_KEEP.add(i);  // saving implies keeping
+    setStatus(`Saved edits to candidate #${i+1}.`, "ok");
+  }
+  renderScrapeResults();
+});
+
+document.getElementById("sc_keep_correct").addEventListener("click", () => {
+  if(!SC_RESULT) return;
+  SC_KEEP.clear();
+  SC_RESULT.candidates.forEach((c, i) => {
+    if(c.validation && c.validation.status === "correct") SC_KEEP.add(i);
+  });
+  renderScrapeResults();
+});
+document.getElementById("sc_drop_unsolvable").addEventListener("click", () => {
+  if(!SC_RESULT) return;
+  SC_RESULT.candidates.forEach((c, i) => {
+    if(c.validation && (c.validation.status === "incorrect"
+                       || c.validation.status === "uncertain")) SC_KEEP.delete(i);
+  });
+  renderScrapeResults();
+});
+document.getElementById("sc_keep_all").addEventListener("click", () => {
+  if(!SC_RESULT) return;
+  SC_KEEP = new Set(SC_RESULT.candidates.map((_,i)=>i));
+  renderScrapeResults();
+});
+document.getElementById("sc_reject_all").addEventListener("click", () => {
+  SC_KEEP.clear(); renderScrapeResults();
+});
+
+document.getElementById("sc_accept").addEventListener("click", async () => {
+  if(!SC_RESULT || SC_KEEP.size === 0){ setStatus("Nothing to save", "err"); return; }
+  pushBusy();
+  try {
+    const picked = [...SC_KEEP].sort((a,b)=>a-b).map(i => SC_RESULT.candidates[i]);
+    setStatus(`Saving ${picked.length} scio.ly question(s)…`);
+    let j;
+    try {
+      const r = await fetch(`${API}/scioly/accept`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({candidates: picked}),
+      });
+      j = await r.json();
+    } catch (err) {
+      setStatus("Save failed: " + (err.message || err), "err"); return;
+    }
+    if(j.ok){
+      setStatus(`Saved ${j.added} question(s) to "${esc(j.bucket)}". Total in bucket: ${j.bucket_total}.`);
+      SC_RESULT = null; SC_KEEP.clear();
+      document.getElementById("scrape_results").style.display = "none";
+    } else {
+      setStatus("Save failed: " + esc(j.error || ""), "err");
+    }
+  } finally { popBusy(); }
+});
+
+// ============================================================
+// LLM question generation
+// ============================================================
+let GEN_BUSY = false;
+let GEN_ABORT = null;
+let GEN_TIMER = null;
+
+function setGenBusy(busy, n){
+  GEN_BUSY = busy;
+  const btnG = document.getElementById("btn_generate");
+  const btnC = document.getElementById("btn_cancel");
+  const prog = document.getElementById("gen_progress");
+  btnG.disabled = busy;
+  btnG.textContent = busy ? "Generating…" : "Generate";
+  btnC.style.display = busy ? "" : "none";
+  prog.style.display = busy ? "" : "none";
+  if(busy){
+    document.getElementById("prog_n").textContent = n;
+    document.getElementById("prog_phase").textContent = "Sending request to Haiku…";
+    const t0 = Date.now();
+    document.getElementById("prog_elapsed").textContent = "0s";
+    clearInterval(GEN_TIMER);
+    GEN_TIMER = setInterval(() => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      document.getElementById("prog_elapsed").textContent = s + "s";
+      const phase = document.getElementById("prog_phase");
+      if(s >= 3 && s < 20) phase.textContent = "Waiting for Haiku to draft questions…";
+      else if(s >= 20 && s < 45) phase.textContent = "Still drafting (long prompts can take a while)…";
+      else if(s >= 45) phase.textContent = "Taking longer than usual — you can Cancel if needed.";
+    }, 1000);
+  } else {
+    clearInterval(GEN_TIMER);
+    GEN_TIMER = null;
+  }
+}
+
+document.getElementById("btn_cancel").addEventListener("click", () => {
+  if(GEN_ABORT) GEN_ABORT.abort();
+});
+
+// --- Import generated questions from JSON ---
+document.getElementById("imp_file").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  try {
+    const text = await f.text();
+    document.getElementById("imp_text").value = text;
+    document.getElementById("imp_status").textContent =
+      `Loaded ${f.name} (${(f.size/1024).toFixed(1)} KB) — review then Import.`;
+  } catch(err){
+    document.getElementById("imp_status").textContent = "Read failed: " + err.message;
+  }
+});
+
+document.getElementById("import_schema_link").addEventListener("click", (e) => {
+  e.preventDefault();
+  const pre = document.getElementById("imp_schema");
+  if(pre.style.display === "none"){
+    pre.textContent = `Each candidate has this shape (matches qgen.py output):
+
+{
+  "type":           "mc" | "short" | "numerical",   // optional, defaults "short"
+  "topic":          "<one of the event's topics>",  // unknown topics → "Other / General"
+  "text":           "<question stem>",              // required, ≥ 12 chars
+  "choices": [                                      // omit / empty for FRQ
+    {"letter": "A", "text": "..."},
+    {"letter": "B", "text": "..."},
+    ...
+  ],
+  "answer":         "<correct answer>",
+  "rationale":      "<derivation, ok to use $LaTeX$>",  // optional
+  "source_snippet": "<short attribution>",              // optional
+  "image_description": "<diagram the question refers to>"  // optional;
+                          // also accepts "image_context" as a synonym.
+                          // No image file is attached — this just seeds the
+                          // "Generate diagram" chat once imported.
+}
+
+You can wrap the list in {"candidates": [...]} (the full qgen envelope) or
+just send a bare JSON array of candidate objects. Existing-bank dedup runs
+before insert; duplicates land in the rejected list.`;
+    pre.style.display = "block";
+  } else {
+    pre.style.display = "none";
+  }
+});
+
+document.getElementById("btn_import").addEventListener("click", async () => {
+  const raw = document.getElementById("imp_text").value.trim();
+  const validated = document.getElementById("imp_validated").checked;
+  const stEl = document.getElementById("imp_status");
+  const btn = document.getElementById("btn_import");
+  if(!raw){
+    stEl.textContent = "Paste JSON or pick a file first.";
+    return;
+  }
+  // Best-effort client-side parse, just to show a candidate count up front.
+  // If this fails (e.g. unescaped LaTeX like \theta or \frac{...} — valid
+  // LaTeX, invalid bare JSON), don't block: send the raw text to the server
+  // anyway and let its auto-repair ladder have a shot at it.
+  let preCount = null;
+  try {
+    const parsed = JSON.parse(raw);
+    const c = Array.isArray(parsed) ? parsed
+            : (parsed && Array.isArray(parsed.candidates)) ? parsed.candidates
+            : null;
+    if(c) preCount = c.length;
+  } catch(err){ /* server will attempt auto-repair */ }
+
+  pushBusy();
+  btn.textContent = "Importing…";
+  stEl.textContent = preCount != null
+    ? `Sending ${preCount} candidate(s) to server…`
+    : "Sending payload to server (will attempt JSON auto-repair)…";
+  try {
+    const r = await fetch(`${API}/sources/import-generated?mark_validated=${validated ? "1" : "0"}`, {
+      method: "POST",
+      headers: {"Content-Type": "text/plain; charset=utf-8"},
+      body: raw,
+    });
+    const j = await r.json();
+    if(j.error){
+      stEl.textContent = "Error: " + j.error;
+    } else {
+      const total = j.added + (j.rejected_duplicates || 0) + (j.rejected_invalid || 0);
+      const parts = [];
+      if(j.repaired) parts.push("auto-repaired JSON");
+      parts.push(`imported ${j.added}/${total}`);
+      if(j.rejected_duplicates) parts.push(`${j.rejected_duplicates} duplicates rejected`);
+      if(j.rejected_invalid)    parts.push(`${j.rejected_invalid} invalid`);
+      if(validated)             parts.push("marked validated");
+      stEl.textContent = parts.join(" · ");
+      if(j.added > 0){
+        toast(`Imported ${j.added} questions into ${j.bucket}.`, "ok");
+        document.getElementById("imp_text").value = "";
+        document.getElementById("imp_file").value = "";
+        renderImportedQuestions(j.questions || []);
+      }
+    }
+  } catch(err){
+    stEl.textContent = "Import failed: " + err.message;
+  } finally {
+    btn.textContent = "Import";
+    popBusy();
+  }
+});
+
+function renderImportedQuestions(questions){
+  const wrap = document.getElementById("imp_results");
+  const root = document.getElementById("imp_candidates");
+  if(!questions.length){ wrap.style.display = "none"; return; }
+  root.innerHTML = questions.map(q => {
+    const pending = (q.image_descriptions || {}).__pending__ || "";
+    return `
+    <div class="cand">
+      <div class="row">
+        <span class="topic">${esc(q.topic)}</span>
+        <span class="type">${esc(q.choices && q.choices.length ? "mc" : "short")}</span>
+        <span class="muted">Q${esc(q.number)}</span>
+      </div>
+      <div class="stem">${esc(q.text)}</div>
+      ${q.choices && q.choices.length ? `<ul>${q.choices.map(ch =>
+        `<li><b>${esc(ch.letter)}.</b> ${esc(ch.text)}</li>`).join("")}</ul>` : ""}
+      <div class="ans"><b>Answer:</b> ${esc(q.answer || "(none)")}</div>
+      ${pending ? `<div class="ratio">🖼️ Diagram recommended: ${esc(pending)}</div>` : ""}
+    </div>`;
+  }).join("");
+  renderMath(root);
+  wrap.style.display = "block";
+}
+
+document.getElementById("btn_generate").addEventListener("click", async () => {
+  if(GEN_BUSY) return;
+  const source = document.getElementById("gen_source").value;
+  const n = parseInt(document.getElementById("gen_n").value) || 5;
+  const types = [];
+  if(document.getElementById("t_mc").checked)    types.push("mc");
+  if(document.getElementById("t_short").checked) types.push("short");
+  if(document.getElementById("t_num").checked)   types.push("numerical");
+  if(!source){ setStatus("No source selected", "err"); return; }
+  if(types.length === 0){ setStatus("Select at least one question type", "err"); return; }
+
+  const tb = currentTextbook();
+  let genBody;
+  if(tb){
+    const chapterIdx = parseInt(document.getElementById("gen_chapter").value);
+    if(!Number.isFinite(chapterIdx)){ setStatus("No chapter selected", "err"); return; }
+    genBody = {textbook: tb.id, chapter_index: chapterIdx, n, types,
+               max_chunks: parseInt(document.getElementById("gen_chunks").value) || 1};
+  } else {
+    genBody = {source, n, types,
+               max_chunks: parseInt(document.getElementById("gen_chunks").value) || 1};
+  }
+
+  pushBusy();
+  try {
+    setGenBusy(true, n);
+    document.getElementById("gen_results").style.display = "none";
+    setStatus(`Generating ${n} candidate(s)…`);
+
+    GEN_ABORT = new AbortController();
+    let r, j, raw;
+    try{
+      r = await fetch(`${API}/generate`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(genBody),
+        signal: GEN_ABORT.signal,
+      });
+      raw = await r.text();
+      try { j = JSON.parse(raw); }
+      catch(e){
+        throw new Error(`Server returned non-JSON (HTTP ${r.status}): ${raw.slice(0, 200)}`);
+      }
+    } catch(err){
+      setGenBusy(false);
+      if(err.name === "AbortError"){
+        setStatus("Generation cancelled.", "err");
+      } else {
+        setStatus("Generation failed: " + esc(err.message), "err");
+      }
+      return;
+    } finally {
+      GEN_ABORT = null;
+    }
+    setGenBusy(false);
+
+    // Server-reported error (e.g. LLM parse failed, max_tokens hit)
+    if(j.error){
+      let msg = `<b>Error:</b> ${esc(j.error)}`;
+      if(j.stop_reason) msg += ` <span class="muted">(stop_reason=${esc(j.stop_reason)})</span>`;
+      if(j.out_max_tokens) msg += ` <span class="muted">[max_tokens=${j.out_max_tokens}]</span>`;
+      setStatus(msg, "err");
+      if(j.raw_response){
+        const root = document.getElementById("candidates");
+        document.getElementById("gen_results").style.display = "block";
+        document.getElementById("gen_meta").textContent = "· generation failed — raw LLM response below";
+        root.innerHTML = `<div class="cand rejected">
+          <div class="row"><span class="muted">No candidates parsed from this response</span></div>
+          <pre style="white-space:pre-wrap;font-size:11px;background:#f7f0f0;padding:10px;border-radius:4px;max-height:300px;overflow:auto">${esc(j.raw_response)}</pre>
+        </div>`;
+        document.getElementById("rejected").innerHTML = "";
+      }
+      return;
+    }
+
+    LAST_RESULT = j;
+    KEPT = new Set(j.candidates.map((_, i) => i));
+    renderCandidates();
+
+    const parts = [`Got <b>${j.candidates.length}</b> candidate(s)`];
+    if(j.rejected && j.rejected.length){
+      parts.push(`${j.rejected.length} auto-rejected`);
+    }
+    if(j.warnings && j.warnings.length){
+      parts.push(`<span style="color:var(--warn)">${j.warnings.length} warning(s)</span>`);
+    }
+    if(j.candidates.length === 0){
+      let hint = "No candidates. ";
+      if(j.warnings && j.warnings.length){
+        hint += j.warnings[0];
+      } else if(j.raw_count === 0){
+        hint += "Haiku returned 0 questions. Try a different source or fewer types.";
+      } else if(j.rejected && j.rejected.length === j.raw_count){
+        hint += `All ${j.raw_count} candidates rejected (mostly duplicates). Try a fresh source or smaller n.`;
+      }
+      setStatus(hint, "err");
+    } else {
+      setStatus(parts.join(" · "));
+    }
+  } finally { popBusy(); }
+});
+
+function renderCandidates(){
+  if(!LAST_RESULT){ return; }
+  const root = document.getElementById("candidates");
+  const meta = document.getElementById("gen_meta");
+  meta.textContent = `· ${LAST_RESULT.candidates.length} kept of ${LAST_RESULT.raw_count} generated`
+    + ` · checked vs ${LAST_RESULT.existing_count} existing`;
+  document.getElementById("gen_results").style.display = "block";
+  // Surface warnings (if any) as a banner at the top of the results
+  const warnHtml = (LAST_RESULT.warnings && LAST_RESULT.warnings.length)
+    ? `<div class="banner" style="margin:0 0 12px 0;border-radius:4px">
+         ⚠ ${LAST_RESULT.warnings.map(esc).join("<br>")}
+       </div>` : "";
+  root.innerHTML = warnHtml + LAST_RESULT.candidates.map((c, i) => `
+    <div class="cand ${KEPT.has(i) ? "" : "rejected"}" data-i="${i}">
+      <div class="row">
+        <span class="topic">${esc(c.topic)}</span>
+        <span class="type">${esc(c.type)}</span>
+        <span class="muted">candidate #${i+1}</span>
+      </div>
+      <div class="stem">${esc(c.text)}</div>
+      ${c.choices && c.choices.length ? `<ul>${c.choices.map(ch =>
+        `<li><b>${esc(ch.letter)}.</b> ${esc(ch.text)}</li>`).join("")}</ul>` : ""}
+      <div class="ans"><b>Answer:</b> ${esc(c.answer || "(none)")}</div>
+      ${c.rationale ? `<div class="ratio">${esc(c.rationale)}</div>` : ""}
+      ${c.source_snippet ? `<div class="src-snip">${esc(c.source_snippet)}</div>` : ""}
+      <div class="actions">
+        ${KEPT.has(i)
+          ? `<button data-act="drop" data-i="${i}">Drop</button>`
+          : `<button data-act="keep" data-i="${i}" class="primary">Keep</button>`}
+      </div>
+    </div>`).join("");
+  // Math rendering
+  renderMath(root);
+  const rj = document.getElementById("rejected");
+  rj.innerHTML = (LAST_RESULT.rejected || []).map(r => `
+    <div class="cand rejected">
+      <div class="row">
+        <span class="muted">reason: ${esc(r.reason)}</span>
+        ${r.matched ? `<span class="muted">matches Q${esc(r.matched)}</span>` : ""}
+      </div>
+      <div class="stem">${esc((r.text||"").slice(0, 200))}</div>
+    </div>`).join("") || '<div class="muted">none</div>';
+}
+
+document.addEventListener("click", e => {
+  const i = Number(e.target.dataset.i);
+  const act = e.target.dataset.act;
+  if(!act || Number.isNaN(i)) return;
+  if(act === "drop") KEPT.delete(i);
+  else if(act === "keep") KEPT.add(i);
+  renderCandidates();
+});
+
+document.getElementById("accept_all").addEventListener("click", async () => {
+  if(!LAST_RESULT || KEPT.size === 0){ setStatus("Nothing to accept", "err"); return; }
+  pushBusy();
+  try {
+    const picked = [...KEPT].sort((a,b)=>a-b).map(i => LAST_RESULT.candidates[i]);
+    setStatusHtml(`Saving ${picked.length} candidate(s)... <span class='spinner'></span>`);
+    const r = await fetch(`${API}/generate/accept`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({candidates: picked, source: LAST_RESULT.source}),
+    });
+    const j = await r.json();
+    if(j.ok){
+      setStatus(`Added ${j.added} question(s) to "${j.bucket}". Total in bucket: ${j.bucket_total}.`);
+      LAST_RESULT = null; KEPT.clear();
+      document.getElementById("gen_results").style.display = "none";
+    } else { setStatus("Accept failed: " + (j.error || ""), "err"); }
+  } finally { popBusy(); }
+});
+
+document.getElementById("reject_all").addEventListener("click", () => {
+  KEPT.clear(); renderCandidates();
+});
+
+document.getElementById("validate_then_accept").addEventListener("click", async () => {
+  if(!LAST_RESULT || KEPT.size === 0){ setStatus("Nothing to validate", "err"); return; }
+  const picked = [...KEPT].sort((a,b)=>a-b).map(i => LAST_RESULT.candidates[i]);
+  if(!confirm(`Validate ${picked.length} candidate(s) with Haiku (~$${(picked.length*0.003).toFixed(3)}), then auto-accept only the ones flagged 'correct'?`)) return;
+  pushBusy();
+  try {
+    let i = 0, kept_correct = [];
+    for(const c of picked){
+      i++;
+      setStatus(`Validating ${i}/${picked.length}: ${c.text.slice(0,40)}…`);
+      try {
+        const r = await fetch(`${API}/validate-question`, {
+          method: "POST", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({text:c.text, answer:c.answer, choices:c.choices, number:""}),
+        });
+        const v = await r.json();
+        if(v.status === "correct"){
+          kept_correct.push({...c, validation: v});
+        }
+      } catch(err){}
+    }
+    if(!kept_correct.length){
+      setStatus(`No candidates were flagged 'correct'.`, "err");
+      return;
+    }
+    // Save the correct ones
+    setStatus(`Saving ${kept_correct.length} validated-correct candidate(s)…`);
+    const r = await fetch(`${API}/generate/accept`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({candidates: kept_correct, source: LAST_RESULT.source}),
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`Validated ${picked.length}, auto-accepted ${kept_correct.length} (✓ correct).`, "ok");
+      LAST_RESULT = null; KEPT.clear();
+      document.getElementById("gen_results").style.display = "none";
+    } else { toast("Save failed: " + (j.error || ""), "err"); }
+  } finally { popBusy(); }
+});
+
+// ---------- Shared textbooks (used across every event, not just this one) ----------
+let TEXTBOOKS = [];
+
+async function loadTextbooks(){
+  const r = await fetch(`/api/textbooks`);
+  const d = await r.json();
+  TEXTBOOKS = d.textbooks || [];
+
+  const rows = TEXTBOOKS.map(t => {
+    const chCount = (t.chapters || []).length;
+    const status = t.needs_manual_chapters
+      ? `<span class="badge fresh">no chapters detected</span>`
+      : `<span class="badge processed">${chCount} chapter(s) · ${esc(t.source)}</span>`;
+    return `<tr>
+      <td>${esc(t.name)}</td>
+      <td>${(t.size/1024/1024).toFixed(1)} MB</td>
+      <td>${status}</td>
+      <td class="actions">
+        <button class="btn-tiny" data-tb-detect="${esc(t.id)}"
+                title="(Re-)scan this PDF for embedded bookmarks or 'Chapter N' headings">Detect chapters</button>
+        <button class="btn-tiny" data-tb-manual="${esc(t.id)}"
+                title="Type chapter boundaries in by hand">Set chapters manually</button>
+      </td>
+    </tr>`;
+  }).join("");
+  document.getElementById("textbook_rows").innerHTML = rows
+    || '<tr><td colspan="4" class="empty"><b>No shared textbooks yet.</b><br>'
+       + '<span class="muted">Upload one above — it becomes available to every event.</span></td></tr>';
+
+  // Rebuild the "Shared textbooks" optgroup in the Generate source dropdown.
+  const sel = document.getElementById("gen_source");
+  const prevGrp = sel.querySelector("optgroup[data-tb-group]");
+  if(prevGrp) prevGrp.remove();
+  if(TEXTBOOKS.length){
+    const grp = document.createElement("optgroup");
+    grp.label = "Shared textbooks";
+    grp.dataset.tbGroup = "1";
+    TEXTBOOKS.forEach(t => {
+      const opt = document.createElement("option");
+      opt.value = `tb:${t.id}`;
+      opt.textContent = t.name + (t.needs_manual_chapters ? " (needs chapters)" : "");
+      grp.appendChild(opt);
+    });
+    sel.appendChild(grp);
+  }
+  updateChapterPicker();
+}
+
+function currentTextbook(){
+  const v = document.getElementById("gen_source").value;
+  if(!v || !v.startsWith("tb:")) return null;
+  return TEXTBOOKS.find(t => t.id === v.slice(3)) || null;
+}
+
+function updateChapterPicker(){
+  const tb = currentTextbook();
+  const wrap = document.getElementById("gen_chapter_wrap");
+  const sel = document.getElementById("gen_chapter");
+  if(!tb || !(tb.chapters || []).length){
+    wrap.style.display = "none";
+    sel.innerHTML = "";
+    return;
+  }
+  wrap.style.display = "";
+  sel.innerHTML = `<option value="">(pick a chapter)</option>` + tb.chapters.map((c, i) =>
+    `<option value="${i}">${esc(c.title)} (p${c.start_page}–${c.end_page})</option>`).join("");
+}
+
+document.getElementById("textbook_upload_form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const form = e.target;
+  const btn = form.querySelector("button[type=submit]");
+  btn.disabled = true;
+  setStatusHtml(`Uploading textbook and detecting chapters... <span class='spinner'></span>`);
+  try {
+    const r = await fetch(`/api/textbooks/upload`, {method: "POST", body: new FormData(form)});
+    const j = await r.json();
+    if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); return; }
+    setStatus(j.needs_manual_chapters
+      ? `Uploaded ${j.name} — no chapters detected; use "Set chapters manually" below.`
+      : `Uploaded ${j.name}: ${j.chapters.length} chapter(s) detected (${j.source}).`, "ok");
+    form.reset();
+    await loadTextbooks();
+  } catch(err){
+    setStatus("Upload error: " + err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("textbook_rows").addEventListener("click", async e => {
+  const detectId = e.target.dataset.tbDetect;
+  const manualId = e.target.dataset.tbManual;
+  if(detectId){
+    e.target.disabled = true;
+    setStatusHtml(`Detecting chapters... <span class='spinner'></span>`);
+    try {
+      const r = await fetch(`/api/textbooks/${encodeURIComponent(detectId)}/detect`, {method: "POST"});
+      const j = await r.json();
+      if(!j.ok){ setStatus("Detect failed: " + (j.error || ""), "err"); return; }
+      setStatus(j.needs_manual_chapters
+        ? `No chapters detected — use "Set chapters manually".`
+        : `${j.chapters.length} chapter(s) detected (${j.source}).`, "ok");
+      await loadTextbooks();
+    } finally { e.target.disabled = false; }
+  } else if(manualId){
+    openManualChapters(manualId);
+  }
+});
+
+function openManualChapters(textbookId){
+  const tb = TEXTBOOKS.find(t => t.id === textbookId);
+  document.getElementById("textbook_manual_name").textContent = tb ? tb.name : textbookId;
+  document.getElementById("textbook_manual_text").value = ((tb && tb.chapters) || [])
+    .map(c => `${c.title}, ${c.start_page}`).join("\n");
+  document.getElementById("textbook_manual_panel").dataset.textbookId = textbookId;
+  document.getElementById("textbook_manual_panel").style.display = "block";
+}
+document.getElementById("textbook_manual_cancel").addEventListener("click", () => {
+  document.getElementById("textbook_manual_panel").style.display = "none";
+});
+document.getElementById("textbook_manual_save").addEventListener("click", async () => {
+  const panel = document.getElementById("textbook_manual_panel");
+  const textbookId = panel.dataset.textbookId;
+  const lines = document.getElementById("textbook_manual_text").value.split("\n")
+    .map(l => l.trim()).filter(Boolean);
+  const chapters = [];
+  for(const line of lines){
+    const idx = line.lastIndexOf(",");
+    if(idx < 0) continue;
+    const title = line.slice(0, idx).trim();
+    const start_page = parseInt(line.slice(idx + 1).trim());
+    if(!title || !Number.isFinite(start_page)) continue;
+    chapters.push({title, start_page});
+  }
+  if(!chapters.length){ toast('No valid chapter lines — need "Title, page" per line', "err"); return; }
+  try {
+    const r = await fetch(`/api/textbooks/${encodeURIComponent(textbookId)}/chapters`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({chapters}),
+    });
+    const j = await r.json();
+    if(!j.ok){ toast("Save failed: " + (j.error || ""), "err"); return; }
+    toast(`Saved ${j.chapters.length} chapter(s).`, "ok");
+    panel.style.display = "none";
+    await loadTextbooks();
+  } catch(err){
+    toast("Save error: " + err.message, "err");
+  }
+});
+
+// loadSources() (wrapped above) refreshes the textbook optgroup itself
+// after repopulating #gen_source, so a single call covers both.
+loadSources();
+</script>
+</body></html>

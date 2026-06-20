@@ -1,0 +1,29 @@
+# Sci-Oly Question Banks — Python dependencies
+#
+# Pinned to known-good minimums to prevent silent breakage from upstream
+# changes. Upgrade deliberately and re-run the pytest + Playwright suites
+# (`python -m pytest tests/ -q && python test_webapp.py`) after each bump.
+#
+# Reasoning for the floors:
+#   - PyMuPDF 1.24: get_text("dict") line-bbox shape we rely on for qboxes
+#   - Flask 3.0:   modern routing + Werkzeug 3 secure_filename
+#   - anthropic SDK 0.40: max_retries kwarg on Anthropic() constructor
+#   - playwright 1.40: sync_playwright stability on Windows
+#   - markdownify 0.11 / beautifulsoup4 4.12: wiki-page scrape helpers
+#   - requests 2.31: TLS defaults that match scioly.org cert chain
+#   - pytest 7.4: tests/ collection
+#
+# No upper bounds — that's the user's choice.
+
+PyMuPDF>=1.24
+Flask>=3.0
+Werkzeug>=3.0
+anthropic>=0.40
+playwright>=1.40
+markdownify>=0.11
+beautifulsoup4>=4.12
+requests>=2.31
+
+# Test-only — kept here so a single `pip install -r requirements.txt` covers
+# everything a contributor needs.
+pytest>=7.4

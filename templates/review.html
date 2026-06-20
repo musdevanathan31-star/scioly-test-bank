@@ -1,0 +1,2393 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Review · {{ pdf_name }}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<style>
+{{ common_css|safe }}
+.toolbar{padding:7px 18px;background:#fff;border-bottom:1px solid var(--line);
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:46px;z-index:9}
+.toolbar .grow{flex:1}
+.review-wrap{display:flex;height:calc(100vh - 95px);min-width:0}
+.pdf-pane{flex:1.05;overflow:auto;background:#5a5a60;padding:14px;
+  display:flex;justify-content:center;align-items:flex-start;min-width:0;position:relative}
+.pdf-stage{position:relative;display:inline-block;line-height:0}
+.pdf-stage img{display:block;max-width:100%;box-shadow:0 4px 14px rgba(0,0,0,.3);background:#fff}
+.pdf-stage.capturing{cursor:crosshair}
+.pdf-stage.capturing img{user-select:none;-webkit-user-drag:none}
+.sel-rect{position:absolute;border:2px dashed #ffe600;background:rgba(255,230,0,.18);
+  pointer-events:none;display:none;box-shadow:0 0 0 9999px rgba(0,0,0,.25)}
+.capture-hint{position:fixed;top:90px;left:50%;transform:translateX(-50%);
+  background:#222;color:#fff;padding:8px 14px;border-radius:4px;
+  font-size:13px;z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.4);display:none}
+.capture-hint.on{display:block}
+.capture-hint button{margin-left:10px}
+.q-pane{flex:.95;overflow-x:hidden;overflow-y:auto;padding:14px 18px;
+  background:#f7f7f8;min-width:0}
+.q-card{background:#fff;border:1px solid var(--line);border-radius:6px;
+  padding:12px;margin-bottom:10px;min-width:0;
+  transition:border-color .15s,background .15s,box-shadow .15s}
+.q-card.focused{box-shadow:0 0 0 3px var(--accent);background:#fbfdff;
+  position:relative}
+.q-card.focused::before{content:"●";position:absolute;left:-14px;top:14px;
+  color:var(--accent);font-size:14px}
+.q-card.assign-target{outline:2px solid var(--accent);
+  cursor:pointer;background:#f0f7ff}
+.q-card.dirty{border-left:3px solid var(--warn)}
+.q-card .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  row-gap:5px;margin-bottom:6px;min-width:0}
+.q-card .row.tight{margin-bottom:3px}
+.q-card input[type=text],.q-card textarea,.q-card select{
+  width:100%;padding:4px 6px;border:1px solid var(--line);
+  border-radius:3px;font:inherit;font-size:13px;background:#fff;
+  min-width:0;box-sizing:border-box}
+.q-card textarea{min-height:48px;resize:vertical;font-family:inherit}
+.q-card .q-num{flex:0 0 70px}
+.q-card .topic{flex:1 1 160px;min-width:0}
+.q-card .focus{flex:0 1 130px;min-width:0;background:#f0f7ff}
+.q-card .lbl{flex:0 0 60px;font-weight:600;color:#555;font-size:12px}
+.q-card .images{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.q-card .imgbox{position:relative}
+.q-card .imgbox img{width:78px;height:78px;object-fit:contain;
+  border:1px solid var(--line);background:#fff;border-radius:3px;display:block}
+.q-card .imgbox .x{position:absolute;top:-7px;right:-7px;background:var(--bad);
+  color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;
+  line-height:16px;cursor:pointer;font-size:13px;font-weight:bold;
+  box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.q-card .imgbox .img-desc-btn{position:absolute;bottom:-7px;left:-4px;
+  background:var(--bg-card);border:1px solid var(--line);border-radius:50%;
+  width:20px;height:20px;text-align:center;line-height:16px;cursor:pointer;
+  font-size:10px;padding:0}
+.q-card .imgbox .img-desc-btn:hover{background:var(--accent);color:#fff}
+.q-card .imgbox .img-desc-tag{position:absolute;bottom:-14px;left:0;right:0;
+  background:rgba(0,0,0,.65);color:#fff;font-size:9px;padding:1px 4px;
+  border-radius:2px;text-align:center;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;pointer-events:none}
+.q-card .pending-img-note{margin-top:6px;padding:6px 8px;background:#fff8e1;
+  border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:3px}
+/* Diagram chat panel */
+.dc-msg{padding:8px 10px;margin:6px 0;border-radius:5px;font-size:12px;line-height:1.5}
+.dc-msg.dc-user{background:var(--bg-card);border:1px solid var(--line)}
+.dc-msg.dc-assistant{background:#fff;border:1px solid var(--accent)}
+.dc-msg b{display:block;font-size:10px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}
+.dc-svg{margin:6px 0;padding:8px;background:#fafafa;border:1px solid var(--line);
+  border-radius:4px}
+.dc-svg-render{max-width:100%;overflow:auto}
+.dc-svg-render svg{max-width:100%;height:auto;display:block;margin:0 auto;
+  background:#fff;border-radius:3px}
+.dc-svg-actions{display:flex;gap:6px;margin-top:6px}
+.dc-prose{font-style:italic;color:var(--fg-soft);font-size:11px;margin-top:4px}
+/* Shared context blocks — passages/intros/tables that multiple Qs reference */
+.context-section{margin-bottom:14px;padding:8px;background:#fff8e1;
+  border:1px dashed #d8b75c;border-radius:6px}
+.context-card{padding:8px 10px;background:#fffbeb;border:1px solid #e8c875;
+  border-radius:5px;margin-bottom:6px}
+.context-card textarea{width:100%;padding:5px 7px;border:1px solid var(--line);
+  border-radius:3px;font:inherit;font-size:12px;background:#fff;resize:vertical}
+.context-card .delQ{background:transparent;border:none;color:var(--bad);
+  cursor:pointer;font-size:14px;padding:0 6px}
+.context-card .images{display:flex;gap:6px;flex-wrap:wrap}
+.context-card .imgbox{position:relative}
+.context-card .imgbox img{width:64px;height:64px;object-fit:contain;
+  border:1px solid var(--line);background:#fff;border-radius:3px;display:block}
+.context-card .imgbox .x{position:absolute;top:-7px;right:-7px;background:var(--bad);
+  color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;
+  line-height:16px;cursor:pointer;font-size:13px;font-weight:bold;
+  box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.q-card .ctx-pick{flex:1 1 220px;min-width:0;background:#fff8e1;font-size:12px}
+.q-card .ctx-preview{margin:6px 0 8px 0;padding:8px 10px;background:#fffbeb;
+  border-left:3px solid #d8b75c;border-radius:0 4px 4px 0;font-size:12px;
+  color:var(--fg-soft)}
+.q-card .ctx-preview .images{margin-top:4px}
+.q-card .ctx-preview .imgbox img{width:64px;height:64px}
+.choice-row{display:flex;gap:5px;align-items:center;margin-bottom:3px;min-width:0}
+.choice-row .letter{flex:0 0 25px;font-weight:bold;color:#555}
+.choice-row .x{flex:0 0 20px;color:var(--bad);cursor:pointer;text-align:center}
+.image-bay{background:#fff;border:1px solid var(--line);border-radius:6px;
+  padding:12px;margin-top:18px}
+.image-bay h3{margin:0 0 6px 0;font-size:13px;font-weight:600;color:#444}
+.image-bay .grid{display:grid;
+  grid-template-columns:repeat(auto-fill,90px);gap:6px}
+.image-bay .grid .ibox{position:relative;cursor:pointer}
+.image-bay .grid img{width:90px;height:90px;object-fit:contain;
+  border:2px solid transparent;background:#f0f0f0;border-radius:3px;display:block}
+.image-bay .grid .ibox.selected img{border-color:var(--accent)}
+.image-bay .grid .ibox .usage{position:absolute;bottom:0;left:0;right:0;
+  background:rgba(0,0,0,.6);color:#fff;font-size:10px;text-align:center;
+  padding:1px 0}
+.delQ{color:var(--bad);cursor:pointer;background:none;border:none;
+  font-size:18px;padding:0 4px;line-height:1;flex:0 0 auto}
+.capture-bar{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 8px;
+  padding:6px 8px;background:#eef4fb;border-radius:4px;font-size:12px;
+  align-items:center;border:1px dashed #b8d3eb}
+.capture-bar .lbl{color:#225;font-weight:600;margin-right:4px}
+.capture-bar button{padding:3px 9px;font-size:12px}
+.math-preview{font-size:13px;padding:6px 8px;margin-top:4px;
+  background:#fafbfd;border:1px dashed #d0d6de;border-radius:3px;
+  min-height:24px;color:#222;line-height:1.5;overflow-x:auto}
+.math-preview:empty{display:none}
+.math-preview .ph{color:var(--muted);font-style:italic;font-size:12px}
+.validate-bar{display:flex;gap:6px;align-items:center;margin-top:8px;
+  padding:6px 8px;background:#f7f4ec;border:1px dashed #d4c79b;
+  border-radius:4px;font-size:12px;flex-wrap:wrap}
+.validate-bar.correct{background:#eef7ef;border-color:#a4d4ab}
+.validate-bar.incorrect{background:#fdecec;border-color:#e7a8a8}
+.validate-bar.uncertain{background:#fff7e0;border-color:#e6cf80}
+.validate-bar.stale{background:#f0eff5;border-color:#c7c0d4}
+.validate-bar .vstatus{font-weight:600}
+.validate-bar .rationale{flex-basis:100%;font-style:italic;color:#444}
+.validate-bar .src{flex-basis:100%;font-size:11px;color:#666}
+.btn-tiny{padding:2px 8px;font-size:11px}
+.help{font-size:12px;color:var(--muted);margin:4px 0 10px 0;line-height:1.5}
+.help kbd{background:#eee;border:1px solid #ccc;padding:1px 5px;
+  border-radius:3px;font-size:11px}
+.page-nav{display:flex;align-items:center;gap:6px}
+.page-nav input{width:54px;text-align:center;padding:3px 4px;
+  border:1px solid var(--line);border-radius:3px;font:inherit}
+.target-toggle{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.target-toggle button{border:none;border-radius:0;padding:4px 10px;font-size:12px}
+.target-toggle button.on{background:var(--accent);color:#fff}
+
+/* Page-thumbnail strip across the top of the PDF pane */
+.thumb-strip{display:flex;gap:4px;padding:8px;background:var(--bg-alt);
+  overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--line);
+  height:96px;flex-shrink:0;align-items:flex-start}
+.thumb-strip .thumb{flex:0 0 56px;height:74px;border:2px solid transparent;
+  cursor:pointer;background:#fff;border-radius:3px;position:relative;
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;color:var(--muted);font-weight:500}
+.thumb-strip .thumb.on{border-color:var(--accent)}
+.thumb-strip .thumb img{max-width:100%;max-height:100%;display:block}
+.thumb-strip .thumb .pn{position:absolute;bottom:0;left:0;right:0;
+  background:rgba(0,0,0,.55);color:#fff;font-size:9px;text-align:center;padding:1px 0}
+
+/* Zoom controls on PDF stage */
+.pdf-pane{position:relative}
+.zoom-controls{position:absolute;top:14px;right:14px;background:var(--bg-card);
+  border:1px solid var(--line);border-radius:6px;padding:4px;display:flex;gap:4px;
+  z-index:20;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.zoom-controls button{padding:3px 8px;font-size:13px;line-height:1}
+
+/* Collapsed verified-correct cards */
+.q-card.collapsed{padding:8px 12px;cursor:pointer;display:flex;
+  gap:10px;align-items:center;background:#f3faf3}
+.q-card.collapsed .summary-line{flex:1;font-size:13px;color:var(--fg-soft);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-card.collapsed > *:not(.summary-line):not(.row){display:none}
+
+/* Outline / TOC drawer */
+.outline-drawer{position:fixed;top:46px;bottom:0;left:0;width:280px;
+  background:var(--bg-card);border-right:1px solid var(--line);
+  overflow-y:auto;z-index:30;transform:translateX(-100%);
+  transition:transform .2s ease;padding:14px 10px;box-shadow:2px 0 12px rgba(0,0,0,.1)}
+.outline-drawer.on{transform:translateX(0)}
+.outline-drawer h4{margin:0 0 8px 0;font-size:12px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.5px}
+.outline-drawer .item{font-size:13px;padding:4px 6px;cursor:pointer;
+  border-radius:3px;color:var(--fg-soft);line-height:1.3}
+.outline-drawer .item:hover{background:var(--hover)}
+.outline-drawer .lvl-1{font-weight:600;color:var(--fg)}
+.outline-drawer .lvl-2{padding-left:16px}
+.outline-drawer .lvl-3{padding-left:32px}
+.outline-drawer .empty{color:var(--muted);font-size:12px;font-style:italic;padding:8px}
+
+/* Persisted region overlays */
+.region-overlay{position:absolute;border:2px solid rgba(0,102,204,.55);
+  background:rgba(0,102,204,.08);pointer-events:auto;cursor:pointer;
+  border-radius:2px}
+.region-overlay:hover{background:rgba(0,102,204,.15)}
+.region-overlay .ro-label{position:absolute;top:-22px;left:0;background:var(--accent);
+  color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap}
+
+/* Question bounding boxes (algorithm's confidence regions) */
+.q-bbox{position:absolute;border:2px solid rgba(31,138,77,.55);
+  background:rgba(31,138,77,.06);border-radius:3px;cursor:pointer;
+  pointer-events:auto;transition:background .12s ease}
+.q-bbox:hover{background:rgba(31,138,77,.18)}
+.q-bbox.focused{border-color:rgba(207,99,11,.85);background:rgba(207,99,11,.10)}
+.q-bbox .bb-label{position:absolute;top:-19px;left:-2px;background:var(--ok);
+  color:#fff;font-size:10px;padding:1px 7px;border-radius:3px;font-weight:600;
+  white-space:nowrap;letter-spacing:.2px}
+.q-bbox.focused .bb-label{background:var(--warn)}
+.q-bbox.unmatched{border-style:dashed;border-color:rgba(192,57,43,.55);
+  background:rgba(192,57,43,.06)}
+.q-bbox.unmatched .bb-label{background:var(--bad)}
+.q-bbox.unmatched:hover{background:rgba(192,57,43,.18)}
+/* While a capture is in progress, every box becomes a one-click "use this
+   region" shortcut — outline it like the active selection rectangle so
+   that's obvious instead of looking like a plain focus-this-question box. */
+.q-bbox.pickable{border-color:rgba(0,102,204,.85);border-width:2px;
+  box-shadow:0 0 0 2px rgba(0,102,204,.18)}
+.q-bbox.pickable:hover{background:rgba(0,102,204,.20);
+  box-shadow:0 0 0 3px rgba(0,102,204,.3)}
+.q-bbox.pickable .bb-label{background:var(--accent)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
+  <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> {{ pdf_name }}</h1>
+  <div style="position:relative;display:inline-block" id="reprocessWrap">
+    <button id="reprocess" class="danger" title="Re-run the extraction pipeline. Click for mode options.">Reprocess ▾</button>
+    <div id="reprocessMenu" style="display:none;position:absolute;top:100%;left:0;
+         background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+         box-shadow:0 6px 16px rgba(0,0,0,.25);min-width:280px;z-index:60;padding:4px 0">
+      <button class="ghost" style="display:block;width:100%;text-align:left;padding:8px 14px"
+              data-rp-mode="keep"
+              title="Re-run the extraction pipeline; replay your saved annotations (field overrides, adds, deletes, image moves) on top of the fresh extraction.">
+        🔁 Re-extract · <b>keep annotations</b>
+        <div class="muted" style="font-size:11px">Default. Use after editing the source PDF or after a pipeline fix.</div>
+      </button>
+      <button class="ghost" style="display:block;width:100%;text-align:left;padding:8px 14px"
+              data-rp-mode="wipe"
+              title="Wipe ALL your manual edits/annotations for this PDF AND re-run the extraction pipeline. Cannot be undone.">
+        🧹 Re-extract · <b>wipe annotations</b>
+        <div class="muted" style="font-size:11px">Start over from scratch — discards your field edits, deletes, image moves.</div>
+      </button>
+      <button class="ghost" style="display:block;width:100%;text-align:left;padding:8px 14px"
+              data-rp-mode="manual"
+              title="Wipe all questions; then use '+ Add question from region' to manually select each question's region(s). Multi-page questions supported via Shift+drag onto next page.">
+        ✏ Manual · <b>region-by-region</b>
+        <div class="muted" style="font-size:11px">Deletes all questions. You'll then drag regions on each page; Haiku fallback available when Python extraction is weak.</div>
+      </button>
+    </div>
+  </div>
+  <span id="status" class="muted"></span>
+  <span id="dirty" class="badge edited" style="display:none">unsaved</span>
+  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
+  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+  <button id="save" class="primary" disabled title="Persist edits to .qbank_state.json (Ctrl+S)">Save</button>
+</header>
+<div class="toolbar">
+  <div class="page-nav">
+    <button id="prev" title="Previous page">◀</button>
+    <span>Page</span>
+    <input id="pageInput" type="number" min="1" value="1" title="Page number">
+    <span id="pageCount" class="muted">/ ?</span>
+    <span id="pageProgress" class="muted" style="font-size:11px"></span>
+    <button id="next" title="Next page">▶</button>
+  </div>
+  <div class="page-nav" style="margin-left:14px">
+    <span>Go to Q</span>
+    <input id="gotoQ" type="text" placeholder="#" style="width:60px"
+           title="Jump to a question by number">
+  </div>
+  <div class="target-toggle" id="targetToggle">
+    <button data-target="test" class="on" title="Render and capture from the main test PDF">Test PDF</button>
+    <button data-target="key" title="Render and capture from the answer key PDF (when available)">Key PDF</button>
+  </div>
+  <div class="grow"></div>
+  <button id="validatePage" title="Send every question on this page to Haiku for answer validation (~$0.003/question)">✓ Validate page</button>
+  <button id="ocr" title="Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing">OCR this page (vision)</button>
+  <button id="addRegion" class="primary" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">+ Add question from region</button>
+  <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">+ Add context from region</button>
+  <button id="addQ" title="Insert an empty question card you can fill out manually">+ Add blank</button>
+  <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
+  <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
+  <button id="delAllQ" class="danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">🗑 Delete all</button>
+</div>
+<div id="cmpModal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.55);z-index:300;padding:32px;overflow:auto">
+  <div style="background:var(--bg-card);border-radius:8px;padding:20px;
+       max-width:1100px;margin:0 auto;color:var(--fg)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3 style="margin:0">Compare questions <span class="muted" style="font-weight:400" id="cmpMeta"></span></h3>
+      <button onclick="closeCmp()" title="Close the side-by-side compare modal">✕ Close</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" id="cmpGrid"></div>
+  </div>
+</div>
+
+<!-- Diagram-generation chat modal -->
+<div id="diagram_modal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.55);z-index:310;padding:24px;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card);border-radius:8px;padding:18px 22px;
+       width:760px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;
+       color:var(--fg);box-shadow:0 12px 40px rgba(0,0,0,.45)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div>
+        <h3 style="margin:0;font-size:15px">
+          🤖 Generate diagram —
+          <span id="dc_qnum" style="color:var(--accent)">Q#?</span>
+          <span class="muted" style="font-weight:400;font-size:12px">
+            · topic: <span id="dc_topic">—</span>
+            · model: <span style="font-family:ui-monospace,monospace">claude-sonnet-4-6</span>
+          </span>
+        </h3>
+      </div>
+      <button onclick="closeDiagramChat()" title="Close the diagram-generation chat (changes you saved already are kept).">✕ Close</button>
+    </div>
+    <p class="muted" id="dc_hint" style="font-size:12px;margin:0 0 10px 0"></p>
+    <div id="dc_history" style="flex:1;overflow-y:auto;padding:6px 4px;
+         background:var(--bg-alt);border-radius:6px;min-height:200px;max-height:55vh">
+    </div>
+    <div style="display:flex;gap:6px;margin-top:10px">
+      <textarea id="dc_input" rows="3" placeholder="Describe the diagram (or ask for changes)…"
+                style="flex:1;padding:8px 10px;border:1px solid var(--line);
+                       border-radius:4px;font:inherit;font-size:13px;resize:vertical"></textarea>
+      <button id="dc_send" class="primary" onclick="diagramChatSend()"
+              title="Send this message to Claude Sonnet. The reply with the SVG will appear above.">Send</button>
+    </div>
+  </div>
+</div>
+<div class="floating-actions" id="floatingActions">
+  <button onclick="doUndo()" title="Undo the last destructive action (Ctrl+Z) — covers delete, OCR-replace, image assign, add-question">↶ Undo</button>
+  <button onclick="document.getElementById('save').click()" id="float_save"
+          class="primary" disabled title="Save (Ctrl+S)">💾 Save</button>
+</div>
+<div class="outline-drawer" id="outlineDrawer">
+  <h4>PDF outline</h4>
+  <div id="outlineItems">
+    <div class="empty">Loading…</div>
+  </div>
+</div>
+<div class="capture-hint" id="captureHint">
+  <span id="captureHintText">Drag a rectangle on the PDF to capture.</span>
+  <button id="haikuFallback" style="display:none" class="primary"
+          title="Re-extract the last captured region using Haiku vision instead of pure-Python text. Use when split_choices didn't recognize the layout (e.g. multi-column, rasterized text).">
+    ✨ Try Haiku on this region
+  </button>
+  <button id="cancelCapture" title="Cancel and reset capture mode">Cancel (Esc)</button>
+</div>
+<div class="thumb-strip" id="thumbStrip" title="Page thumbnails — click to jump"></div>
+<div class="review-wrap">
+  <div class="pdf-pane">
+    <div class="zoom-controls">
+      <button onclick="adjustZoom(-1)" title="Zoom out">−</button>
+      <span id="zoomLabel" style="font-size:11px;color:var(--muted);padding:3px 6px">100%</span>
+      <button onclick="adjustZoom(1)" title="Zoom in">+</button>
+      <button onclick="adjustZoom(0)" title="Reset zoom">⟲</button>
+      <button onclick="toggleOutline()" title="PDF outline / table of contents">☰</button>
+      <button id="qboxToggleBtn" onclick="toggleQBoxes()" title="Show/hide bounding boxes around extracted questions">▢</button>
+    </div>
+    <div class="pdf-stage" id="pdfStage">
+      <img id="pageImg" alt="" src="" draggable="false">
+      <div class="sel-rect" id="selRect"></div>
+      <div id="qboxOverlays"></div>
+      <div id="regionOverlays"></div>
+    </div>
+  </div>
+  <div class="q-pane">
+    <div class="help">
+      Click a question card to <b>focus</b> it (blue outline). Then use its
+      <b>Capture</b> bar to drag a rectangle on the PDF and pull text into
+      <i>stem</i>, <i>choices</i> or <i>answer</i> (switch to Key PDF first for
+      answer capture). For image association: click an image below, then click
+      a question card. Press <kbd>Esc</kbd> to cancel capture mode.
+    </div>
+    <div id="cards"></div>
+    <div class="image-bay">
+      <h3>Images extracted from this PDF
+        <span class="muted" id="bayHint"></span></h3>
+      <div class="grid" id="imgGrid"></div>
+    </div>
+  </div>
+</div>
+<script>
+const PDF = "{{ pdf_name }}";
+const EVENT_SLUG = "{{ event_slug }}";
+const API = `/event/${EVENT_SLUG}/api`;
+const IMG_BASE = `/event/${EVENT_SLUG}/images`;
+let STATE = { questions: [], page_count: 1, topics: [], vision_available: false, has_key: false };
+let IMAGES = { images: [], used_by: {} };
+let curPage = 1;
+let target = "test";
+let dirty = false;
+let selectedImage = null;     // filename in the bay user clicked
+let LAST_CAPTURE = null;      // remembered drag region for Haiku fallback re-extract
+let focusedId = null;         // _id of currently focused question card
+let captureMode = null;       // null | {field: "stem"|"choices"|"answer"|"newQ", id?: _id}
+let nextLocalId = 1;
+const collapsedIds = new Set(); // session-only: which Q card _ids are collapsed
+let extraTopics = [];         // user-added topics, persisted via questions
+let extraFoci   = [];         // user-added foci, persisted via questions
+
+// User annotations — persisted to .qbank_state.json so reprocessing replays them.
+let ANN = {
+  field_overrides: {},        // qnum -> { text?, choices?, answer?, topic?, page?, context_id? }
+  added: [],                  // user-added questions (full dicts)
+  deleted: [],                // qnums removed
+  image_overrides: { assignments: {}, detached: [] },
+  regions: [],                // provenance: [{number, field, page, target, x,y,w,h,dpi}]
+  validations: {},            // qnum -> {status, correct_answer, rationale, source, ...}
+  contexts: [],               // shared context blocks: [{id, text, images:[], pages:[]}]
+};
+let nextContextId = 1;
+
+function annAddContext(ctx){
+  ANN.contexts = ANN.contexts || [];
+  ANN.contexts.push(ctx);
+}
+function annUpdateContext(id, patch){
+  ANN.contexts = ANN.contexts || [];
+  const c = ANN.contexts.find(x => x.id === id);
+  if(c) Object.assign(c, patch);
+}
+function annDeleteContext(id){
+  ANN.contexts = (ANN.contexts || []).filter(c => c.id !== id);
+  // Unlink any question that referenced this context
+  STATE.questions.forEach(q => {
+    if(q.context_id === id){
+      delete q.context_id;
+      annOverride(q.number, "context_id", "");
+    }
+  });
+}
+function findContext(id){
+  return (ANN.contexts || []).find(c => c.id === id);
+}
+
+function annOverride(qnum, field, value){
+  if(!qnum) return;
+  ANN.field_overrides[qnum] = ANN.field_overrides[qnum] || {};
+  ANN.field_overrides[qnum][field] = value;
+}
+function annAddQuestion(q){
+  // Strip transient _id before saving in ANN
+  const copy = {...q}; delete copy._id;
+  // If already in added (same number), replace
+  ANN.added = ANN.added.filter(a => a.number !== q.number);
+  ANN.added.push(copy);
+  // Remove a stale deleted entry if any
+  ANN.deleted = ANN.deleted.filter(n => n !== q.number);
+}
+function annUpdateAdded(qnum, currentQ){
+  // Keep ANN.added in sync with the live STATE.questions entry when user
+  // edits an added question's fields.
+  for(let i = 0; i < ANN.added.length; i++){
+    if(ANN.added[i].number === qnum){
+      const copy = {...currentQ}; delete copy._id;
+      ANN.added[i] = copy;
+      return true;
+    }
+  }
+  return false;
+}
+function annDeleteQuestion(qnum){
+  if(!qnum) return;
+  const wasAdded = ANN.added.some(a => a.number === qnum);
+  ANN.added = ANN.added.filter(a => a.number !== qnum);
+  delete ANN.field_overrides[qnum];
+  if(!wasAdded && !ANN.deleted.includes(qnum)) ANN.deleted.push(qnum);
+}
+function annImageAssign(fn, qnum, opts){
+  // opts.share = true → additive: keep existing targets and add qnum
+  // (default) replace existing targets with [qnum]
+  const cur = ANN.image_overrides.assignments[fn];
+  const curList = Array.isArray(cur) ? cur.slice() : (cur != null ? [cur] : []);
+  let next;
+  if(opts && opts.share){
+    if(!curList.includes(qnum)) curList.push(qnum);
+    next = curList;
+  } else {
+    next = [qnum];
+  }
+  // Collapse 1-element list to scalar for backwards-compat on disk
+  ANN.image_overrides.assignments[fn] = next.length === 1 ? next[0] : next;
+  ANN.image_overrides.detached = ANN.image_overrides.detached.filter(d => d !== fn);
+}
+function annImageUnassignOne(fn, qnum){
+  // Remove qnum from fn's assignment list; if list becomes empty, drop the entry entirely.
+  const cur = ANN.image_overrides.assignments[fn];
+  if(cur == null) return;
+  const curList = Array.isArray(cur) ? cur.slice() : [cur];
+  const next = curList.filter(x => x !== qnum);
+  if(next.length === 0){
+    delete ANN.image_overrides.assignments[fn];
+  } else {
+    ANN.image_overrides.assignments[fn] = next.length === 1 ? next[0] : next;
+  }
+}
+function annImageDetach(fn){
+  delete ANN.image_overrides.assignments[fn];
+  if(!ANN.image_overrides.detached.includes(fn)) ANN.image_overrides.detached.push(fn);
+}
+function annNoteRegion(qnum, field, page, target, x, y, w, h){
+  ANN.regions.push({
+    number: qnum, field, page, target,
+    x: Math.round(x), y: Math.round(y),
+    w: Math.round(w), h: Math.round(h), dpi: 120,
+    captured_at: new Date().toISOString(),
+  });
+  // Keep only the last 200 to bound size
+  if(ANN.regions.length > 200) ANN.regions = ANN.regions.slice(-200);
+}
+
+function setDirty(d){
+  dirty = d;
+  // Show a count of touched questions when possible: combine field overrides,
+  // adds, deletes and image-overrides.
+  const ann = ANN || {};
+  const n = Object.keys(ann.field_overrides || {}).length
+          + (ann.added    || []).length
+          + (ann.deleted  || []).length
+          + Object.keys((ann.image_overrides || {}).assignments || {}).length
+          + ((ann.image_overrides || {}).detached || []).length;
+  const el = document.getElementById("dirty");
+  el.style.display = d ? "" : "none";
+  el.textContent = d ? (n > 0 ? `${n} unsaved` : "unsaved") : "";
+  el.title = d ? "You have local changes that haven't been written to .qbank_state.json yet." : "";
+  document.getElementById("save").disabled = !d;
+  const fs = document.getElementById("float_save");
+  if(fs) fs.disabled = !d;
+  // Keep page title in sync
+  if(window.setPageTitlePrefix){
+    setPageTitlePrefix(`${d ? "● " : ""}${PDF}`);
+  }
+}
+let _statusSeq = 0;
+function setStatus(s, kind){
+  const el = document.getElementById("status");
+  el.innerHTML = s;
+  el.style.color = kind === "err" ? "var(--bad)" : "var(--muted)";
+  const mySeq = ++_statusSeq;
+  // Clear only if no newer status has been set in the meantime. Comparing
+  // innerHTML doesn't work when `s` contains HTML — the browser normalises
+  // attribute quoting and the equality check would always fail, leaving any
+  // embedded spinner running forever.
+  if(s) setTimeout(()=>{ if(_statusSeq === mySeq) el.innerHTML = ""; }, 4500);
+}
+function allTopics(){
+  // Union of built-in topics + any custom ones found on questions
+  const set = new Set(STATE.topics || []);
+  STATE.questions.forEach(q => { if(q.topic) set.add(q.topic); });
+  extraTopics.forEach(t => set.add(t));
+  return Array.from(set);
+}
+
+// ---- Compare two questions side by side ----
+window.closeCmp = function(){
+  document.getElementById("cmpModal").style.display = "none";
+};
+function _cmpRender(a, b){
+  const wd = (text, against) => {
+    const set = new Set(String(against||"").toLowerCase().match(/[a-z0-9_]+/g) || []);
+    return String(text||"").split(/([ \t\n]+)/).map(t => {
+      if(set.has(t.toLowerCase()) && /[a-z0-9_]/i.test(t)){
+        return `<span style="background:rgba(31,138,77,.2);padding:0 2px;border-radius:2px">${esc(t)}</span>`;
+      }
+      return esc(t);
+    }).join("");
+  };
+  const card = (q, otherText) => `
+    <div style="background:var(--bg-alt);border:1px solid var(--line);
+                border-radius:6px;padding:14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+        Q${esc(q.number)} · page ${q.page || "?"} · ${esc(q.topic || "")}
+        ${q.focus ? `· focus: ${esc(q.focus)}` : ""}
+      </div>
+      <div style="font-size:13px;line-height:1.5;margin-bottom:6px">
+        ${wd(q.text, otherText)}
+      </div>
+      ${q.choices && q.choices.length ? `
+        <ul style="font-size:12px;margin:6px 0;padding-left:22px">
+          ${q.choices.map(c => `<li><b>${esc(c.letter)}.</b> ${esc(c.text)}</li>`).join("")}
+        </ul>` : ""}
+      <div style="font-size:12px;color:var(--ok);margin-top:4px">
+        <b>Answer:</b> ${esc(q.answer || "—")}</div>
+    </div>`;
+  document.getElementById("cmpGrid").innerHTML = card(a, b.text) + card(b, a.text);
+  document.getElementById("cmpMeta").textContent =
+    `· words in common are highlighted green`;
+  document.getElementById("cmpModal").style.display = "block";
+  renderMath(document.getElementById("cmpGrid"));
+}
+window.openCompareDialog = function(seed){
+  const others = STATE.questions.filter(x => x._id !== seed._id);
+  if(!others.length){ toast("This is the only question in the PDF", "warn"); return; }
+  // Quick picker via prompt() — small set, keeps the UI simple
+  const options = others.map((q, i) => `${i+1}. Q${q.number} (p${q.page||"?"}): ${(q.text||"").slice(0,60)}`).join("\n");
+  const pick = prompt(`Compare Q${seed.number} with which other question?\n\n${options}\n\nEnter row number (1-${others.length}):`);
+  if(!pick) return;
+  const idx = parseInt(pick) - 1;
+  if(isNaN(idx) || idx < 0 || idx >= others.length){ toast("Invalid pick", "err"); return; }
+  _cmpRender(seed, others[idx]);
+};
+
+// ---- Session-local undo stack (10 deep) for destructive operations ----
+// Triggers: delete question, OCR replace-page, image assign/detach,
+// add question, accept LLM/scioly bulk. Text edits use the textarea's own
+// browser-provided undo so we don't double-up.
+const _undoStack = [];
+const UNDO_MAX = 10;
+function _undoSnapshot(label){
+  const snap = {
+    label,
+    questions: JSON.parse(JSON.stringify(STATE.questions.map(q => {
+      const c = {...q}; delete c._id; return c;
+    }))),
+    ann: JSON.parse(JSON.stringify(ANN)),
+    dirty,
+    focusedNumber: (STATE.questions.find(q => q._id === focusedId) || {}).number,
+    curPage,
+  };
+  _undoStack.push(snap);
+  while(_undoStack.length > UNDO_MAX) _undoStack.shift();
+}
+window._undoSnapshot = _undoSnapshot;
+
+function doUndo(){
+  if(!_undoStack.length){ toast("Nothing to undo", "warn"); return; }
+  const snap = _undoStack.pop();
+  // Restore questions, reassigning fresh _ids
+  STATE.questions = snap.questions.map(q => ({...q, _id: nextLocalId++}));
+  ANN = snap.ann;
+  curPage = snap.curPage;
+  // Try to re-focus by question number
+  if(snap.focusedNumber){
+    const q = STATE.questions.find(x => String(x.number) === String(snap.focusedNumber));
+    focusedId = q ? q._id : null;
+  } else focusedId = null;
+  setDirty(snap.dirty);
+  render();
+  toast(`Undone: ${snap.label} (${_undoStack.length} steps left)`, "ok");
+}
+
+hotkey("ctrl+z", () => doUndo(), {global: true});
+
+// ---- page zoom ----
+let PDF_ZOOM = parseInt(localStorage.getItem("pdf_zoom") || "100");
+window.adjustZoom = function(dir){
+  if(dir === 0) PDF_ZOOM = 100;
+  else PDF_ZOOM = Math.max(50, Math.min(250, PDF_ZOOM + dir * 25));
+  document.getElementById("zoomLabel").textContent = PDF_ZOOM + "%";
+  const img = document.getElementById("pageImg");
+  if(img){ img.style.width = PDF_ZOOM + "%"; img.style.maxWidth = "none"; }
+  localStorage.setItem("pdf_zoom", String(PDF_ZOOM));
+  drawRegionOverlays();
+  drawQuestionBoxes();
+};
+
+// ---- outline drawer ----
+let outlineLoaded = false;
+window.toggleOutline = async function(){
+  const dr = document.getElementById("outlineDrawer");
+  dr.classList.toggle("on");
+  if(!outlineLoaded && dr.classList.contains("on")){
+    outlineLoaded = true;
+    try {
+      const r = await fetch(`${API}/pdf/${PDF}/outline`);
+      const j = await r.json();
+      const root = document.getElementById("outlineItems");
+      if(!j.outline || !j.outline.length){
+        root.innerHTML = '<div class="empty">This PDF has no embedded outline / TOC.</div>';
+      } else {
+        root.innerHTML = j.outline.map(it =>
+          `<div class="item lvl-${Math.min(3, it.level)}" data-pg="${it.page}">${esc(it.title)} <span class="muted">p${it.page}</span></div>`).join("");
+        root.querySelectorAll(".item").forEach(el => {
+          el.addEventListener("click", () => {
+            curPage = Math.max(1, Math.min(STATE.page_count, parseInt(el.dataset.pg)));
+            render();
+            dr.classList.remove("on");
+          });
+        });
+      }
+    } catch(err){
+      document.getElementById("outlineItems").innerHTML =
+        '<div class="empty">Failed to load outline: ' + err.message + '</div>';
+    }
+  }
+};
+
+// ---- thumbnail strip ----
+function renderThumbStrip(){
+  const root = document.getElementById("thumbStrip");
+  if(!root || !STATE.page_count) return;
+  // Lazy-render thumbnails using the same render endpoint at low DPI.
+  // For large PDFs (50+ pages), cap visible thumbnails and add a scroll hint.
+  root.innerHTML = "";
+  for(let p = 1; p <= STATE.page_count; p++){
+    const el = document.createElement("div");
+    el.className = "thumb" + (p === curPage ? " on" : "");
+    el.dataset.pg = p;
+    el.innerHTML = `<img loading="lazy" src="${API}/pdf/${PDF}/page/${p}.png?dpi=24&target=${target}">
+                    <span class="pn">${p}</span>`;
+    el.addEventListener("click", () => { curPage = p; render(); });
+    root.appendChild(el);
+  }
+}
+
+// ---- question bounding boxes (algorithm's confidence regions) ----
+let QBOX_VISIBLE = (localStorage.getItem("qboxes_visible") || "1") === "1";
+let _qboxCache = {};   // page->{boxes, page_height_pt}
+
+function setQBoxButtonState(){
+  const b = document.getElementById("qboxToggleBtn");
+  if(b){
+    b.style.background = QBOX_VISIBLE ? "var(--ok)" : "";
+    b.style.color = QBOX_VISIBLE ? "#fff" : "";
+    b.title = QBOX_VISIBLE
+      ? "Hide question bounding boxes"
+      : "Show question bounding boxes (the algorithm's confidence regions)";
+  }
+}
+
+window.toggleQBoxes = function(){
+  QBOX_VISIBLE = !QBOX_VISIBLE;
+  localStorage.setItem("qboxes_visible", QBOX_VISIBLE ? "1" : "0");
+  setQBoxButtonState();
+  drawQuestionBoxes();
+};
+
+async function drawQuestionBoxes(){
+  const root = document.getElementById("qboxOverlays");
+  if(!root) return;
+  if(!QBOX_VISIBLE || target === "key"){
+    root.innerHTML = ""; return;
+  }
+  const img = document.getElementById("pageImg");
+  if(!img || !img.naturalWidth){ return; }
+
+  // Snapshot which page this call is FOR. Rapid page navigation can fire
+  // this twice in close succession (once from a discarded image load,
+  // once from the real one) — if curPage changes while we're awaiting the
+  // fetch below, a newer/faster call may already have rendered the right
+  // boxes by the time this one resolves. Without this guard, the slower
+  // call's stale (wrong-page) result clobbers the correct one — the actual
+  // cause of boxes intermittently going missing after a fast page jump.
+  const pageForThisCall = curPage;
+
+  // Cache per-page so repeat draws (zoom, scroll) are instant
+  let payload = _qboxCache[pageForThisCall];
+  if(!payload){
+    try {
+      const r = await fetch(`${API}/pdf/${PDF}/page/${pageForThisCall}/qboxes`);
+      payload = await r.json();
+      _qboxCache[pageForThisCall] = payload;
+    } catch(err){ return; }
+    if(curPage !== pageForThisCall) return;  // stale by the time the fetch resolved
+  }
+
+  // PDF point → image pixel: page is rendered at 120 DPI, so multiply by 120/72.
+  const ppx = 120 / 72;
+  // Then displayed-pixel → CSS pixel scaling (zoom etc.)
+  const sx = img.clientWidth / img.naturalWidth;
+  const sy = img.clientHeight / img.naturalHeight;
+
+  // Group bboxes by question number for the "unmatched" check
+  const knownNums = new Set(STATE.questions.map(q => String(q.number)));
+
+  // Capturing? Boxes become clickable shortcuts that reuse their own region
+  // instead of forcing a fresh drag — most useful for "+ Add question from
+  // region" on a page whose structural detector found a box but extraction
+  // failed to produce a usable question there.
+  const picking = !!captureMode;
+
+  root.innerHTML = (payload.boxes || []).map(b => {
+    const left = Math.round(b.x0 * ppx * sx);
+    const top  = Math.round(b.y0 * ppx * sy);
+    const w    = Math.max(8, Math.round((b.x1 - b.x0) * ppx * sx));
+    const h    = Math.max(8, Math.round((b.y1 - b.y0) * ppx * sy));
+    // Natural-pixel rect (120 DPI, no zoom scaling) — the same coordinate
+    // space performCapture()/extract-region expect.
+    const natx = Math.round(b.x0 * ppx);
+    const naty = Math.round(b.y0 * ppx);
+    const natw = Math.max(8, Math.round((b.x1 - b.x0) * ppx));
+    const nath = Math.max(8, Math.round((b.y1 - b.y0) * ppx));
+    // Mark focused (matches the currently-focused question) or unmatched
+    // (Q_START fired in the PDF but no question with this number exists in
+    // STATE — likely the parser swallowed it, or it's a multi-section
+    // duplicate that got dedup-suffixed)
+    const focusedQ = STATE.questions.find(q => q._id === focusedId);
+    const isFocused = focusedQ && String(focusedQ.number) === String(b.number);
+    const unmatched = !knownNums.has(String(b.number))
+                   && !STATE.questions.some(q => String(q.number).startsWith(b.number + "_") || String(q.number) === b.number + "b");
+    const cls = (isFocused ? "focused" : (unmatched ? "unmatched" : "")) + (picking ? " pickable" : "");
+    const pickHint = picking ? " — click to capture this exact region" : "";
+    return `<div class="q-bbox ${cls}" data-qnum="${b.number}"
+       data-natx="${natx}" data-naty="${naty}" data-natw="${natw}" data-nath="${nath}"
+       style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"
+       title="Q${b.number} on page ${pageForThisCall}${unmatched ? ' (no matching question in extracted set!)' : ''}${pickHint}">
+       <div class="bb-label">Q${b.number}${unmatched ? ' ⚠' : ''}</div>
+    </div>`;
+  }).join("");
+
+  // Click a box to focus that question (and scroll the matching card into
+  // view) — or, while a capture is in progress, use the box's own region
+  // directly instead of requiring a fresh drag.
+  root.querySelectorAll(".q-bbox").forEach(el => {
+    el.addEventListener("click", async () => {
+      if(captureMode){
+        await performCapture(captureMode,
+          Number(el.dataset.natx), Number(el.dataset.naty),
+          Number(el.dataset.natw), Number(el.dataset.nath));
+        return;
+      }
+      const num = el.dataset.qnum;
+      // Try exact match first, then suffixed dupes (1b, 1c…)
+      let q = STATE.questions.find(x => String(x.number) === num
+                                     && (x.page || 1) === curPage);
+      if(!q) q = STATE.questions.find(x => String(x.number) === num);
+      if(!q){
+        toast(`Question #${num} not in the extracted set — click "+ Add question from region", then click this box to capture it.`, "warn");
+        return;
+      }
+      focusedId = q._id;
+      curPage = q.page || curPage;
+      renderCards();
+      setTimeout(() => {
+        const card = document.querySelector(".q-card.focused");
+        if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
+      }, 30);
+    });
+  });
+}
+
+// ---- persisted region overlays (show every drag-rectangle captured before) ----
+function drawRegionOverlays(){
+  const root = document.getElementById("regionOverlays");
+  if(!root) return;
+  const img = document.getElementById("pageImg");
+  if(!img || !img.naturalWidth) return;
+  const sx = img.clientWidth / img.naturalWidth;
+  const sy = img.clientHeight / img.naturalHeight;
+  const onThisPage = (ANN.regions || []).filter(r =>
+    r.page === curPage && (r.target || "test") === target);
+  root.innerHTML = onThisPage.map(r => {
+    const left = Math.round(r.x * sx);
+    const top  = Math.round(r.y * sy);
+    const w    = Math.round(r.w * sx);
+    const h    = Math.round(r.h * sy);
+    return `<div class="region-overlay"
+      style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"
+      title="Q${r.number} · ${r.field} · captured ${(r.captured_at||'').slice(0,16)}">
+      <div class="ro-label">Q${r.number} · ${r.field}</div>
+    </div>`;
+  }).join("");
+}
+
+async function load(){
+  const r = await fetch(`${API}/pdf/${PDF}`);
+  STATE = await r.json();
+  document.getElementById("pageCount").textContent = "/ " + STATE.page_count;
+  document.getElementById("pageInput").max = STATE.page_count;
+  // Init local ids
+  STATE.questions.forEach(q=>{ q._id = nextLocalId++; });
+  document.getElementById("ocr").disabled = !STATE.vision_available;
+  if(!STATE.vision_available) document.getElementById("ocr").title = "ANTHROPIC_API_KEY not set";
+  // hide key toggle if no key PDF
+  if(!STATE.has_key){
+    document.querySelector('#targetToggle [data-target=key]').style.display = "none";
+  }
+  // Restore saved annotations so further edits accumulate on top
+  if(STATE.annotations){
+    ANN = {
+      field_overrides: STATE.annotations.field_overrides || {},
+      added:           STATE.annotations.added || [],
+      deleted:         STATE.annotations.deleted || [],
+      image_overrides: STATE.annotations.image_overrides
+                       || {assignments:{}, detached:[]},
+      regions:         STATE.annotations.regions || [],
+      validations:     STATE.annotations.validations || {},
+      contexts:        STATE.annotations.contexts || [],
+    };
+    // Resume the id counter past anything we loaded so new contexts get fresh ids.
+    (ANN.contexts || []).forEach(c => {
+      const m = String(c.id || "").match(/^ctx_(\d+)$/);
+      if(m){ nextContextId = Math.max(nextContextId, parseInt(m[1]) + 1); }
+    });
+    if(!ANN.image_overrides.assignments) ANN.image_overrides.assignments = {};
+    if(!ANN.image_overrides.detached) ANN.image_overrides.detached = [];
+    const nAnn = Object.keys(ANN.field_overrides).length + ANN.added.length
+               + ANN.deleted.length + Object.keys(ANN.image_overrides.assignments).length
+               + ANN.image_overrides.detached.length
+               + Object.keys(ANN.validations).length;
+    if(nAnn > 0) setStatus(`Loaded ${nAnn} saved annotations (will replay on reprocess).`);
+    // Hydrate q.validation from ANN.validations onto live questions
+    STATE.questions.forEach(q => {
+      if(ANN.validations[q.number]) q.validation = ANN.validations[q.number];
+    });
+  }
+  await loadImages();
+  // Page thumbnail strip: render once after we know page_count + target
+  document.getElementById("zoomLabel").textContent = PDF_ZOOM + "%";
+  setQBoxButtonState();
+  renderThumbStrip();
+  // If we arrived via ?q=<number> from the browse page, jump to that
+  // question's page and focus its card so the user can edit it in place.
+  const params = new URLSearchParams(location.search);
+  const targetQ = params.get("q");
+  if(targetQ){
+    const q = STATE.questions.find(x => String(x.number) === targetQ);
+    if(q){
+      curPage = q.page || 1;
+      focusedId = q._id;
+    }
+  }
+  render();
+  if(targetQ){
+    // Scroll the focused card into view after render
+    setTimeout(() => {
+      const card = document.querySelector(`.q-card.focused`);
+      if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
+    }, 50);
+  }
+}
+
+async function loadImages(){
+  const r = await fetch(`${API}/pdf/${PDF}/images`);
+  IMAGES = await r.json();
+}
+
+function questionsOnPage(p){
+  // A question is "on" page p if its primary page matches OR if p appears in
+  // its extra_pages list (multi-page questions whose context spans pages).
+  return STATE.questions.filter(q => {
+    if((q.page||1) === p) return true;
+    const extra = q.extra_pages || [];
+    return extra.includes(p);
+  });
+}
+
+function questionPages(q){
+  const pages = new Set([q.page || 1]);
+  (q.extra_pages || []).forEach(p => pages.add(p));
+  return [...pages].sort((a,b) => a - b);
+}
+
+function renderImage(){
+  const url = `${API}/pdf/${PDF}/page/${curPage}.png?dpi=120&target=${target}&_=${Date.now()}`;
+  const img = document.getElementById("pageImg");
+  img.src = url;
+  img.style.width = PDF_ZOOM + "%";
+  img.style.maxWidth = "none";
+  img.onload = () => { drawRegionOverlays(); drawQuestionBoxes(); };
+  // Highlight thumbnail
+  document.querySelectorAll("#thumbStrip .thumb").forEach(t => {
+    t.classList.toggle("on", parseInt(t.dataset.pg) === curPage);
+  });
+}
+
+function renderCards(){
+  const list = questionsOnPage(curPage);
+  const root = document.getElementById("cards");
+  // Contexts that touch this page (either pages[] include curPage, or any Q on
+  // this page references them). Render at the top of the cards pane so the
+  // user can edit/delete the shared block in one place.
+  const ctxOnPage = (ANN.contexts || []).filter(c => {
+    if((c.pages || []).includes(curPage)) return true;
+    return list.some(q => q.context_id === c.id);
+  });
+  const ctxHTML = ctxOnPage.length
+    ? `<div class="context-section">
+         <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+           Shared context (this page)
+         </div>
+         ${ctxOnPage.map(contextCardHTML).join("")}
+       </div>` : "";
+  if(list.length === 0){
+    root.innerHTML = ctxHTML +
+      `<div class="muted">No questions on this page. Use "+ Add question" to create one.</div>`;
+    bindContextEvents();
+    return;
+  }
+  root.innerHTML = ctxHTML + list.map(q => cardHTML(q)).join("");
+  bindCardEvents();
+  bindContextEvents();
+}
+
+function contextCardHTML(c){
+  const usedBy = STATE.questions.filter(q => q.context_id === c.id)
+                                .map(q => `Q#${esc(q.number)}`).join(", ");
+  const imgs = (c.images || []).map(fn => `
+    <div class="imgbox">
+      <img src="${IMG_BASE}/${fn}" title="${fn}">
+      <span class="x" data-ctx-act="detachImg" data-ctx="${c.id}" data-fn="${fn}" title="Remove from context">×</span>
+    </div>`).join("");
+  const pages = (c.pages || [curPage]).slice().sort((a,b)=>a-b);
+  const lastPage = pages[pages.length - 1];
+  const firstPage = pages[0];
+  const spanNext = lastPage < (STATE.page_count || 999)
+    ? `<button class="ghost btn-tiny" data-ctx-act="spanNext" data-ctx="${c.id}"
+              title="Mark this context as continuing onto p${lastPage + 1}">
+         + spans p${lastPage + 1}
+       </button>` : "";
+  const spanPrev = firstPage > 1
+    ? `<button class="ghost btn-tiny" data-ctx-act="spanPrev" data-ctx="${c.id}"
+              title="Mark this context as also covering p${firstPage - 1}">
+         + spans p${firstPage - 1}
+       </button>` : "";
+  return `
+    <div class="context-card" data-ctx-id="${c.id}">
+      <div class="row tight">
+        <span class="badge edited" style="font-size:10px"
+              title="Shared context block. Pages: ${pages.join(", ")}.">
+          📎 ${esc(c.id)} · p${pages.join(", p")}
+        </span>
+        <span class="muted" style="font-size:11px;margin-left:6px">
+          ${usedBy ? `used by ${usedBy}` : "not linked yet — pick from a question's Context dropdown"}
+        </span>
+        <span style="flex:1"></span>
+        ${spanPrev}
+        ${spanNext}
+        <button class="delQ" data-ctx-act="del" data-ctx="${c.id}"
+                title="Delete this context (unlinks from every question that referenced it)">🗑</button>
+      </div>
+      <textarea data-ctx-edit="text" data-ctx="${c.id}"
+                placeholder="Shared context text (passage, intro, table caption…). Edit here; the change shows above every linked question."
+                style="width:100%;min-height:64px;margin-top:6px"
+        >${esc(c.text || "")}</textarea>
+      ${imgs ? `<div class="images" style="margin-top:6px">${imgs}</div>` : ""}
+      <div class="muted" style="font-size:11px;margin-top:4px">
+        ${selectedImage
+          ? `Hold Shift and click here to attach "${esc(selectedImage)}" to this context (in addition to wherever it's currently used).`
+          : `Tip: select an image in the bay, then Shift-click this card to attach it to the context.`}
+      </div>
+    </div>`;
+}
+
+function bindContextEvents(){
+  document.querySelectorAll(".context-card").forEach(card => {
+    const id = card.dataset.ctxId;
+    // Image-share click target: when an image is selected in the bay, clicking
+    // the context card (with Shift) attaches the image to this context.
+    card.addEventListener("click", e => {
+      if(selectedImage && !e.target.closest("textarea,button,input,.x")){
+        const c = findContext(id);
+        if(!c) return;
+        c.images = c.images || [];
+        if(!c.images.includes(selectedImage)){
+          _undoSnapshot(`attach image ${selectedImage} to context ${id}`);
+          c.images.push(selectedImage);
+          // Also share via the global image_overrides so apply_annotations
+          // doesn't strip it from question lists where it lives.
+          annImageAssign(selectedImage, id, {share: true});
+          setDirty(true);
+          renderCards(); renderImageBay();
+          selectedImage = null; updateAssignMode();
+        }
+      }
+    });
+    // Text edit
+    card.querySelectorAll("[data-ctx-edit=text]").forEach(ta => {
+      ta.addEventListener("input", () => {
+        const c = findContext(id);
+        if(c){ c.text = ta.value; setDirty(true); }
+      });
+    });
+    // Action buttons
+    card.querySelectorAll("[data-ctx-act]").forEach(btn => {
+      btn.addEventListener("click", ev => {
+        ev.stopPropagation();
+        const c = findContext(id);
+        if(!c) return;
+        const act = btn.dataset.ctxAct;
+        if(act === "del"){
+          if(!confirm(`Delete context "${id}" and unlink it from every question that referenced it?`)) return;
+          _undoSnapshot(`delete context ${id}`);
+          annDeleteContext(id);
+          setDirty(true); renderCards();
+        } else if(act === "spanNext" || act === "spanPrev"){
+          const pages = c.pages || [curPage];
+          const last = Math.max(...pages, curPage);
+          const first = Math.min(...pages, curPage);
+          const np = (act === "spanNext") ? last + 1 : first - 1;
+          if(np < 1 || np > (STATE.page_count || 999)) return;
+          if(!pages.includes(np)){ pages.push(np); pages.sort((a,b)=>a-b); }
+          c.pages = pages;
+          setDirty(true); renderCards();
+        } else if(act === "detachImg"){
+          const fn = btn.dataset.fn;
+          c.images = (c.images || []).filter(f => f !== fn);
+          setDirty(true); renderCards();
+        }
+      });
+    });
+  });
+}
+
+function cardHTML(q){
+  const choices = (q.choices||[]).map((c,i) => `
+    <div class="choice-row" data-cid="${i}">
+      <span class="letter">${c.letter || String.fromCharCode(65+i)}</span>
+      <input type="text" data-edit="choice" data-idx="${i}" value="${esc(c.text)}">
+      <span class="x" data-act="delChoice" data-idx="${i}" title="Remove">×</span>
+    </div>`).join("");
+  const imgDescs = q.image_descriptions || {};
+  const imgs = (q.images||[]).map(fn => {
+    const d = imgDescs[fn] || "";
+    const dPreview = d ? esc(d).slice(0, 80) + (d.length > 80 ? "…" : "") : "";
+    return `
+    <div class="imgbox" data-fn="${esc(fn)}">
+      <img src="${IMG_BASE}/${esc(fn)}" title="${esc(fn)}${d ? ' — ' + esc(d) : ''}">
+      <span class="x" data-act="detachImg" data-fn="${esc(fn)}" title="Detach">×</span>
+      <button class="img-desc-btn" data-act="editImgDesc" data-fn="${esc(fn)}"
+              title="${d ? 'Edit description: ' + esc(d) : 'Add a textual description for this image (used as alt-text and to seed the diagram generator)'}"
+              >${d ? '📝' : '✎'}</button>
+      ${d ? `<div class="img-desc-tag" title="${esc(d)}">${dPreview}</div>` : ''}
+    </div>`;
+  }).join("");
+  // Sentinel: question has a pending author-provided diagram description
+  // (typically set by a third-party LLM during import) but no image yet.
+  const pendingDesc = imgDescs.__pending__ || "";
+  const pendingNote = pendingDesc ? `
+    <div class="pending-img-note"
+         title="An author note recommends a diagram. Use Generate diagram or Upload to attach one.">
+      🖼️ <i>Diagram recommended:</i> ${esc(pendingDesc).slice(0, 140)}${pendingDesc.length > 140 ? '…' : ''}
+    </div>` : "";
+  const topics = allTopics();
+  if(q.topic && !topics.includes(q.topic)) topics.push(q.topic);
+  const topicOpts = topics.map(t =>
+    `<option ${t === q.topic ? "selected":""}>${esc(t)}</option>`).join("")
+    + `<option value="__NEW__">+ New topic...</option>`;
+  // Focus dropdown — only shown for events that have rotating foci configured.
+  // Union with any custom foci that questions in STATE happen to already use.
+  let focusSelect = "";
+  if((STATE.foci && STATE.foci.length) || q.focus){
+    const allFoci = new Set([...(STATE.foci || []), ...extraFoci]);
+    STATE.questions.forEach(qq => { if(qq.focus) allFoci.add(qq.focus); });
+    if(q.focus) allFoci.add(q.focus);
+    const fopts = [`<option value="">(no focus)</option>`]
+      .concat([...allFoci].map(f =>
+        `<option ${f === q.focus ? "selected":""}>${esc(f)}</option>`))
+      .concat([`<option value="__NEW_FOCUS__">+ New focus...</option>`]);
+    focusSelect = `<select class="focus" data-edit="focus" title="Focus">${fopts.join("")}</select>`;
+  }
+  const isFocused = (focusedId === q._id);
+  // Collapse only when the user has explicitly toggled this card (or used
+  // "Collapse all" in the toolbar). Validating an answer used to auto-collapse;
+  // that was surprising, so we leave the card open and let the user decide.
+  const collapsed = collapsedIds.has(q._id);
+  if(collapsed){
+    const choicesPreview = (q.choices && q.choices.length)
+      ? ` (${q.choices.length} choices)` : "";
+    const vStatus = (q.validation && q.validation.status) || "";
+    const vBadge = vStatus === "correct"   ? `<span class="badge processed" title="Validated correct">✓</span>`
+                 : vStatus === "incorrect" ? `<span class="badge fresh"     title="Validated incorrect">⚠</span>`
+                 : vStatus === "uncertain" ? `<span class="badge edited"    title="Validation uncertain">?</span>`
+                 : "";
+    return `
+    <div class="q-card collapsed" data-id="${q._id}">
+      <button data-act="toggleCollapse" title="Expand this card" class="ghost btn-tiny"
+              style="background:transparent;border:none;font-size:14px;padding:0 6px;cursor:pointer">▶</button>
+      <span class="qnum" style="font-weight:600">${esc(q.number)}</span>
+      ${vBadge}
+      <span class="summary-line">${esc((q.text||"").slice(0,90))}${choicesPreview}</span>
+    </div>`;
+  }
+  const captureBar = isFocused ? `
+    <div class="capture-bar">
+      <span class="lbl">Capture from ${target === "key" ? "Key" : "Test"} PDF →</span>
+      <button data-act="capture" data-field="stem" title="Drag a rectangle on the PDF; the text is captured as this question's stem (replaces existing text)">Stem</button>
+      <button data-act="capture" data-field="choices" title="Drag a rectangle that contains A/B/C/D options; they're split and assigned to this question. Falls back to line-splitting if option letters were dropped during PDF extraction.">Choices</button>
+      <button data-act="capture" data-field="answer" title="Drag a rectangle whose text becomes this question's answer">Answer ${target !== "key" && STATE.has_key ? "(switch to Key)" : ""}</button>
+      <button data-act="capture-math" data-into="text" title="Drag over an equation; Haiku vision converts it to LaTeX and inserts into the stem">Math → Stem</button>
+      <button data-act="capture-math" data-into="answer" title="Drag over an equation; Haiku vision converts it to LaTeX and inserts into the answer">Math → Answer</button>
+      <button data-act="compare" title="Compare this question side-by-side with another from the same PDF">⇄ Compare</button>
+    </div>` : "";
+  const v = q.validation;
+  let validateBar;
+  if(v && v.status){
+    const cls = v.stale ? "stale" : v.status;
+    const icon = {correct:"✓",incorrect:"⚠",uncertain:"?",unavailable:"·"}[v.status]||"·";
+    const lbl  = v.stale ? "Stale (re-validate)" : v.status.charAt(0).toUpperCase()+v.status.slice(1);
+    const sugg = (v.status === "incorrect" && v.correct_answer)
+      ? `<button class="btn-tiny" data-act="acceptAns">Use "${esc(v.correct_answer)}"</button>` : "";
+    validateBar = `
+      <div class="validate-bar ${cls}">
+        <span class="vstatus">${icon} ${esc(lbl)}</span>
+        ${v.correct_answer && v.status !== "correct" ? `<span>→ <b>${esc(v.correct_answer)}</b></span>` : ""}
+        ${sugg}
+        <button class="btn-tiny" data-act="validate">Re-validate</button>
+        <button class="btn-tiny" data-act="clearVal" title="Forget this verdict">Clear</button>
+        ${v.rationale ? `<div class="rationale">${esc(v.rationale)}</div>` : ""}
+        ${v.source ? `<div class="src">Source: ${esc(v.source)}</div>` : ""}
+      </div>`;
+  } else {
+    validateBar = `
+      <div class="validate-bar" style="background:#f8f8f8;border-color:#ddd">
+        <button class="btn-tiny" data-act="validate">✓ Validate answer</button>
+        <span class="muted">(LLM checks the answer against the question)</span>
+      </div>`;
+  }
+  const qPages = questionPages(q);
+  const multiPageBadge = qPages.length > 1
+    ? `<span class="badge edited" style="margin-left:6px;font-size:10px"
+            title="This question spans multiple pages: ${qPages.join(", ")}. Click a page number to jump.">
+         spans p${qPages.join(", p")}
+       </span>` : "";
+  const spanNextBtn = (qPages[qPages.length - 1] < (STATE.page_count || 999))
+    ? `<button class="ghost btn-tiny" data-act="spanNextPage"
+              title="Mark this question as continuing onto page ${curPage + 1} (use when context/choices spill onto the next page)">
+         + spans p${curPage + 1}
+       </button>` : "";
+  const spanPrevBtn = (qPages[0] > 1)
+    ? `<button class="ghost btn-tiny" data-act="spanPrevPage"
+              title="Mark this question as also covering page ${curPage - 1} (use when context/image is on the previous page)">
+         + spans p${curPage - 1}
+       </button>` : "";
+  // Context selector + preview (for shared passages/diagrams across many Qs)
+  const ctxOpts = [`<option value="" ${!q.context_id ? "selected" : ""}>(no shared context)</option>`]
+    .concat((ANN.contexts || []).map(c =>
+      `<option value="${esc(c.id)}" ${q.context_id === c.id ? "selected" : ""}>${esc(c.id)} — ${esc((c.text||"").slice(0, 50))}…</option>`))
+    .join("");
+  const linkedCtx = q.context_id ? findContext(q.context_id) : null;
+  const ctxPreview = linkedCtx ? `
+    <div class="ctx-preview" data-ctx-id="${linkedCtx.id}"
+         title="Shared context — edit it in the panel at the top of this page.">
+      <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">
+        Context · ${esc(linkedCtx.id)} · p${(linkedCtx.pages||[]).join(", p")}
+      </div>
+      <div style="font-size:13px;line-height:1.45">${esc((linkedCtx.text || "").slice(0, 400))}${(linkedCtx.text||"").length > 400 ? "…" : ""}</div>
+      ${(linkedCtx.images || []).length ? `
+        <div class="images" style="margin-top:6px">
+          ${linkedCtx.images.map(fn => `<div class="imgbox"><img src="${IMG_BASE}/${esc(fn)}" title="${esc(fn)}"></div>`).join("")}
+        </div>` : ""}
+    </div>` : "";
+  return `
+  <div class="q-card ${isFocused ? "focused":""}" data-id="${q._id}">
+    <div class="row tight">
+      <button data-act="toggleCollapse" title="Collapse this card to a single-line summary" class="ghost btn-tiny"
+              style="background:transparent;border:none;font-size:14px;padding:0 6px;cursor:pointer">▼</button>
+      <input type="text" class="q-num" data-edit="number" value="${esc(q.number)}" placeholder="#">
+      <select class="topic" data-edit="topic">${topicOpts}</select>
+      ${focusSelect}
+      ${multiPageBadge}
+      ${spanPrevBtn}
+      ${spanNextBtn}
+      <button class="delQ" data-act="delQ" title="Delete question">🗑</button>
+    </div>
+    ${captureBar}
+    <div class="row tight" style="margin-top:4px">
+      <span class="lbl">Context</span>
+      <select class="ctx-pick" data-edit="context_id"
+              title="Link this question to a shared context block. Captured via the '+ Add context from region' button in the toolbar.">${ctxOpts}</select>
+    </div>
+    ${ctxPreview}
+    <div class="row tight"><span class="lbl">Text</span></div>
+    <textarea data-edit="text">${esc(q.text)}</textarea>
+    <div class="math-preview" data-preview-for="text"></div>
+    <div class="row tight" style="margin-top:6px">
+      <span class="lbl">Choices</span>
+      <button class="ghost" data-act="addChoice" title="Append a new empty choice to this question">+ add choice</button>
+    </div>
+    ${choices}
+    <div class="row tight" style="margin-top:6px"><span class="lbl">Answer</span></div>
+    <input type="text" data-edit="answer" value="${esc(q.answer)}">
+    ${imgs ? `<div class="images">${imgs}</div>` : ""}
+    ${pendingNote}
+    <div class="row tight" style="margin-top:6px;justify-content:flex-start">
+      <button class="ghost btn-tiny" data-act="uploadImg"
+              title="Upload an image file (PNG/JPG/SVG/WebP) and attach it to this question.">
+        📁 Upload image
+      </button>
+      <button class="ghost btn-tiny" data-act="genDiagram"
+              title="Open a small chat with Claude Sonnet to generate an SVG diagram for this question, seeded with the stem and topic.">
+        🤖 Generate diagram
+      </button>
+      ${isFocused ? `
+      <button class="ghost btn-tiny" data-act="pickImage"
+              title="Drag a rectangle on the PDF; that region is saved as a PNG and attached to this question. Use when the automatic extraction missed an image.">
+        📌 Pick image
+      </button>` : ""}
+      <input type="file" data-img-upload accept="image/*,.svg" style="display:none">
+    </div>
+    ${validateBar}
+  </div>`;
+}
+
+function esc(s){ return (s||"").toString()
+  .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;"); }
+
+function findQ(id){ return STATE.questions.find(q => q._id === Number(id)); }
+
+function bindCardEvents(){
+  document.querySelectorAll(".q-card").forEach(card => {
+    const id = card.dataset.id;
+    card.addEventListener("click", e => {
+      // Image assignment first (highest priority)
+      if(selectedImage && !e.target.closest("input,textarea,button,select,.x")){
+        const q = findQ(id);
+        if(q && !(q.images||[]).includes(selectedImage)){
+          // Shift+click = SHARE: attach to this Q without removing from others.
+          // Plain click = MOVE: remove from any prior owner first.
+          const share = !!e.shiftKey;
+          _undoSnapshot(`${share ? "share" : "assign"} image ${selectedImage} to Q#${q.number}`);
+          if(!share){
+            STATE.questions.forEach(other => {
+              if(other._id !== q._id){
+                other.images = (other.images||[]).filter(f => f !== selectedImage);
+              }
+            });
+          }
+          q.images = q.images || [];
+          q.images.push(selectedImage);
+          annImageAssign(selectedImage, q.number, {share});
+          setDirty(true);
+          renderCards(); renderImageBay();
+          selectedImage = null; updateAssignMode();
+        }
+        return;
+      }
+      // Otherwise focus this card (unless click on button/input).
+      // If the card is currently collapsed, expand it as part of the focus.
+      if(!e.target.closest("input,textarea,button,select")){
+        focusedId = Number(id);
+        if(collapsedIds.has(Number(id))) collapsedIds.delete(Number(id));
+        renderCards();
+      }
+    });
+    card.querySelectorAll("[data-edit]").forEach(el => {
+      const handler = () => {
+        const q = findQ(id);
+        const key = el.dataset.edit;
+        if(key === "choice"){
+          const idx = Number(el.dataset.idx);
+          q.choices[idx].text = el.value;
+          annOverride(q.number, "choices", q.choices);
+        } else if(key === "topic"){
+          if(el.value === "__NEW__"){
+            const name = prompt("New topic name:");
+            if(name && name.trim()){
+              q.topic = name.trim();
+              extraTopics.push(q.topic);
+            } else {
+              el.value = q.topic || "Other / General";
+              return;
+            }
+            renderCards();
+          } else {
+            q.topic = el.value;
+          }
+          annOverride(q.number, "topic", q.topic);
+        } else if(key === "focus"){
+          if(el.value === "__NEW_FOCUS__"){
+            const name = prompt("New focus name (e.g. Endocrine, Freshwater):");
+            if(name && name.trim()){
+              q.focus = name.trim();
+              extraFoci.push(q.focus);
+            } else {
+              el.value = q.focus || "";
+              return;
+            }
+            renderCards();
+          } else {
+            q.focus = el.value;
+          }
+          annOverride(q.number, "focus", q.focus);
+        } else if(key === "number"){
+          // Renumbering: rewrite ANN keys so they continue to track this Q
+          const oldNum = q.number; const newNum = el.value;
+          q.number = newNum;
+          if(oldNum && newNum && oldNum !== newNum && ANN.field_overrides[oldNum]){
+            ANN.field_overrides[newNum] = ANN.field_overrides[oldNum];
+            delete ANN.field_overrides[oldNum];
+          }
+        } else if(key === "context_id"){
+          // Empty value = unlink. Non-empty = link to that context id.
+          if(el.value){
+            q.context_id = el.value;
+          } else {
+            delete q.context_id;
+          }
+          annOverride(q.number, "context_id", el.value || "");
+          renderCards();
+          return;
+        } else {
+          q[key] = el.value;
+          annOverride(q.number, key, el.value);
+        }
+        // If this is an added question, keep ANN.added in sync
+        annUpdateAdded(q.number, q);
+        card.classList.add("dirty");
+        setDirty(true);
+      };
+      el.addEventListener("input", handler);
+      el.addEventListener("change", handler);
+    });
+    card.querySelectorAll("[data-act]").forEach(el => {
+      el.addEventListener("click", ev => {
+        ev.stopPropagation();
+        const q = findQ(id);
+        const act = el.dataset.act;
+        if(act === "delQ"){
+          if(!confirm(`Delete question #${q.number}?`)) return;
+          _undoSnapshot(`delete Q#${q.number}`);
+          annDeleteQuestion(q.number);
+          STATE.questions = STATE.questions.filter(x => x._id !== q._id);
+          if(focusedId === q._id) focusedId = null;
+          setDirty(true); renderCards(); renderImageBay();
+        } else if(act === "toggleCollapse"){
+          if(collapsedIds.has(q._id)) collapsedIds.delete(q._id);
+          else                        collapsedIds.add(q._id);
+          renderCards();
+        } else if(act === "addChoice"){
+          q.choices = q.choices || [];
+          const next = String.fromCharCode(65 + q.choices.length);
+          q.choices.push({letter: next, text: ""});
+          annOverride(q.number, "choices", q.choices);
+          annUpdateAdded(q.number, q);
+          setDirty(true); renderCards();
+        } else if(act === "delChoice"){
+          const idx = Number(el.dataset.idx);
+          q.choices.splice(idx, 1);
+          q.choices.forEach((c,i) => c.letter = String.fromCharCode(65+i));
+          annOverride(q.number, "choices", q.choices);
+          annUpdateAdded(q.number, q);
+          setDirty(true); renderCards();
+        } else if(act === "spanNextPage" || act === "spanPrevPage"){
+          // Add an adjacent page to the question's extra_pages list (idempotent).
+          const np = (act === "spanNextPage") ? curPage + 1 : curPage - 1;
+          q.extra_pages = q.extra_pages || [];
+          if(!q.extra_pages.includes(np) && np !== q.page && np >= 1) q.extra_pages.push(np);
+          q.extra_pages.sort((a,b) => a - b);
+          annOverride(q.number, "extra_pages", q.extra_pages);
+          annUpdateAdded(q.number, q);
+          setDirty(true); renderCards();
+          setStatus(`Marked Q#${q.number} as spanning pages ${[q.page, ...q.extra_pages].join(", ")}.`, "ok");
+        } else if(act === "detachImg"){
+          const fn = el.dataset.fn;
+          q.images = (q.images||[]).filter(f => f !== fn);
+          annImageDetach(fn);
+          if(q.image_descriptions){ delete q.image_descriptions[fn]; }
+          setDirty(true); renderCards(); renderImageBay();
+        } else if(act === "editImgDesc"){
+          const fn = el.dataset.fn;
+          const cur = (q.image_descriptions || {})[fn] || "";
+          const next = prompt("Description for this image (used as alt-text and to seed the diagram generator):", cur);
+          if(next === null) return;
+          q.image_descriptions = q.image_descriptions || {};
+          if(next.trim()){ q.image_descriptions[fn] = next.trim(); }
+          else { delete q.image_descriptions[fn]; }
+          annOverride(q.number, "image_descriptions", q.image_descriptions);
+          annUpdateAdded(q.number, q);
+          setDirty(true); renderCards();
+        } else if(act === "uploadImg"){
+          const card = el.closest(".q-card");
+          const inp = card.querySelector("[data-img-upload]");
+          inp.onchange = (ev) => uploadQuestionImage(q, ev.target.files && ev.target.files[0]);
+          inp.click();
+        } else if(act === "genDiagram"){
+          openDiagramChat(q);
+        } else if(act === "pickImage"){
+          startCapture("pickImage", q._id);
+        } else if(act === "capture"){
+          startCapture(el.dataset.field, q._id);
+        } else if(act === "capture-math"){
+          startCapture("math:" + el.dataset.into, q._id);
+        } else if(act === "compare"){
+          openCompareDialog(q);
+        } else if(act === "validate"){
+          validateOne(q._id);
+        } else if(act === "clearVal"){
+          delete q.validation;
+          delete ANN.validations[q.number];
+          setDirty(true); renderCards();
+        } else if(act === "acceptAns"){
+          if(q.validation && q.validation.correct_answer){
+            q.answer = q.validation.correct_answer;
+            annOverride(q.number, "answer", q.answer);
+            annUpdateAdded(q.number, q);
+            setDirty(true); renderCards();
+          }
+        }
+      });
+    });
+  });
+  // Update math previews initially
+  document.querySelectorAll(".math-preview[data-preview-for]").forEach(pv => {
+    const id = pv.closest(".q-card").dataset.id;
+    const q = findQ(id);
+    updateMathPreview(pv, (q.text || ""));
+  });
+  // Live preview on textarea input
+  document.querySelectorAll(".q-card textarea[data-edit=text]").forEach(ta => {
+    ta.addEventListener("input", () => {
+      const pv = ta.parentElement.querySelector(".math-preview");
+      if(pv) updateMathPreview(pv, ta.value);
+    });
+  });
+}
+
+function updateMathPreview(el, text){
+  // Show rendered math if the text contains $...$ or $$...$$, else show plain
+  const hasMath = /[$][^$\n]+[$]/.test(text) || /[$][$][\s\S]+[$][$]/.test(text);
+  if(!hasMath){
+    el.innerHTML = `<span class="ph">(no math markers — type $...$ or use Math capture)</span>`;
+    return;
+  }
+  el.textContent = text;
+  if(typeof renderMathInElement === "function"){
+    try{
+      renderMathInElement(el, {
+        delimiters:[
+          {left:"$$", right:"$$", display:true},
+          {left:"$",  right:"$",  display:false},
+        ],
+        throwOnError: false, errorColor: "#c0392b",
+      });
+    } catch(e){ /* tolerate */ }
+  }
+}
+
+async function validateOne(qLocalId){
+  const q = findQ(qLocalId);
+  if(!q) return;
+  if(!STATE.vision_available){ setStatus("ANTHROPIC_API_KEY not set", "err"); return; }
+  setStatusHtml(`Validating Q#${escHtml(q.number)}... <span class='spinner'></span>`);
+  try{
+    const r = await fetch(`${API}/validate-question`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        text: q.text, answer: q.answer, choices: q.choices, number: q.number,
+      }),
+    });
+    const v = await r.json();
+    q.validation = v;
+    ANN.validations[q.number] = v;
+    setDirty(true); renderCards();
+    setStatus(`Q#${q.number}: ${v.status}${v.correct_answer ? ` → ${v.correct_answer}` : ""}`);
+  } catch(err){ setStatus("Validate failed: " + err.message, "err"); }
+}
+
+function renderImageBay(){
+  // Rebuild "used_by" from current STATE so it stays in sync
+  const used = {};
+  STATE.questions.forEach(q => (q.images||[]).forEach(fn => {
+    used[fn] = (used[fn]||[]).concat(q.number);
+  }));
+  const root = document.getElementById("imgGrid");
+  if(IMAGES.images.length === 0){
+    root.innerHTML = '<div class="muted">No images extracted from this PDF.</div>';
+    return;
+  }
+  root.innerHTML = IMAGES.images.map(fn => {
+    const u = used[fn];
+    const usageStr = u ? `→ Q${u.join(",Q")}` : "unassigned";
+    const sel = (selectedImage === fn) ? "selected" : "";
+    return `<div class="ibox ${sel}" data-fn="${fn}">
+      <img src="${IMG_BASE}/${fn}" title="${fn}">
+      <div class="usage">${usageStr}</div>
+    </div>`;
+  }).join("");
+  root.querySelectorAll(".ibox").forEach(el => {
+    el.addEventListener("click", () => {
+      const fn = el.dataset.fn;
+      selectedImage = (selectedImage === fn) ? null : fn;
+      updateAssignMode();
+      renderImageBay();
+    });
+  });
+  document.getElementById("bayHint").textContent =
+    selectedImage ? `— "${selectedImage}" selected. Click a question to MOVE the image; Shift+click to SHARE (attach to multiple questions).`
+                  : `— click an image to select, then click a question to attach it (Shift+click = share across multiple Qs).`;
+}
+
+function updateAssignMode(){
+  document.querySelectorAll(".q-card").forEach(c => {
+    c.classList.toggle("assign-target", !!selectedImage);
+  });
+}
+
+// ---------- Per-question image upload ----------
+async function uploadQuestionImage(q, file){
+  if(!file) return;
+  // Use the persisted question identity (bucket+number) — the local _id only
+  // exists in the browser session.
+  const fd = new FormData();
+  fd.append("file", file);
+  setStatus(`Uploading ${file.name}…`);
+  try {
+    const r = await fetch(
+      `${API}/q/${encodeURIComponent(PDF)}/${encodeURIComponent(q.number)}/upload-image`,
+      { method: "POST", body: fd },
+    );
+    const j = await r.json();
+    if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); return; }
+    q.images = q.images || [];
+    if(!q.images.includes(j.image)) q.images.push(j.image);
+    setStatus(`Uploaded ${j.image}.`, "ok");
+    // Refresh the image list for this bucket so the bay picks it up
+    await loadImages();
+    renderCards(); renderImageBay();
+  } catch(err){
+    setStatus("Upload error: " + err.message, "err");
+  }
+}
+
+// Applies the result of a "Pick image" region capture (see the mouseup
+// handler's `mode.field === "pickImage"` branch) — the image is already
+// saved server-side by this point, so this just syncs local state + UI.
+async function applyPickedImage(mode, j){
+  const q = findQ(mode.id);
+  if(!q) return;
+  q.images = q.images || [];
+  if(!q.images.includes(j.image)) q.images.push(j.image);
+  setStatus(`Picked image attached: ${j.image}.`, "ok");
+  await loadImages();
+  renderCards(); renderImageBay();
+}
+
+// ---------- Diagram generation chat ----------
+let DIAGRAM_CHAT = null;   // {q, messages: [...]}
+
+function openDiagramChat(q){
+  DIAGRAM_CHAT = { q, messages: [] };
+  const m = document.getElementById("diagram_modal");
+  m.style.display = "flex";
+  document.getElementById("dc_qnum").textContent = "Q#" + q.number;
+  document.getElementById("dc_topic").textContent = q.topic || "—";
+  const seed = (q.image_descriptions || {}).__pending__
+            || ((q.image_descriptions || {}) && Object.values(q.image_descriptions || {}).filter(Boolean)[0])
+            || "";
+  document.getElementById("dc_history").innerHTML = "";
+  const seedHint = seed
+    ? `Author-provided diagram description: "${esc(seed.slice(0, 200))}". Refine or just say "draw it" to start.`
+    : `Describe the diagram you want — Claude Sonnet will produce an SVG you can preview and save.`;
+  document.getElementById("dc_hint").textContent = seedHint;
+  const ta = document.getElementById("dc_input");
+  ta.value = seed
+    ? `Please draw the diagram described above. Keep labels readable; use a clean line-art style.`
+    : `Draw an annotated diagram for this question.`;
+  ta.focus();
+}
+
+function closeDiagramChat(){
+  document.getElementById("diagram_modal").style.display = "none";
+  DIAGRAM_CHAT = null;
+}
+
+async function diagramChatSend(){
+  if(!DIAGRAM_CHAT) return;
+  const ta = document.getElementById("dc_input");
+  const userMsg = ta.value.trim();
+  if(!userMsg) return;
+  DIAGRAM_CHAT.messages.push({role: "user", content: userMsg});
+  renderDiagramChat();
+  ta.value = "";
+  const sendBtn = document.getElementById("dc_send");
+  sendBtn.disabled = true; sendBtn.textContent = "Drawing…";
+  try {
+    const r = await fetch(
+      `${API}/q/${encodeURIComponent(PDF)}/${encodeURIComponent(DIAGRAM_CHAT.q.number)}/diagram-chat`,
+      {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ messages: DIAGRAM_CHAT.messages }),
+      },
+    );
+    const j = await r.json();
+    if(j.error){
+      setStatus("Diagram chat error: " + j.error, "err");
+      return;
+    }
+    DIAGRAM_CHAT.messages.push({
+      role: "assistant",
+      content: j.assistant || "(empty response)",
+      svg: j.svg || null,
+    });
+    renderDiagramChat();
+  } catch(err){
+    setStatus("Chat error: " + err.message, "err");
+  } finally {
+    sendBtn.disabled = false; sendBtn.textContent = "Send";
+  }
+}
+
+function renderDiagramChat(){
+  const root = document.getElementById("dc_history");
+  root.innerHTML = DIAGRAM_CHAT.messages.map((m, i) => {
+    if(m.role === "user"){
+      return `<div class="dc-msg dc-user"><b>You</b><div>${esc(m.content)}</div></div>`;
+    }
+    const proseOnly = m.svg
+      ? m.content.replace(/```(?:svg|xml|html)?[\s\S]*?```/i, "")
+                 .replace(/<svg[\s\S]*?<\/svg>/i, "").trim()
+      : m.content;
+    const svgBlock = m.svg
+      ? `<div class="dc-svg" data-idx="${i}">
+           <div class="dc-svg-render">${m.svg}</div>
+           <div class="dc-svg-actions">
+             <button class="primary btn-tiny" data-act="dc-save" data-idx="${i}"
+                     title="Convert this SVG to PNG, save into images/, and attach it to the question.">
+               ✓ Use this diagram
+             </button>
+             <button class="btn-tiny" data-act="dc-copy-svg" data-idx="${i}"
+                     title="Copy the raw SVG markup to clipboard">📋 Copy SVG</button>
+           </div>
+         </div>`
+      : "";
+    return `<div class="dc-msg dc-assistant">
+      <b>Claude (Sonnet)</b>
+      ${svgBlock}
+      ${proseOnly ? `<div class="dc-prose">${esc(proseOnly)}</div>` : ""}
+    </div>`;
+  }).join("");
+  // Wire buttons
+  root.querySelectorAll("[data-act='dc-save']").forEach(b => {
+    b.addEventListener("click", () => saveDiagramSvg(Number(b.dataset.idx)));
+  });
+  root.querySelectorAll("[data-act='dc-copy-svg']").forEach(b => {
+    b.addEventListener("click", () => {
+      const msg = DIAGRAM_CHAT.messages[Number(b.dataset.idx)];
+      if(msg && msg.svg){
+        navigator.clipboard.writeText(msg.svg).then(
+          () => toast("SVG copied to clipboard", "ok"),
+          () => toast("Copy failed", "err"),
+        );
+      }
+    });
+  });
+  // Scroll to bottom
+  root.scrollTop = 1e9;
+}
+
+async function saveDiagramSvg(idx){
+  if(!DIAGRAM_CHAT) return;
+  const msg = DIAGRAM_CHAT.messages[idx];
+  if(!msg || !msg.svg){ setStatus("No SVG in that message", "err"); return; }
+  // Auto-derive the alt-text/search description from the assistant's own
+  // explanation of what it drew, instead of interrupting with a native
+  // browser prompt() for it.
+  const desc = (msg.content || "")
+    .replace(/```(?:svg|xml|html)?[\s\S]*?```/i, "")
+    .replace(/<svg[\s\S]*?<\/svg>/i, "")
+    .trim()
+    .slice(0, 200);
+  setStatus("Saving diagram…");
+  try {
+    const r = await fetch(
+      `${API}/q/${encodeURIComponent(PDF)}/${encodeURIComponent(DIAGRAM_CHAT.q.number)}/save-svg`,
+      {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ svg: msg.svg, description: (desc || "").trim() }),
+      },
+    );
+    const j = await r.json();
+    if(!j.ok){ setStatus("Save failed: " + (j.error || ""), "err"); return; }
+    DIAGRAM_CHAT.q.images = DIAGRAM_CHAT.q.images || [];
+    DIAGRAM_CHAT.q.images.push(j.image);
+    if((desc || "").trim()){
+      DIAGRAM_CHAT.q.image_descriptions = DIAGRAM_CHAT.q.image_descriptions || {};
+      DIAGRAM_CHAT.q.image_descriptions[j.image] = desc.trim();
+      delete DIAGRAM_CHAT.q.image_descriptions.__pending__;
+    }
+    await loadImages();
+    closeDiagramChat();
+    renderCards(); renderImageBay();
+    setStatus(`Diagram attached to Q#${DIAGRAM_CHAT && DIAGRAM_CHAT.q ? DIAGRAM_CHAT.q.number : "?"} as ${j.image}.`, "ok");
+  } catch(err){
+    setStatus("Save error: " + err.message, "err");
+  }
+}
+
+function render(){
+  document.getElementById("pageInput").value = curPage;
+  renderImage();
+  renderCards();
+  renderImageBay();
+  updateAssignMode();
+}
+
+// ---------- Drag-to-capture from PDF ----------
+
+const stage  = document.getElementById("pdfStage");
+const img    = document.getElementById("pageImg");
+const selRect= document.getElementById("selRect");
+const hint   = document.getElementById("captureHint");
+const hintTx = document.getElementById("captureHintText");
+let dragStart = null;
+
+function startCapture(field, qid){
+  captureMode = { field, id: qid };
+  stage.classList.add("capturing");
+  hint.classList.add("on");
+  const labels = {stem:"the question stem", choices:"the multiple-choice options",
+                  answer:"the answer", newQ:"the new question",
+                  newContext:"the shared context (passage, intro, table)",
+                  pickImage:"the image you want to attach to this question"};
+  const pdfLabel = (field === "answer") ? "Key PDF (toggle above if needed)"
+                                        : (target === "key" ? "Key PDF" : "Test PDF");
+  hintTx.textContent = `Drag a rectangle on the ${pdfLabel} around ${labels[field]||field}. `
+    + `Or click an existing box to capture its exact region instead.`;
+  drawQuestionBoxes(); // refresh box outlines into "pickable" mode
+}
+function cancelCapture(opts){
+  captureMode = null;
+  dragStart = null;
+  stage.classList.remove("capturing");
+  hint.classList.remove("on");
+  selRect.style.display = "none";
+  drawQuestionBoxes(); // drop "pickable" outlines now that capture is over
+  if(!(opts && opts.preserveLast)){
+    LAST_CAPTURE = null;
+    const hb = document.getElementById("haikuFallback");
+    if(hb) hb.style.display = "none";
+  }
+}
+document.getElementById("cancelCapture").addEventListener("click", () => cancelCapture());
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape" && captureMode) cancelCapture();
+  if(e.key === "Escape" && LAST_CAPTURE){
+    // Esc after capture clears the Haiku fallback affordance
+    LAST_CAPTURE = null;
+    const hb = document.getElementById("haikuFallback");
+    if(hb) hb.style.display = "none";
+    hint.classList.remove("on");
+  }
+});
+
+function imgPixelCoords(clientX, clientY){
+  const r = img.getBoundingClientRect();
+  const xDisp = clientX - r.left;
+  const yDisp = clientY - r.top;
+  // Convert displayed pixels -> natural image pixels (which match the PNG)
+  const sx = img.naturalWidth  / r.width;
+  const sy = img.naturalHeight / r.height;
+  return { x: Math.max(0, xDisp * sx), y: Math.max(0, yDisp * sy), r };
+}
+
+// Right-click context menu on the PDF — quick capture options when a
+// question is focused. Avoids the need to scroll to the card's capture bar.
+const _ctxMenu = document.createElement("div");
+_ctxMenu.id = "pdfCtxMenu";
+_ctxMenu.style.cssText = "position:fixed;display:none;background:var(--bg-card);"
+  + "border:1px solid var(--line);border-radius:6px;padding:4px 0;"
+  + "box-shadow:0 4px 14px rgba(0,0,0,.25);z-index:300;min-width:200px";
+document.body.appendChild(_ctxMenu);
+img.addEventListener("contextmenu", e => {
+  if(!focusedId){
+    return; // let the browser do its normal thing if no focused card
+  }
+  e.preventDefault();
+  _ctxMenu.innerHTML = `
+    <button class="ghost" style="display:block;width:100%;text-align:left;padding:6px 14px" onclick="startCapture('stem', focusedId); closeCtx()">Capture as stem</button>
+    <button class="ghost" style="display:block;width:100%;text-align:left;padding:6px 14px" onclick="startCapture('choices', focusedId); closeCtx()">Capture as choices</button>
+    <button class="ghost" style="display:block;width:100%;text-align:left;padding:6px 14px" onclick="startCapture('answer', focusedId); closeCtx()">Capture as answer</button>
+    <button class="ghost" style="display:block;width:100%;text-align:left;padding:6px 14px" onclick="startCapture('math:text', focusedId); closeCtx()">Capture as math → stem</button>
+    <button class="ghost" style="display:block;width:100%;text-align:left;padding:6px 14px" onclick="startCapture('newQ'); closeCtx()">+ New question from region</button>`;
+  _ctxMenu.style.display = "block";
+  _ctxMenu.style.left = e.clientX + "px";
+  _ctxMenu.style.top = e.clientY + "px";
+});
+window.closeCtx = function(){ _ctxMenu.style.display = "none"; };
+document.addEventListener("click", e => {
+  if(!e.target.closest("#pdfCtxMenu")) _ctxMenu.style.display = "none";
+});
+
+img.addEventListener("mousedown", e => {
+  if(!captureMode) return;
+  e.preventDefault();
+  const r = img.getBoundingClientRect();
+  dragStart = {
+    clientX: e.clientX, clientY: e.clientY,
+    rectLeft: r.left, rectTop: r.top,
+  };
+  selRect.style.display = "block";
+  selRect.style.left = (e.clientX - r.left + stage.scrollLeft) + "px";
+  selRect.style.top  = (e.clientY - r.top  + stage.scrollTop)  + "px";
+  selRect.style.width = "0px"; selRect.style.height = "0px";
+});
+document.addEventListener("mousemove", e => {
+  if(!captureMode || !dragStart) return;
+  const r = img.getBoundingClientRect();
+  const x1 = Math.min(dragStart.clientX, e.clientX) - r.left;
+  const y1 = Math.min(dragStart.clientY, e.clientY) - r.top;
+  const x2 = Math.max(dragStart.clientX, e.clientX) - r.left;
+  const y2 = Math.max(dragStart.clientY, e.clientY) - r.top;
+  selRect.style.left = x1 + "px"; selRect.style.top = y1 + "px";
+  selRect.style.width = (x2 - x1) + "px"; selRect.style.height = (y2 - y1) + "px";
+});
+// Runs a capture for an already-known region (x/y/w/h in natural image
+// pixels at 120 DPI) — shared by the drag-to-select mouseup handler AND by
+// clicking an existing q-bbox to reuse its region (see drawQuestionBoxes),
+// so both entry points behave identically for every capture mode.
+async function performCapture(mode, x, y, w, h){
+  mode.rect = { x, y, w, h, page: curPage, target };
+
+  // Math capture path
+  if(mode.field.startsWith("math:")){
+    setStatusHtml(`Extracting math (vision)... <span class='spinner'></span>`);
+    let r;
+    try{
+      r = await fetch(`${API}/pdf/${PDF}/page/${curPage}/extract-math`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({x, y, w, h, dpi: 120, target}),
+      });
+    } catch(err){ setStatus("Math extract failed: " + err.message, "err"); cancelCapture(); return; }
+    const j = await r.json();
+    if(j.error || !j.latex){
+      setStatus("No math detected in that region.", "err");
+      cancelCapture(); return;
+    }
+    applyMathCapture(mode, j.delimited || `$${j.latex}$`);
+    cancelCapture();
+    return;
+  }
+
+  // Pick-image capture path — saves the region as a PNG and attaches it
+  // directly, instead of OCR'ing it as text.
+  if(mode.field === "pickImage"){
+    setStatusHtml(`Saving image... <span class='spinner'></span>`);
+    let r;
+    try{
+      r = await fetch(`${API}/q/${encodeURIComponent(PDF)}/${encodeURIComponent(findQ(mode.id)?.number ?? "")}/pick-image`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({pdfname: PDF, page: curPage, target, x, y, w, h, dpi: 120}),
+      });
+    } catch(err){ setStatus("Pick image failed: " + err.message, "err"); cancelCapture(); return; }
+    const j = await r.json();
+    if(!j.ok){
+      setStatus("Pick image failed: " + (j.error || ""), "err");
+      cancelCapture(); return;
+    }
+    await applyPickedImage(mode, j);
+    cancelCapture();
+    return;
+  }
+
+  setStatusHtml(`Extracting region... <span class='spinner'></span>`);
+  let r;
+  try{
+    r = await fetch(`${API}/pdf/${PDF}/page/${curPage}/extract-region`,{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        x, y, w, h, dpi: 120, target,
+        parse_choices: (mode.field === "choices" || mode.field === "newQ"),
+      }),
+    });
+  } catch(err){ setStatus("Extract failed: " + err.message, "err"); cancelCapture(); return; }
+  if(!r.ok){ setStatus("Extract failed: HTTP " + r.status, "err"); cancelCapture(); return; }
+  const j = await r.json();
+  const text = (j.text || "").trim();
+  // Remember region + applied target so Haiku fallback can re-run with vision
+  LAST_CAPTURE = { mode: {...mode}, x, y, w, h, page: curPage, target };
+  applyCapture(mode, j, text);
+  // Show Haiku fallback for text/choice/newQ captures (math has its own path)
+  if(!mode.field.startsWith("math:")){
+    const hb = document.getElementById("haikuFallback");
+    if(hb) hb.style.display = "";
+    const hint = document.getElementById("captureHintText");
+    if(hint) hint.textContent = "Capture applied. If the split looks wrong, click Try Haiku to re-extract this region with vision.";
+  }
+  cancelCapture({preserveLast: true});
+}
+
+document.addEventListener("mouseup", async e => {
+  if(!captureMode || !dragStart) return;
+  const mode = captureMode;
+  const start = imgPixelCoords(dragStart.clientX, dragStart.clientY);
+  const end   = imgPixelCoords(e.clientX, e.clientY);
+  dragStart = null;
+  selRect.style.display = "none";
+  const x = Math.min(start.x, end.x), y = Math.min(start.y, end.y);
+  const w = Math.abs(end.x - start.x), h = Math.abs(end.y - start.y);
+  if(w < 5 || h < 5){ cancelCapture(); return; }
+  await performCapture(mode, x, y, w, h);
+});
+
+// Haiku fallback button: re-extract the LAST_CAPTURE region using vision OCR
+document.getElementById("haikuFallback").addEventListener("click", async () => {
+  if(!LAST_CAPTURE){ return; }
+  const c = LAST_CAPTURE;
+  setStatusHtml("Re-extracting via Haiku vision... <span class='spinner'></span>");
+  let r;
+  try {
+    r = await fetch(`${API}/pdf/${PDF}/page/${c.page}/extract-region-vision`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({x: c.x, y: c.y, w: c.w, h: c.h, dpi: 120, target: c.target}),
+    });
+  } catch(err){ setStatus("Haiku call failed: " + err.message, "err"); return; }
+  const j = await r.json();
+  if(j.error){ setStatus("Haiku error: " + j.error, "err"); return; }
+  const text = (j.stem || j.text || "").trim();
+  // For Q-aimed captures, applyCapture will use j.stem + j.choices.
+  applyCapture(c.mode, j, text);
+  setStatus("Re-extracted via Haiku.", "ok");
+  document.getElementById("haikuFallback").style.display = "none";
+});
+
+function applyMathCapture(mode, delimitedLatex){
+  const q = findQ(mode.id);
+  if(!q) return;
+  const into = mode.field.split(":")[1];   // "text" or "answer"
+  const card = document.querySelector(`.q-card[data-id="${mode.id}"]`);
+  const el = card && card.querySelector(`[data-edit="${into}"]`);
+  // Insert at cursor position if available, else append
+  if(el && typeof el.selectionStart === "number"){
+    const s = el.selectionStart, e = el.selectionEnd;
+    const before = (el.value || "").slice(0, s);
+    const after  = (el.value || "").slice(e);
+    const sep = (before && !before.endsWith(" ")) ? " " : "";
+    el.value = before + sep + delimitedLatex + after;
+    q[into] = el.value;
+  } else {
+    q[into] = (q[into] ? q[into] + " " : "") + delimitedLatex;
+  }
+  annOverride(q.number, into, q[into]);
+  annNoteRegion(q.number, "math:" + into, mode.rect.page, mode.rect.target,
+                mode.rect.x, mode.rect.y, mode.rect.w, mode.rect.h);
+  annUpdateAdded(q.number, q);
+  setDirty(true); renderCards();
+  setStatus(`Inserted LaTeX into ${into}.`);
+}
+
+function applyCapture(mode, j, text){
+  if(!text){ setStatus("No text in that region.", "err"); return; }
+  // mode.rect = {x,y,w,h, target, page} — for annotation provenance
+  const r = mode.rect || {};
+  if(mode.field === "newContext"){
+    const id = `ctx_${nextContextId++}`;
+    const ctx = { id, text, images: [], pages: [curPage] };
+    annAddContext(ctx);
+    setDirty(true); renderCards();
+    setStatus(`Created context ${id} from this region. Pick it from a question's "Context" dropdown to link.`, "ok");
+    return;
+  }
+  if(mode.field === "newQ"){
+    // Auto-assign the next available numeric question number
+    let maxN = 0;
+    STATE.questions.forEach(q => {
+      const m = String(q.number || "").match(/^([0-9]+)/);
+      if(m){ const n = parseInt(m[1]); if(n > maxN) maxN = n; }
+    });
+    const num = String(maxN + 1);
+    // If the region also contained MC options, use the parsed stem + choices
+    const stem    = (j.stem && j.choices && j.choices.length) ? j.stem : text;
+    const choices = (j.choices && j.choices.length) ? j.choices : [];
+    const q = {
+      _id: nextLocalId++,
+      number: num,
+      topic: "Other / General",
+      text: stem, choices, answer: "", images: [],
+      source: STATE.questions[0]?.source || "",
+      year: STATE.questions[0]?.year || "",
+      division: STATE.questions[0]?.division || "",
+      page: curPage,
+    };
+    STATE.questions.push(q);
+    focusedId = q._id;
+    annAddQuestion(q);
+    annNoteRegion(q.number, "stem", r.page, r.target, r.x, r.y, r.w, r.h);
+    setDirty(true); renderCards();
+    const choiceMsg = choices.length ? ` with ${choices.length} choices` : "";
+    setStatus(`Captured into new Q#${num}${choiceMsg}.`);
+    return;
+  }
+  const q = findQ(mode.id);
+  if(!q){ setStatus("Question disappeared, can't apply capture.", "err"); return; }
+  if(mode.field === "stem"){
+    q.text = text;
+    annOverride(q.number, "text", text);
+  } else if(mode.field === "answer"){
+    q.answer = text;
+    annOverride(q.number, "answer", text);
+  } else if(mode.field === "choices"){
+    if(j.choices && j.choices.length){
+      q.choices = j.choices;
+      if(j.stem && !q.text){ q.text = j.stem; annOverride(q.number, "text", j.stem); }
+    } else {
+      q.choices = [{letter:"A", text}];
+    }
+    annOverride(q.number, "choices", q.choices);
+  }
+  annUpdateAdded(q.number, q);
+  annNoteRegion(q.number, mode.field, r.page, r.target, r.x, r.y, r.w, r.h);
+  setDirty(true); renderCards();
+  setStatus(`Captured into ${mode.field}.`);
+}
+
+document.getElementById("addRegion").addEventListener("click", ()=>{
+  startCapture("newQ");
+});
+
+document.getElementById("addContext").addEventListener("click", ()=>{
+  startCapture("newContext");
+});
+
+document.getElementById("prev").addEventListener("click", ()=>{
+  if(curPage > 1){ curPage--; render(); }
+});
+document.getElementById("next").addEventListener("click", ()=>{
+  if(curPage < STATE.page_count){ curPage++; render(); }
+});
+document.getElementById("pageInput").addEventListener("change", e=>{
+  const n = Math.max(1, Math.min(STATE.page_count, Number(e.target.value)||1));
+  curPage = n; render();
+});
+
+// Update page-progress label whenever a render happens
+const _origRender = render;
+render = function(){
+  _origRender();
+  const lbl = document.getElementById("pageProgress");
+  if(lbl && STATE.page_count){
+    const pct = Math.round(curPage / STATE.page_count * 100);
+    lbl.textContent = `(${pct}%)`;
+  }
+  // Update page title to reflect dirty / current PDF
+  if(window.setPageTitlePrefix){
+    setPageTitlePrefix(`${dirty ? "● " : ""}p${curPage} · ${PDF}`);
+  }
+};
+
+// "Go to Q#" jump
+document.getElementById("gotoQ").addEventListener("change", e => {
+  const num = e.target.value.trim();
+  if(!num) return;
+  const q = STATE.questions.find(x => String(x.number) === num);
+  if(!q){ toast(`No question #${num} in this PDF`, "err"); return; }
+  curPage = q.page || 1;
+  focusedId = q._id;
+  render();
+  setTimeout(() => {
+    const card = document.querySelector(".q-card.focused");
+    if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
+  }, 60);
+  e.target.value = "";
+});
+
+// Hotkeys
+hotkey("ctrl+s", () => {
+  const btn = document.getElementById("save");
+  if(btn && !btn.disabled) btn.click();
+}, {global: true});
+hotkey("escape", () => {
+  // If a capture is in progress, that handler already cancels; otherwise no-op
+  if(captureMode) cancelCapture();
+});
+hotkey("/", () => {
+  const ta = document.querySelector(".q-card.focused textarea[data-edit=text]");
+  if(ta){ ta.focus(); return; }
+  const gotoEl = document.getElementById("gotoQ");
+  if(gotoEl) gotoEl.focus();
+});
+
+document.querySelectorAll("#targetToggle button").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#targetToggle button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");
+    target = b.dataset.target;
+    renderImage();
+    renderThumbStrip();
+  });
+});
+
+document.getElementById("collapseAll").addEventListener("click", ()=>{
+  questionsOnPage(curPage).forEach(q => collapsedIds.add(q._id));
+  renderCards();
+});
+
+document.getElementById("expandAll").addEventListener("click", ()=>{
+  questionsOnPage(curPage).forEach(q => collapsedIds.delete(q._id));
+  renderCards();
+});
+
+document.getElementById("delAllQ").addEventListener("click", ()=>{
+  const n = STATE.questions.length;
+  if(n === 0){ setStatus("No questions to delete.", "warn"); return; }
+  if(!confirm(`Delete ALL ${n} question(s) on this PDF?
+
+` +
+              `This survives Save and Reprocess (deletions are recorded as annotations).
+` +
+              `Use this when you plan to rebuild the question set manually from regions.`)) return;
+  _undoSnapshot(`delete all ${n} questions`);
+  // Record each as an annotation deletion (or strip from `added` if user-added)
+  STATE.questions.slice().forEach(q => annDeleteQuestion(q.number));
+  STATE.questions = [];
+  focusedId = null;
+  selectedImage = null;
+  setDirty(true); renderCards(); renderImageBay(); updateAssignMode();
+  setStatus(`Deleted ${n} question(s). Use "+ Add question from region" to rebuild, then Save.`, "ok");
+});
+
+document.getElementById("addQ").addEventListener("click", ()=>{
+  const num = prompt("Question number (e.g. 1, 5, 12b):");
+  if(!num) return;
+  _undoSnapshot(`add blank Q#${num}`);
+  const q = {
+    _id: nextLocalId++,
+    number: num.trim(),
+    topic: "Other / General",
+    text: "",
+    choices: [],
+    answer: "",
+    images: [],
+    source: STATE.questions[0]?.source || "",
+    year: STATE.questions[0]?.year || "",
+    division: STATE.questions[0]?.division || "",
+    page: curPage,
+  };
+  STATE.questions.push(q);
+  annAddQuestion(q);
+  focusedId = q._id;
+  setDirty(true); renderCards();
+});
+
+document.getElementById("validatePage").addEventListener("click", async ()=>{
+  if(!STATE.vision_available){ setStatus("ANTHROPIC_API_KEY not set", "err"); return; }
+  const list = questionsOnPage(curPage).filter(q => !q.validation || q.validation.stale);
+  if(list.length === 0){
+    if(!confirm("All questions on this page already have a validation. Re-validate all?")) return;
+    questionsOnPage(curPage).forEach(q => list.push(q));
+  }
+  if(!confirm(`Validate ${list.length} question(s) on page ${curPage} via Haiku?
+(About ~$${(list.length*0.003).toFixed(3)} estimated.)`)) return;
+  let done = 0;
+  let errs = 0;
+  let firstErr = "";
+  for(const q of list){
+    setStatusHtml(`Validating ${done+1}/${list.length}: Q#${escHtml(q.number)}... <span class='spinner'></span>`);
+    try{
+      const r = await fetch(`${API}/validate-question`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({text:q.text, answer:q.answer, choices:q.choices, number:q.number}),
+      });
+      const v = await r.json();
+      q.validation = v;
+      ANN.validations[q.number] = v;
+      setDirty(true);
+    } catch(err){
+      errs++;
+      if(!firstErr) firstErr = `Q#${q.number}: ${err.message || err}`;
+      // Continue with the rest — one network blip shouldn't abort the batch.
+    }
+    done++;
+    if(done % 3 === 0) renderCards();
+  }
+  renderCards();
+  if(errs){
+    setStatus(`Validated ${done - errs}/${done}; ${errs} failed (first: ${firstErr}). Press Save to persist.`, "warn");
+  } else {
+    setStatus(`Validated ${done} question(s). Press Save to persist.`);
+  }
+});
+
+document.getElementById("ocr").addEventListener("click", async ()=>{
+  if(!confirm(`Run vision OCR on page ${curPage}? (uses ~1 Haiku call)`)) return;
+  const ocrBtn = document.getElementById("ocr");
+  ocrBtn.disabled = true;
+  setStatusHtml("Running OCR... <span class='spinner'></span>");
+  let j;
+  try {
+    const r = await fetch(`${API}/pdf/${PDF}/page/${curPage}/ocr`, {method:"POST"});
+    if(!r.ok){
+      const body = await r.text();
+      setStatus(`OCR failed: HTTP ${r.status}. ${body.slice(0, 120)}`, "err");
+      return;
+    }
+    j = await r.json();
+  } catch (err) {
+    setStatus("OCR failed: " + (err.message || err), "err");
+    return;
+  } finally {
+    ocrBtn.disabled = false;
+  }
+  if(!j.suggestions || j.suggestions.length === 0){
+    setStatus("OCR returned no question candidates for this page.");
+    return;
+  }
+  const sample = j.suggestions.map(s => `#${s.number}: ${s.text.slice(0,60)}`).join("\n");
+  if(!confirm(`Vision found ${j.suggestions.length} questions on this page:\n\n${sample}\n\nReplace existing questions on this page with these?`)){
+    setStatus(`OCR cancelled — ${j.suggestions.length} suggestion(s) discarded.`);
+    return;
+  }
+  _undoSnapshot(`OCR replace page ${curPage}`);
+  STATE.questions = STATE.questions.filter(q => (q.page||1) !== curPage);
+  j.suggestions.forEach(s => { s._id = nextLocalId++; STATE.questions.push(s); });
+  setDirty(true); renderCards();
+  setStatus(`Replaced page ${curPage} with ${j.suggestions.length} OCR'd question(s).`);
+});
+
+document.getElementById("save").addEventListener("click", async ()=>{
+  const payload = {
+    questions: STATE.questions.map(q => ({...q, _id: undefined})),
+    annotations: ANN,
+  };
+  setStatusHtml("Saving... <span class='spinner'></span>");
+  const r = await fetch(`${API}/pdf/${PDF}/save`, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(payload),
+  });
+  const j = await r.json();
+  if(j.ok){
+    setDirty(false);
+    const nAnn = Object.keys(ANN.field_overrides).length + ANN.added.length
+               + ANN.deleted.length
+               + Object.keys(ANN.image_overrides.assignments).length
+               + ANN.image_overrides.detached.length;
+    setStatus(`Saved ${j.saved} questions + ${nAnn} annotations (survive reprocess).`);
+  } else {
+    setStatus("Save failed", "err");
+  }
+});
+
+// Reprocess dropdown menu
+(function(){
+  const wrap = document.getElementById("reprocessWrap");
+  const btn = document.getElementById("reprocess");
+  const menu = document.getElementById("reprocessMenu");
+  btn.addEventListener("click", e => {
+    e.stopPropagation();
+    menu.style.display = (menu.style.display === "block") ? "none" : "block";
+  });
+  document.addEventListener("click", e => {
+    if(!wrap.contains(e.target)) menu.style.display = "none";
+  });
+  menu.querySelectorAll("[data-rp-mode]").forEach(el => {
+    el.addEventListener("click", async () => {
+      menu.style.display = "none";
+      const mode = el.dataset.rpMode;
+      await runReprocess(mode);
+    });
+  });
+})();
+
+async function runReprocess(mode){
+  // mode: "keep" | "wipe" | "manual"
+  if(mode === "wipe"){
+    if(!confirm(`Re-extract ${PDF} and WIPE all manual edits & annotations?
+
+` +
+                `This is unreversible. Field overrides, deletes, image moves, and validations will be lost.`)) return;
+  } else if(mode === "manual"){
+    if(!confirm(`Enter manual mode for ${PDF}?
+
+` +
+                `• Existing questions and annotations will be wiped
+` +
+                `• Use "+ Add question from region" to draw each question's region
+` +
+                `• For multi-page questions, capture a region from the second page too (the same Q gets the next page added to extra_pages)
+` +
+                `• Use "Try Haiku" in the capture bar if pure-Python extraction is weak
+
+` +
+                `Continue?`)) return;
+  } else {
+    if(!confirm(`Re-run the pipeline on ${PDF}?
+
+Your saved annotations will be replayed on top of the fresh extraction.`)) return;
+  }
+  setStatusHtml("Reprocessing... <span class='spinner'></span>");
+  const r = await fetch(`${API}/pdf/${PDF}/reprocess`, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({
+      discard_annotations: (mode === "wipe" || mode === "manual"),
+      manual_mode:          (mode === "manual"),
+    }),
+  });
+  const j = await r.json();
+  if(mode === "manual"){
+    setStatus(`Manual mode: ${j.n_questions} questions remain (should be 0). Use "+ Add question from region" to build new ones.`);
+  } else {
+    setStatus(`Reprocessed: ${j.n_questions} questions`
+              + (j.discarded_annotations ? " (annotations wiped)" : " (annotations replayed)"));
+  }
+  curPage = 1; selectedImage = null; focusedId = null; setDirty(false);
+  ANN = { field_overrides:{}, added:[], deleted:[],
+          image_overrides:{assignments:{}, detached:[]}, regions:[],
+          validations:{}, contexts:[] };
+  await load();
+}
+
+window.addEventListener("beforeunload", e=>{
+  if(dirty){ e.preventDefault(); e.returnValue = ""; }
+});
+
+load();
+</script>
+</body></html>
