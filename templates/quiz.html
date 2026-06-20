@@ -1,0 +1,376 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Quiz · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.quiz-wrap{max-width:760px;margin:24px auto;padding:0 20px}
+.quiz-section{background:#fff;border:1px solid var(--line);border-radius:8px;
+  padding:24px;margin-bottom:18px}
+.quiz-section h2{margin:0 0 14px 0;font-size:17px;color:#222}
+.quiz-config{display:grid;grid-template-columns:140px 1fr;gap:10px 14px;align-items:center;font-size:13px}
+.quiz-config input[type=number]{width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:3px}
+.quiz-config select{padding:5px 8px;border:1px solid var(--line);border-radius:3px;min-width:180px;font:inherit}
+.quiz-actions{margin-top:18px;text-align:right}
+.quiz-actions button{padding:8px 18px;font-size:14px}
+.quiz-q{font-size:16px;line-height:1.55;color:#222;margin-bottom:14px}
+.quiz-meta{font-size:11px;color:var(--muted);margin-bottom:14px;
+  text-transform:uppercase;letter-spacing:.4px}
+.quiz-choices{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}
+.quiz-choice{padding:10px 14px;border:1px solid var(--line);border-radius:5px;cursor:pointer;
+  background:#fff;text-align:left;font-size:14px;transition:background .1s,border-color .1s}
+.quiz-choice:hover{background:#f5f9fd;border-color:var(--accent)}
+.quiz-choice.picked{background:#e3f0fa;border-color:var(--accent)}
+.quiz-choice.correct{background:#e3f4e9;border-color:var(--ok);color:#1f6f3a}
+.quiz-choice.wrong{background:#fde7e6;border-color:var(--bad);color:#a02020}
+.quiz-frq-input{width:100%;padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:4px;font:inherit}
+.quiz-progress{display:flex;justify-content:space-between;align-items:center;
+  font-size:12px;color:var(--muted);margin-bottom:14px}
+.quiz-timer{font-variant-numeric:tabular-nums;font-weight:600;color:var(--fg)}
+.quiz-timer.warn{color:var(--warn)}
+.quiz-timer.danger{color:var(--bad)}
+.quiz-feedback{padding:12px;background:var(--bg-alt);border-radius:5px;font-size:13px;margin-bottom:14px}
+.quiz-feedback.correct{background:#e3f4e9;color:#1f6f3a}
+.quiz-feedback.wrong{background:#fde7e6;color:#a02020}
+.quiz-score-big{font-size:36px;font-weight:700;color:var(--accent);text-align:center;margin:12px 0}
+.quiz-score-detail{text-align:center;color:var(--fg-soft);font-size:13px}
+.quiz-mistakes{margin-top:18px}
+.quiz-mistakes h3{font-size:14px;margin:14px 0 8px 0}
+.quiz-mistake{padding:10px;border:1px solid var(--line);border-radius:5px;margin-bottom:8px}
+.quiz-mistake-q{font-size:13px;margin-bottom:6px}
+.quiz-mistake-meta{font-size:11px;color:var(--muted)}
+.quiz-mistake-you{color:var(--bad);font-size:12px}
+.quiz-mistake-correct{color:var(--ok);font-size:12px;font-weight:600}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
+  <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Quiz</h1>
+  <span style="flex:1"></span>
+  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
+  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+</header>
+<div class="quiz-wrap">
+
+  <div class="quiz-section" id="config_section">
+    <h2>Take a practice quiz</h2>
+    <div class="quiz-config">
+      <label for="qc_n">How many questions</label>
+      <input id="qc_n" type="number" value="10" min="1" max="100" title="Number of questions in the quiz">
+
+      <label for="qc_topic">Topic</label>
+      <select id="qc_topic" title="Restrict to a single topic, or any">
+        <option value="">(any)</option>
+      </select>
+
+      <label for="qc_bucket">Source bucket</label>
+      <select id="qc_bucket" title="Restrict to questions from one bucket">
+        <option value="">(any)</option>
+        <option value="pdf">PDFs only</option>
+        <option value="generated">LLM-generated only</option>
+        <option value="scioly">scio.ly only</option>
+      </select>
+
+      <label for="qc_type">Type</label>
+      <select id="qc_type" title="Multiple choice, free response, or both">
+        <option value="">(any)</option>
+        <option value="mcq">MCQ only</option>
+        <option value="frq">FRQ only</option>
+      </select>
+
+      <label for="qc_timer">Per-Q timer</label>
+      <select id="qc_timer" title="Time limit per question. 'no limit' = no countdown.">
+        <option value="0">no limit</option>
+        <option value="30">30s</option>
+        <option value="60" selected>60s</option>
+        <option value="90">90s</option>
+        <option value="120">2 min</option>
+      </select>
+
+      <label for="qc_shuffle">Order</label>
+      <select id="qc_shuffle" title="Shuffle question order for spaced practice">
+        <option value="1" selected>shuffle</option>
+        <option value="0">as-listed</option>
+      </select>
+    </div>
+    <div id="qc_pool_size" class="muted" style="margin-top:10px;font-size:12px"></div>
+    <div class="quiz-actions">
+      <button id="btn_start" class="primary" title="Start the quiz with the settings above">▶ Start quiz</button>
+    </div>
+  </div>
+
+  <div class="quiz-section" id="quiz_section" style="display:none">
+    <div class="quiz-progress">
+      <span><b id="q_idx">1</b> of <span id="q_total">10</span></span>
+      <span class="quiz-timer" id="q_timer">—</span>
+      <span><b id="q_score_run">0</b>/<span id="q_score_total">0</span> so far</span>
+    </div>
+    <div class="quiz-meta" id="q_meta"></div>
+    <div class="quiz-q" id="q_text"></div>
+    <div class="quiz-choices" id="q_choices"></div>
+    <input id="q_frq" class="quiz-frq-input" style="display:none" placeholder="Type your answer…">
+    <div id="q_feedback" class="quiz-feedback" style="display:none"></div>
+    <div style="text-align:right">
+      <button id="btn_skip" title="Skip this question (counted as wrong)">Skip</button>
+      <button id="btn_submit" class="primary" title="Submit your answer">Submit</button>
+      <button id="btn_next" class="primary" style="display:none" title="Next question">Next →</button>
+    </div>
+  </div>
+
+  <div class="quiz-section" id="result_section" style="display:none">
+    <h2>Quiz complete</h2>
+    <div class="quiz-score-big" id="r_score">0 / 0</div>
+    <div class="quiz-score-detail" id="r_detail">—</div>
+    <div class="quiz-mistakes">
+      <h3 id="r_mistakes_hdr">Review mistakes</h3>
+      <div id="r_mistakes"></div>
+    </div>
+    <div class="quiz-actions">
+      <button id="btn_retry" title="Run another quiz with the same settings">↺ Another quiz</button>
+      <a href="/event/{{ event_slug }}/browse"><button>Back to browse</button></a>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const EVENT_SLUG = "{{ event_slug }}";
+const API = "/event/" + EVENT_SLUG + "/api";
+
+let POOL = [];     // candidate questions from /api/all-questions
+let CONFIG = {};   // {n, topic, bucket, type, timer, shuffle}
+let QUIZ = [];     // selected for this run
+let IDX = 0;
+let SCORE = 0;
+let RESPONSES = []; // [{q, picked, correct: bool}]
+let TIMER_ID = null;
+let TIMER_REMAIN = 0;
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function loadPool(){
+  const r = await fetch(`${API}/all-questions`);
+  const j = await r.json();
+  POOL = j.questions || [];
+  // Populate topic filter
+  const topics = [...new Set(POOL.map(q => q.topic).filter(Boolean))].sort();
+  const tsel = document.getElementById("qc_topic");
+  topics.forEach(t => {
+    const o = document.createElement("option");
+    o.value = t; o.textContent = t; tsel.appendChild(o);
+  });
+  updatePoolSize();
+}
+
+function filteredPool(){
+  return POOL.filter(q => {
+    if(CONFIG.topic && q.topic !== CONFIG.topic) return false;
+    const isMcq = q.choices && q.choices.length;
+    if(CONFIG.type === "mcq" && !isMcq) return false;
+    if(CONFIG.type === "frq" &&  isMcq) return false;
+    if(CONFIG.bucket){
+      const b = q._bucket || "";
+      if(CONFIG.bucket === "pdf"       && b.startsWith("_")) return false;
+      if(CONFIG.bucket === "generated" && !b.startsWith("_generated_")) return false;
+      if(CONFIG.bucket === "scioly"    && !b.startsWith("_scioly_"))    return false;
+    }
+    // Must have a correct answer recorded
+    if(!q.answer || !String(q.answer).trim()) return false;
+    return true;
+  });
+}
+
+function readConfig(){
+  CONFIG = {
+    n:       Math.max(1, parseInt(document.getElementById("qc_n").value) || 10),
+    topic:   document.getElementById("qc_topic").value,
+    bucket:  document.getElementById("qc_bucket").value,
+    type:    document.getElementById("qc_type").value,
+    timer:   parseInt(document.getElementById("qc_timer").value) || 0,
+    shuffle: document.getElementById("qc_shuffle").value === "1",
+  };
+}
+
+function updatePoolSize(){
+  readConfig();
+  const n = filteredPool().length;
+  const el = document.getElementById("qc_pool_size");
+  el.textContent = `${n} eligible question${n===1?"":"s"} in pool` + (n < CONFIG.n
+    ? ` — you asked for ${CONFIG.n}, will use all ${n}` : ".");
+  document.getElementById("btn_start").disabled = n === 0;
+}
+
+["qc_n","qc_topic","qc_bucket","qc_type"].forEach(id => {
+  document.getElementById(id).addEventListener("change", updatePoolSize);
+});
+
+document.getElementById("btn_start").addEventListener("click", () => {
+  readConfig();
+  const pool = filteredPool();
+  QUIZ = CONFIG.shuffle ? shuffle(pool.slice()) : pool.slice();
+  QUIZ = QUIZ.slice(0, CONFIG.n);
+  if(QUIZ.length === 0){ toast("No eligible questions in pool", "err"); return; }
+  IDX = 0; SCORE = 0; RESPONSES = [];
+  document.getElementById("config_section").style.display = "none";
+  document.getElementById("quiz_section").style.display = "";
+  document.getElementById("result_section").style.display = "none";
+  document.getElementById("q_total").textContent = QUIZ.length;
+  document.getElementById("q_score_total").textContent = QUIZ.length;
+  presentQuestion();
+});
+
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+function presentQuestion(){
+  const q = QUIZ[IDX];
+  document.getElementById("q_idx").textContent = IDX + 1;
+  document.getElementById("q_score_run").textContent = SCORE;
+  document.getElementById("q_meta").textContent = `${q.topic || "Other"} · ${q.source || q._bucket}`;
+  document.getElementById("q_text").textContent = q.text || "";
+  document.getElementById("q_feedback").style.display = "none";
+  document.getElementById("btn_submit").style.display = "";
+  document.getElementById("btn_next").style.display = "none";
+  document.getElementById("btn_skip").disabled = false;
+  document.getElementById("btn_submit").disabled = false;
+  const isMcq = q.choices && q.choices.length;
+  if(isMcq){
+    document.getElementById("q_choices").style.display = "";
+    document.getElementById("q_frq").style.display = "none";
+    document.getElementById("q_choices").innerHTML = q.choices.map((c, i) =>
+      `<button class="quiz-choice" data-letter="${esc(c.letter)}">
+         <b>${esc(c.letter)}.</b> ${esc(c.text)}
+       </button>`).join("");
+    document.querySelectorAll(".quiz-choice").forEach(b => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".quiz-choice").forEach(x => x.classList.remove("picked"));
+        b.classList.add("picked");
+      });
+    });
+  } else {
+    document.getElementById("q_choices").style.display = "none";
+    document.getElementById("q_frq").style.display = "";
+    document.getElementById("q_frq").value = "";
+    document.getElementById("q_frq").focus();
+  }
+  startTimer();
+}
+
+function startTimer(){
+  clearInterval(TIMER_ID);
+  const el = document.getElementById("q_timer");
+  if(!CONFIG.timer){ el.textContent = "no limit"; el.className = "quiz-timer"; return; }
+  TIMER_REMAIN = CONFIG.timer;
+  const render = () => {
+    el.textContent = TIMER_REMAIN + "s";
+    el.className = "quiz-timer" + (TIMER_REMAIN <= 5 ? " danger" : TIMER_REMAIN <= 15 ? " warn" : "");
+  };
+  render();
+  TIMER_ID = setInterval(() => {
+    TIMER_REMAIN--;
+    render();
+    if(TIMER_REMAIN <= 0){ clearInterval(TIMER_ID); submitAnswer(true); }
+  }, 1000);
+}
+
+function submitAnswer(timedOut){
+  clearInterval(TIMER_ID);
+  const q = QUIZ[IDX];
+  const isMcq = q.choices && q.choices.length;
+  let picked;
+  if(isMcq){
+    const sel = document.querySelector(".quiz-choice.picked");
+    picked = sel ? sel.dataset.letter : null;
+  } else {
+    picked = document.getElementById("q_frq").value.trim();
+  }
+  if(!picked && !timedOut){
+    toast("Pick an answer (or click Skip).", "warn");
+    return;
+  }
+  const correct_raw = String(q.answer || "").trim();
+  let correct;
+  if(isMcq){
+    correct = (picked || "").toUpperCase() === correct_raw.toUpperCase().charAt(0);
+  } else {
+    correct = (picked || "").toLowerCase() === correct_raw.toLowerCase();
+  }
+  if(correct) SCORE++;
+  RESPONSES.push({q, picked: picked || (timedOut ? "(timed out)" : "(skipped)"), correct, timedOut});
+  // Render feedback inline
+  const fb = document.getElementById("q_feedback");
+  fb.style.display = "";
+  fb.className = "quiz-feedback " + (correct ? "correct" : "wrong");
+  fb.innerHTML = correct
+    ? `✓ Correct — answer was <b>${esc(correct_raw)}</b>`
+    : `✗ ${timedOut ? "Out of time" : "Not quite"} — correct answer was <b>${esc(correct_raw)}</b>`;
+  if(isMcq){
+    document.querySelectorAll(".quiz-choice").forEach(b => {
+      if(b.dataset.letter === correct_raw.charAt(0).toUpperCase()) b.classList.add("correct");
+      else if(b.classList.contains("picked")) b.classList.add("wrong");
+      b.style.pointerEvents = "none";
+    });
+  } else {
+    document.getElementById("q_frq").disabled = true;
+  }
+  document.getElementById("btn_submit").style.display = "none";
+  document.getElementById("btn_skip").disabled = true;
+  document.getElementById("btn_next").style.display = "";
+  document.getElementById("q_score_run").textContent = SCORE;
+}
+
+document.getElementById("btn_submit").addEventListener("click", () => submitAnswer(false));
+document.getElementById("btn_skip").addEventListener("click", () => {
+  clearInterval(TIMER_ID);
+  RESPONSES.push({q: QUIZ[IDX], picked: "(skipped)", correct: false, skipped: true});
+  IDX++;
+  if(IDX >= QUIZ.length) renderResult();
+  else presentQuestion();
+});
+document.getElementById("btn_next").addEventListener("click", () => {
+  IDX++;
+  // Re-enable FRQ input for the next question
+  document.getElementById("q_frq").disabled = false;
+  if(IDX >= QUIZ.length) renderResult();
+  else presentQuestion();
+});
+// Enter submits / advances
+document.addEventListener("keydown", e => {
+  if(e.key !== "Enter") return;
+  if(document.getElementById("btn_next").style.display !== "none"){
+    document.getElementById("btn_next").click();
+  } else if(document.getElementById("btn_submit").style.display !== "none"){
+    document.getElementById("btn_submit").click();
+  }
+});
+
+function renderResult(){
+  document.getElementById("quiz_section").style.display = "none";
+  document.getElementById("result_section").style.display = "";
+  const pct = Math.round(100 * SCORE / QUIZ.length);
+  document.getElementById("r_score").textContent = `${SCORE} / ${QUIZ.length}`;
+  document.getElementById("r_detail").textContent = `${pct}% — ${pct >= 80 ? "great work!" : pct >= 60 ? "solid effort." : "more practice helps."}`;
+  const mistakes = RESPONSES.filter(r => !r.correct);
+  document.getElementById("r_mistakes_hdr").textContent =
+    mistakes.length ? `Review mistakes (${mistakes.length})` : "No mistakes — perfect run!";
+  document.getElementById("r_mistakes").innerHTML = mistakes.map(r => {
+    const q = r.q;
+    const isMcq = q.choices && q.choices.length;
+    const choicesHtml = isMcq ? "<br>" + q.choices.map(c =>
+        `<span style="margin-right:8px"><b>${esc(c.letter)}.</b> ${esc(c.text)}</span>`).join("") : "";
+    return `<div class="quiz-mistake">
+      <div class="quiz-mistake-meta">${esc(q.topic || "")} · ${esc(q.source || q._bucket)}</div>
+      <div class="quiz-mistake-q">${esc(q.text || "")}${choicesHtml}</div>
+      <div class="quiz-mistake-you">Your answer: ${esc(r.picked)}</div>
+      <div class="quiz-mistake-correct">Correct: ${esc(q.answer || "—")}</div>
+    </div>`;
+  }).join("");
+}
+
+document.getElementById("btn_retry").addEventListener("click", () => {
+  document.getElementById("config_section").style.display = "";
+  document.getElementById("result_section").style.display = "none";
+});
+
+loadPool();
+</script>
+</body></html>

@@ -1,0 +1,1159 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Browse · NCMS Sci-Oly Question Banks</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<style>
+{{ common_css|safe }}
+body{background:#f4f5f7}
+header{background:#fff;border-bottom:1px solid var(--line)}
+.layout{display:flex;min-height:calc(100vh - 46px)}
+.sidebar{width:280px;flex:0 0 280px;background:#fff;border-right:1px solid var(--line);
+  padding:16px;position:sticky;top:46px;height:calc(100vh - 46px);
+  overflow-y:auto;box-sizing:border-box}
+.sidebar h3{margin:0 0 6px 0;font-size:12px;text-transform:uppercase;
+  letter-spacing:.6px;color:#666;font-weight:600}
+.sidebar section{margin-bottom:18px}
+.sidebar input[type=text],.sidebar select{width:100%;padding:7px 9px;
+  border:1px solid var(--line);border-radius:5px;font:inherit;font-size:13px;
+  background:#fff;box-sizing:border-box}
+.sidebar input[type=text]:focus,.sidebar select:focus{outline:none;
+  border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,102,204,.12)}
+.sidebar .clear{font-size:11px;color:var(--accent);background:none;border:none;
+  cursor:pointer;padding:0;margin-top:4px}
+.sidebar .stat-list{list-style:none;padding:0;margin:0;font-size:12px}
+.sidebar .stat-list li{display:flex;justify-content:space-between;padding:3px 0;
+  color:#444}
+.sidebar .stat-list li .n{color:#999;font-variant-numeric:tabular-nums}
+.histo-row{display:grid;grid-template-columns:80px 1fr 28px;gap:6px;
+  align-items:center;font-size:11px;margin-bottom:3px;color:var(--fg-soft)}
+.histo-lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.histo-bar{height:8px;background:var(--line-soft);border-radius:4px;overflow:hidden;display:block}
+.histo-bar span{display:block;height:100%;border-radius:4px}
+.histo-n{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.main{flex:1;padding:18px 28px;min-width:0}
+.toolbar{background:#fff;border:1px solid var(--line);border-radius:8px;
+  padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  margin-bottom:14px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.toolbar .summary{flex:1;font-size:13px;color:#444}
+.toolbar .summary b{color:#222}
+.toolbar .summary .filter-chip{display:inline-block;background:#eef4fb;
+  color:var(--accent);padding:2px 8px;border-radius:10px;font-size:11px;
+  margin-left:6px;cursor:pointer}
+.toolbar .summary .filter-chip:hover{background:#dde9f4}
+.toolbar .summary .filter-chip::after{content:" ×";color:#888}
+.sort{display:flex;gap:6px;align-items:center;font-size:12px;color:#666}
+.sort select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;
+  font:inherit;font-size:12px}
+.results{display:flex;flex-direction:column;gap:12px}
+.qcard{background:#fff;border:1px solid var(--line);border-radius:8px;
+  padding:16px 18px;box-shadow:0 1px 2px rgba(0,0,0,.03);
+  transition:box-shadow .15s,border-color .15s}
+.qcard:hover{box-shadow:0 2px 8px rgba(0,0,0,.06);border-color:#d0d7e0}
+.qcard.synthetic{border-left:3px solid var(--accent)}
+.qcard .head{display:flex;gap:10px;align-items:center;margin-bottom:6px;
+  flex-wrap:wrap}
+.qcard .qnum{font-weight:700;color:#222;font-size:14px}
+.qcard .badge.topic{background:#eef4fb;color:var(--accent)}
+.qcard .badge.focus{background:#eef9ee;color:#1f6f3a}
+.qcard .badge.bucket{background:#f5eee5;color:#a3651a;font-family:ui-monospace,monospace;
+  font-size:10px;font-weight:500}
+.qcard .badge.type{background:#f1eef7;color:#5e3a99}
+.qcard .v-correct{background:#e6f4e6;color:var(--ok)}
+.qcard .v-incorrect{background:#fceaea;color:var(--bad)}
+.qcard .v-uncertain{background:#fff3d7;color:var(--warn)}
+.qcard .v-none{background:#eee;color:#777}
+.qcard .qstem{font-size:14px;line-height:1.5;color:#222;margin:8px 0;
+  white-space:pre-wrap}
+.qcard .choices{margin:6px 0;padding-left:20px;font-size:13px;color:#333}
+.qcard .choices li{margin:2px 0}
+.qcard .choices li.correct{color:var(--ok);font-weight:600}
+.qcard .answer{margin-top:8px;font-size:13px;color:#444}
+.qcard .answer b{color:#222}
+.qcard .images{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.qcard .images img{width:80px;height:80px;object-fit:contain;
+  border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.qcard .rationale{margin-top:8px;background:#fafafa;border-left:3px solid #bbb;
+  padding:8px 12px;font-size:12px;color:#555;font-style:italic;border-radius:0 4px 4px 0}
+.qcard .rationale b{color:#222;font-style:normal}
+.qcard .src-row{display:flex;justify-content:space-between;align-items:center;
+  margin-top:10px;padding-top:10px;border-top:1px solid #f0f0f0;font-size:12px;
+  color:#888}
+.qcard .src-row a{color:var(--accent);text-decoration:none;font-weight:500}
+.qcard .src-row a:hover{text-decoration:underline}
+.qcard .src-row .src-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{text-align:center;padding:60px 20px;color:#999;font-size:14px}
+.empty h3{color:#444;font-weight:500}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
+  align-items:center;justify-content:center;z-index:1000;cursor:zoom-out}
+.lightbox.on{display:flex}
+.lightbox img{max-width:92vw;max-height:92vh;border-radius:4px}
+.qcard{position:relative}
+.qcard-check{position:absolute;top:14px;right:14px;width:16px;height:16px;cursor:pointer}
+.qcard-check:checked + .card-thumb,
+.qcard.has-thumb .card-thumb{display:block}
+.card-thumb{position:absolute;top:8px;right:38px;width:48px;height:48px;
+  object-fit:cover;border:1px solid var(--line);border-radius:4px;
+  background:var(--bg-alt)}
+.inline-editor{margin-top:14px;padding:14px;background:var(--bg-alt);
+  border-radius:6px;border:1px solid var(--line)}
+.inline-editor .ie-row{display:flex;gap:10px;align-items:flex-start;margin-bottom:8px}
+.inline-editor .ie-lbl{flex:0 0 70px;font-size:12px;color:var(--muted);padding-top:4px}
+.inline-editor input[type=text],.inline-editor textarea,.inline-editor select{
+  flex:1;padding:5px 8px;border:1px solid var(--line);border-radius:3px;
+  font:inherit;font-size:13px;background:var(--bg-input);color:var(--fg)}
+.inline-editor textarea{min-height:60px;resize:vertical}
+.inline-editor .ie-choices{flex:1;display:flex;flex-direction:column;gap:4px}
+.inline-editor .ce-choice{display:flex;gap:6px;align-items:center}
+.inline-editor .ce-choice .lt{width:18px;text-align:center;font-weight:bold}
+.inline-editor .ce-c{flex:1}
+.inline-editor .ie-actions{display:flex;gap:8px;margin-top:10px}
+.qcard .pending-img-note{margin-top:8px;padding:6px 8px;background:#fff8e1;
+  border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:3px}
+/* Diagram chat panel */
+.dc-msg{padding:8px 10px;margin:6px 0;border-radius:5px;font-size:12px;line-height:1.5}
+.dc-msg.dc-user{background:var(--bg-card);border:1px solid var(--line)}
+.dc-msg.dc-assistant{background:#fff;border:1px solid var(--accent)}
+.dc-msg b{display:block;font-size:10px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}
+.dc-svg{margin:6px 0;padding:8px;background:#fafafa;border:1px solid var(--line);
+  border-radius:4px}
+.dc-svg-render{max-width:100%;overflow:auto}
+.dc-svg-render svg{max-width:100%;height:auto;display:block;margin:0 auto;
+  background:#fff;border-radius:3px}
+.dc-svg-actions{display:flex;gap:6px;margin-top:6px}
+.dc-prose{font-style:italic;color:var(--fg-soft);font-size:11px;margin-top:4px}
+.btn-tiny{padding:2px 8px;font-size:11px}
+@keyframes dc-star-spin{
+  0%{transform:rotate(0deg) scale(1);opacity:.7}
+  50%{transform:rotate(180deg) scale(1.25);opacity:1}
+  100%{transform:rotate(360deg) scale(1);opacity:.7}
+}
+.dc-thinking{display:flex;align-items:center;gap:8px;color:var(--muted);
+  font-size:12px;padding:10px 6px}
+.dc-thinking .dc-star{display:inline-block;color:#d97757;font-size:17px;
+  animation:dc-star-spin 1.1s ease-in-out infinite}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="/" title="Back to event list" style="font-size:18px">←</a>
+  <h1 style="margin:0;font-size:15px;font-weight:600;flex:1">
+    <a href="/event/{{ event_slug }}/" style="text-decoration:none;color:var(--fg-soft)">{{ event_name }}</a>
+    <span class="muted" style="font-weight:400"> · Browse</span>
+  </h1>
+  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
+  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+  <a href="/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
+  <a href="/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <section>
+      <h3>Search</h3>
+      <input type="text" id="f_search" placeholder="text, answer, source…" autocomplete="off">
+      <button class="clear" id="clear_all" title="Reset every filter on this page back to its default">Clear all filters</button>
+    </section>
+    <section>
+      <h3>Topic</h3>
+      <select id="f_topic"></select>
+    </section>
+    <section id="focus_section" style="display:none">
+      <h3>Focus</h3>
+      <select id="f_focus"></select>
+    </section>
+    <section>
+      <h3>Source</h3>
+      <select id="f_source"></select>
+    </section>
+    <section>
+      <h3>PDF bucket</h3>
+      <select id="f_bucket"></select>
+    </section>
+    <section>
+      <h3>Validation</h3>
+      <select id="f_validation">
+        <option value="">All</option>
+        <option value="correct">✓ Correct</option>
+        <option value="incorrect">⚠ Incorrect</option>
+        <option value="uncertain">? Uncertain</option>
+        <option value="unvalidated">· Unvalidated</option>
+      </select>
+    </section>
+    <section>
+      <h3>Question type</h3>
+      <select id="f_type">
+        <option value="">All</option>
+        <option value="mcq">Multiple choice</option>
+        <option value="frq">Short / free response</option>
+      </select>
+    </section>
+    <section>
+      <h3>Misc</h3>
+      <select id="f_image">
+        <option value="">Any (image or not)</option>
+        <option value="yes">Has image</option>
+        <option value="no">No image</option>
+      </select>
+    </section>
+    <section>
+      <h3>Stats</h3>
+      <ul class="stat-list" id="stat_list"></ul>
+    </section>
+    <section>
+      <h3>Distribution by topic</h3>
+      <div id="topic_chart"></div>
+    </section>
+  </aside>
+  <div class="main">
+    <div class="toolbar">
+      <div class="summary" id="summary">Loading…</div>
+      <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center"
+             title="Show only questions whose PDF bucket was edited within the last N days">
+        <input type="checkbox" id="f_recent">Recently edited (≤7d)
+      </label>
+      <div class="sort">
+        <span>Sort:</span>
+        <select id="f_sort">
+          <option value="bucket-num">By PDF, then Q#</option>
+          <option value="num">Q number (ascending)</option>
+          <option value="topic">Topic</option>
+          <option value="focus">Focus</option>
+          <option value="source">Source</option>
+          <option value="validation">Validation status</option>
+          <option value="length-desc">Length (longest first)</option>
+          <option value="length-asc">Length (shortest first)</option>
+          <option value="edited">Recently edited first</option>
+        </select>
+      </div>
+      <button id="export_btn" title="Export the currently filtered set">Export ▾</button>
+      <div id="export_menu" style="display:none;position:absolute;background:var(--bg-card);
+           border:1px solid var(--line);border-radius:6px;padding:6px 0;
+           box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:100">
+        <button class="ghost" data-export="csv" title="Download every question in the bank as CSV" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV (everything)</button>
+        <button class="ghost" data-export="json" title="Download every question in the bank as JSON" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON (everything)</button>
+        <button class="ghost" data-export="csv-filtered" title="Download only the questions visible after applying the current filters (CSV)" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV (filtered set)</button>
+        <button class="ghost" data-export="json-filtered" title="Download only the questions visible after applying the current filters (JSON)" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON (filtered set)</button>
+        <button class="ghost" data-export="markdown-filtered" title="Download only the questions visible after applying the current filters (Markdown)" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown (filtered set)</button>
+        <button class="ghost" data-export="apkg" title="Download every question as an Anki deck (.apkg) — sub-decked by topic. Requires server-side `pip install genanki`." style="display:block;width:100%;text-align:left;padding:6px 14px">Anki deck (everything)</button>
+        <button class="ghost" data-export="pdf" title="Download every question as a printable PDF, answer key at the end. Requires server-side `pip install reportlab`." style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF (everything)</button>
+      </div>
+    </div>
+    <div id="bulk_bar" style="display:none;background:var(--accent);color:#fff;
+         padding:10px 16px;border-radius:6px;margin-bottom:10px;
+         display:none;align-items:center;gap:10px;font-size:13px">
+      <b><span id="sel_count">0</span> selected</b>
+      <button onclick="bulkAction('selectall')" title="Select every question currently shown (respects active filters)" style="margin-left:auto">Select all filtered</button>
+      <button onclick="bulkAction('deselect')" title="Clear all selection checkboxes">Deselect all</button>
+      <button onclick="bulkAction('compare')" title="View selected questions side-by-side">Compare</button>
+      <button onclick="bulkAction('delete')" class="danger" title="Permanently delete every selected question (writes through to the state files)">Delete</button>
+    </div>
+    <div id="results" class="results"></div>
+  </div>
+</div>
+<div class="lightbox" id="lightbox"><img id="lbimg" src=""></div>
+<!-- Diagram-generation chat modal -->
+<div id="diagram_modal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.55);z-index:310;padding:24px;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card);border-radius:8px;padding:18px 22px;
+       width:760px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;
+       color:var(--fg);box-shadow:0 12px 40px rgba(0,0,0,.45)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div>
+        <h3 style="margin:0;font-size:15px">
+          🤖 Generate diagram —
+          <span id="dc_qnum" style="color:var(--accent)">Q#?</span>
+          <span class="muted" style="font-weight:400;font-size:12px">
+            · topic: <span id="dc_topic">—</span>
+          </span>
+        </h3>
+      </div>
+      <button onclick="closeDiagramChat()" title="Close the diagram-generation chat (changes you saved already are kept).">✕ Close</button>
+    </div>
+    <p class="muted" id="dc_hint" style="font-size:12px;margin:0 0 10px 0"></p>
+    <div id="dc_history" style="flex:1;overflow-y:auto;padding:6px 4px;
+         background:var(--bg-alt);border-radius:6px;min-height:200px;max-height:55vh">
+    </div>
+    <div style="display:flex;gap:6px;margin-top:10px;align-items:flex-end">
+      <textarea id="dc_input" rows="3" placeholder="Describe the diagram (or ask for changes)…"
+                style="flex:1;padding:8px 10px;border:1px solid var(--line);
+                       border-radius:4px;font:inherit;font-size:13px;resize:vertical"></textarea>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+        <span id="dc_cost" class="muted" style="font-size:11px;white-space:nowrap"
+              title="Estimated cost of clicking Send, computed via Anthropic's free token-count endpoint. Actual cost may vary with response length."></span>
+        <button id="dc_send" class="primary" onclick="diagramChatSend()"
+                title="Send this message to the LLM (configured in Settings). The reply with the SVG will appear above.">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="compare_modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
+     z-index:300;padding:30px;overflow:auto">
+  <div style="background:var(--bg-card);border-radius:8px;padding:18px;
+       max-width:1200px;margin:0 auto;color:var(--fg)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0">Compare selected questions</h3>
+      <button onclick="closeCompare()" title="Close the compare panel">✕ Close</button>
+    </div>
+    <div id="compare_grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px"></div>
+  </div>
+</div>
+<script>
+const EVENT_SLUG = "{{ event_slug }}";
+const API = `/event/${EVENT_SLUG}/api`;
+let DATA = null;
+let FILTERED = [];
+
+function esc(s){
+  return (s||"").toString().replaceAll("&","&amp;").replaceAll("<","&lt;")
+                          .replaceAll(">","&gt;").replaceAll('"',"&quot;");
+}
+function renderMath(el){
+  if(typeof renderMathInElement === "function"){
+    try{ renderMathInElement(el, {
+      delimiters:[{left:"$$",right:"$$",display:true},
+                  {left:"$", right:"$", display:false}],
+      throwOnError:false}); } catch(e){}
+  }
+}
+function fillSelect(sel, items, allLabel){
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${esc(allLabel)}</option>`
+    + items.map(([k,v]) => `<option value="${esc(k)}">${esc(k)} (${v})</option>`).join("");
+  if([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+async function load(){
+  const r = await fetch(`${API}/all-questions`);
+  DATA = await r.json();
+  // Populate filter dropdowns
+  const sortedBy = (obj) => Object.entries(obj).sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+  fillSelect(document.getElementById("f_topic"),  sortedBy(DATA.stats.by_topic),  "All topics");
+  fillSelect(document.getElementById("f_source"), sortedBy(DATA.stats.by_source), "All sources");
+  fillSelect(document.getElementById("f_bucket"), sortedBy(DATA.stats.by_bucket), "All buckets");
+  if(DATA.foci && DATA.foci.length){
+    document.getElementById("focus_section").style.display = "";
+    fillSelect(document.getElementById("f_focus"), sortedBy(DATA.stats.by_focus), "All foci");
+  }
+  // Restore filter state from URL (?search=...&topic=...&bucket=...)
+  const p = new URLSearchParams(location.search);
+  const setVal = (id, v) => { const el=document.getElementById(id); if(el && v != null) el.value = v; };
+  setVal("f_search", p.get("search") || "");
+  setVal("f_topic",  p.get("topic")  || "");
+  setVal("f_focus",  p.get("focus")  || "");
+  setVal("f_source", p.get("source") || "");
+  setVal("f_bucket", p.get("bucket") || "");
+  setVal("f_validation", p.get("validation") || "");
+  setVal("f_type", p.get("type") || "");
+  setVal("f_image", p.get("image") || "");
+  setVal("f_sort", p.get("sort") || "bucket-num");
+  // Topic distribution mini-chart
+  const tc = document.getElementById("topic_chart");
+  const items = Object.entries(DATA.stats.by_topic).sort((a,b)=>b[1]-a[1]);
+  const max = Math.max(1, ...items.map(x => x[1]));
+  tc.innerHTML = items.map(([k, v]) => {
+    const w = Math.round(v / max * 100);
+    const hue = (function(t){let h=0; for(let i=0;i<t.length;i++) h=((h<<5)-h+t.charCodeAt(i))|0; return Math.abs(h)%360;})(k);
+    return `<div class="histo-row" title="${esc(k)}: ${v} questions">
+      <span class="histo-lbl">${esc(k.length > 22 ? k.slice(0,21)+"…" : k)}</span>
+      <span class="histo-bar"><span style="width:${w}%;background:hsl(${hue},65%,55%)"></span></span>
+      <span class="histo-n">${v}</span>
+    </div>`;
+  }).join("");
+  // Sidebar stats
+  const stats = document.getElementById("stat_list");
+  stats.innerHTML = `
+    <li><span>Total questions</span><span class="n">${DATA.stats.total}</span></li>
+    <li><span>Topics</span><span class="n">${Object.keys(DATA.stats.by_topic).length}</span></li>
+    <li><span>Sources</span><span class="n">${Object.keys(DATA.stats.by_source).length}</span></li>
+    <li><span>✓ Validated correct</span><span class="n">${DATA.stats.by_validation.correct||0}</span></li>
+    <li><span>⚠ Validated incorrect</span><span class="n">${DATA.stats.by_validation.incorrect||0}</span></li>
+    <li><span>? Uncertain</span><span class="n">${DATA.stats.by_validation.uncertain||0}</span></li>
+    <li><span>· Unvalidated</span><span class="n">${DATA.stats.by_validation.unvalidated||0}</span></li>`;
+  // Pick up ?q=NUM&bucket=foo from URL to scroll to a specific question
+  rerender();
+  const params = new URLSearchParams(location.search);
+  const targetQ = params.get("q");
+  if(targetQ){
+    const el = document.querySelector(`[data-qid="${CSS.escape(targetQ)}"]`);
+    if(el){ el.scrollIntoView({behavior:"smooth", block:"center"});
+            el.style.outline = "2px solid var(--accent)";
+            setTimeout(()=>{ el.style.outline=""; }, 2500); }
+  }
+}
+
+function rerender(){
+  if(!DATA) return;
+  const sv = document.getElementById("f_search").value.trim().toLowerCase();
+  const ft = document.getElementById("f_topic").value;
+  const ff = (DATA.foci && DATA.foci.length) ? document.getElementById("f_focus").value : "";
+  const fs = document.getElementById("f_source").value;
+  const fb = document.getElementById("f_bucket").value;
+  const fv = document.getElementById("f_validation").value;
+  const fy = document.getElementById("f_type").value;
+  const fi = document.getElementById("f_image").value;
+
+  // Persist filter state in the URL so reload + back-button works and
+  // links are shareable.
+  const params = new URLSearchParams();
+  const setP = (k,v) => { if(v) params.set(k,v); };
+  setP("search", sv); setP("topic", ft); setP("focus", ff);
+  setP("source", fs); setP("bucket", fb); setP("validation", fv);
+  setP("type", fy); setP("image", fi);
+  const sortBy = document.getElementById("f_sort").value;
+  if(sortBy !== "bucket-num") params.set("sort", sortBy);
+  const newUrl = location.pathname + (params.toString() ? "?" + params : "");
+  history.replaceState(null, "", newUrl);
+
+  const recent = document.getElementById("f_recent").checked;
+  const sevenDays = 7 * 86400 * 1000;
+  FILTERED = DATA.questions.filter(q => {
+    if(ft && (q.topic || "Other / General") !== ft) return false;
+    if(ff && (q.focus || "") !== ff) return false;
+    if(fs && (q.source || "(no source)") !== fs) return false;
+    if(fb && q._bucket !== fb) return false;
+    if(fv === "unvalidated" && q._validation_status) return false;
+    if(fv && fv !== "unvalidated" && q._validation_status !== fv) return false;
+    if(fy === "mcq" && !q._is_mcq) return false;
+    if(fy === "frq" && q._is_mcq) return false;
+    if(fi === "yes" && !q._has_image) return false;
+    if(fi === "no"  &&  q._has_image) return false;
+    if(recent){
+      if(!q._edited_at) return false;
+      const ts = Date.parse(q._edited_at);
+      if(!ts || (Date.now() - ts) > sevenDays) return false;
+    }
+    if(sv){
+      const hay = `${q.text||""} ${q.answer||""} ${q.source||""} ${q.topic||""} ${q.focus||""}`.toLowerCase();
+      if(!hay.includes(sv)) return false;
+    }
+    return true;
+  });
+
+  // Sort (sortBy was already read at the top of rerender for URL state)
+  const numKey = q => {
+    const m = String(q.number||"").match(/^([0-9]+)/);
+    return m ? parseInt(m[1]) : 999999;
+  };
+  const sorters = {
+    "num":          (a,b) => numKey(a) - numKey(b),
+    "topic":        (a,b) => (a.topic||"").localeCompare(b.topic||"") || numKey(a)-numKey(b),
+    "focus":        (a,b) => (a.focus||"").localeCompare(b.focus||"") || numKey(a)-numKey(b),
+    "source":       (a,b) => (a.source||"").localeCompare(b.source||"") || numKey(a)-numKey(b),
+    "validation":   (a,b) => (a._validation_status||"zzz").localeCompare(b._validation_status||"zzz"),
+    "length-desc":  (a,b) => (b.text||"").length - (a.text||"").length,
+    "length-asc":   (a,b) => (a.text||"").length - (b.text||"").length,
+    "bucket-num":   (a,b) => (a._bucket||"").localeCompare(b._bucket||"") || numKey(a)-numKey(b),
+    "edited":       (a,b) => (Date.parse(b._edited_at)||0) - (Date.parse(a._edited_at)||0),
+  };
+  FILTERED.sort(sorters[sortBy] || sorters["bucket-num"]);
+
+  // Summary chips
+  const activeFilters = [];
+  if(sv) activeFilters.push(`search: "${esc(sv)}"`);
+  if(ft) activeFilters.push(`topic: ${esc(ft)}`);
+  if(ff) activeFilters.push(`focus: ${esc(ff)}`);
+  if(fs) activeFilters.push(`source: ${esc(fs)}`);
+  if(fv) activeFilters.push(`status: ${esc(fv)}`);
+  if(fy) activeFilters.push(`type: ${esc(fy.toUpperCase())}`);
+  if(fi) activeFilters.push(`image: ${esc(fi)}`);
+  const sumEl = document.getElementById("summary");
+  sumEl.innerHTML = `Showing <b>${FILTERED.length}</b> of <b>${DATA.stats.total}</b> question(s)`
+    + (activeFilters.length
+        ? ` · filters: ${activeFilters.map(f => `<span class="filter-chip" data-clear-filter>${f}</span>`).join("")}`
+        : "");
+  // Render
+  const root = document.getElementById("results");
+  if(FILTERED.length === 0){
+    root.innerHTML = `<div class="empty">
+      <h3>No questions match these filters</h3>
+      <p>Clear filters or broaden your search.</p>
+    </div>`;
+    updateSelectionBar();
+    return;
+  }
+  root.innerHTML = FILTERED.map(renderCard).join("");
+  renderMath(root);
+  updateSelectionBar();
+}
+
+// Deterministic hue per topic so users learn to recognise them by colour.
+function topicHue(t){
+  let h = 0; for(let i=0;i<(t||"").length;i++) h = ((h<<5)-h + t.charCodeAt(i)) | 0;
+  return Math.abs(h) % 360;
+}
+function topicChipStyle(t){
+  if(!t) return "";
+  const hue = topicHue(t);
+  return `background:hsl(${hue},70%,93%);color:hsl(${hue},55%,32%)`;
+}
+const TYPE_ICON = {mcq: "🔘", frq: "📝", num: "🧮"};
+
+function renderCard(q){
+  const isReal = !q._synthetic_bucket;
+  const sourceLink = isReal
+    ? `<a href="/event/${EVENT_SLUG}/review/${encodeURIComponent(q._bucket)}?q=${encodeURIComponent(q.number)}"
+         target="_blank" title="Open the source PDF on its review page (Q${esc(q.number)} highlighted)">
+         Open source ↗
+       </a>`
+    : "";
+  const choicesHtml = (q.choices && q.choices.length)
+    ? `<ul class="choices">${q.choices.map(c => `<li><b>${esc(c.letter)}.</b> ${esc(c.text)}</li>`).join("")}</ul>`
+    : "";
+  const imagesHtml = (q.images && q.images.length)
+    ? `<div class="images">${q.images.map(fn =>
+        `<img src="/event/${EVENT_SLUG}/images/${esc(fn)}" alt="figure" data-lb>`).join("")}</div>`
+    : "";
+  const pendingDesc = (q.image_descriptions || {}).__pending__ || "";
+  const pendingNote = pendingDesc ? `
+    <div class="pending-img-note"
+         title="An author note recommends a diagram. Use Generate diagram to attach one.">
+      🖼️ <i>Diagram recommended:</i> ${esc(pendingDesc).slice(0, 140)}${pendingDesc.length > 140 ? '…' : ''}
+    </div>` : "";
+  const v = q.validation;
+  let vBadge = `<span class="badge v-none">unvalidated</span>`;
+  let vRationale = "";
+  if(v && v.status){
+    const cls = "v-" + v.status;
+    const icon = {correct:"✓",incorrect:"⚠",uncertain:"?",unavailable:"·"}[v.status] || "·";
+    vBadge = `<span class="badge ${cls}">${icon} ${esc(v.status)}${v.stale ? " (stale)" : ""}</span>`;
+    if(v.rationale){
+      vRationale = `<div class="rationale">
+        <b>Validation:</b> ${esc(v.rationale)}
+        ${v.source ? `<br><small>Source: ${esc(v.source)}</small>` : ""}
+        ${v.status === "incorrect" && v.correct_answer ? `<br><small>Likely correct: <b>${esc(v.correct_answer)}</b></small>` : ""}
+      </div>`;
+    }
+  }
+  const bucketLabel = q._bucket.replace(/[.]pdf$/, "").replace(/^_/, "");
+  const focusBadge = q.focus ? `<span class="badge focus">${esc(q.focus)}</span>` : "";
+
+  const thumb = (q.images && q.images.length)
+    ? `<img class="card-thumb" src="/event/${EVENT_SLUG}/images/${esc(q.images[0])}" alt="thumbnail" title="${q.images.length} image(s) attached">`
+    : "";
+  return `
+  <div class="qcard ${q._synthetic_bucket ? "synthetic" : ""}" data-qid="${esc(q.number)}" data-bucket="${esc(q._bucket)}">
+    <input type="checkbox" class="qcard-check" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Select for bulk compare/delete">
+    ${thumb}
+    <div class="head">
+      <span class="qnum" title="Question number in its source PDF">Q${esc(q.number)}</span>
+      <span class="badge topic" style="${topicChipStyle(q.topic)}">${esc(q.topic || "Other / General")}</span>
+      ${focusBadge}
+      <span class="badge type" title="${q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
+      ${vBadge}
+      <span class="badge bucket" title="State-file bucket: ${esc(q._bucket)}">${esc(bucketLabel)}</span>
+    </div>
+    <div class="qstem">${esc(q.text || "(empty)")}</div>
+    ${choicesHtml}
+    <div class="answer"><b>Answer:</b> ${esc(q.answer || "—")}</div>
+    ${imagesHtml}
+    ${pendingNote}
+    ${vRationale}
+    <div class="src-row">
+      <span class="src-label">${esc(q.source || "(no source)")}</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <button class="ghost edit-btn" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Edit this question inline">✎ Edit</button>
+        <button class="ghost gensim-btn" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Ask Haiku to write N new questions on the same concept as this one">✨ Generate similar</button>
+        <button class="ghost gendiagram-btn" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Open a small chat with Claude Sonnet to generate an SVG diagram for this question, seeded with the stem and topic.">🤖 Generate diagram</button>
+        ${sourceLink}
+      </span>
+    </div>
+  </div>`;
+}
+
+function openInlineEditor(card, q){
+  if(card.querySelector(".inline-editor")) return; // already open
+  const choicesHtml = (q.choices || []).map((c, i) =>
+    `<div class="ce-choice"><span class="lt">${esc(c.letter || String.fromCharCode(65+i))}</span>
+       <input type="text" class="ce-c" data-idx="${i}" value="${esc(c.text)}"></div>`).join("");
+  const ed = document.createElement("div");
+  ed.className = "inline-editor";
+  ed.innerHTML = `
+    <div class="ie-row">
+      <label class="ie-lbl">Topic</label>
+      <select class="ie-topic">${(DATA.topics || []).concat(q.topic ? [q.topic] : [])
+        .filter((t,i,a) => a.indexOf(t)===i)
+        .map(t => `<option ${t===q.topic?"selected":""}>${esc(t)}</option>`).join("")}</select>
+    </div>
+    ${(DATA.foci && DATA.foci.length) ? `
+    <div class="ie-row">
+      <label class="ie-lbl">Focus</label>
+      <select class="ie-focus">
+        <option value="">(none)</option>
+        ${DATA.foci.map(f => `<option ${f===q.focus?"selected":""}>${esc(f)}</option>`).join("")}
+      </select>
+    </div>` : ""}
+    <div class="ie-row">
+      <label class="ie-lbl">Stem</label>
+      <textarea class="ie-text">${esc(q.text)}</textarea>
+    </div>
+    ${(q.choices && q.choices.length) ? `
+    <div class="ie-row">
+      <label class="ie-lbl">Choices</label>
+      <div class="ie-choices">${choicesHtml}</div>
+    </div>` : ""}
+    <div class="ie-row">
+      <label class="ie-lbl">Answer</label>
+      <input type="text" class="ie-answer" value="${esc(q.answer)}">
+    </div>
+    <div class="ie-actions">
+      <button class="primary ie-save" title="Save the inline edits back to the state file">Save</button>
+      <button class="ie-cancel" title="Discard inline edits and close the editor">Cancel</button>
+      <button class="danger ie-del" title="Delete this question entirely">Delete question</button>
+    </div>`;
+  card.appendChild(ed);
+  // Focus stem
+  setTimeout(()=>ed.querySelector(".ie-text").focus(), 30);
+
+  ed.querySelector(".ie-cancel").addEventListener("click", () => ed.remove());
+  ed.querySelector(".ie-save").addEventListener("click", async () => {
+    const payload = {
+      topic:  ed.querySelector(".ie-topic").value,
+      text:   ed.querySelector(".ie-text").value,
+      answer: ed.querySelector(".ie-answer").value,
+    };
+    const focusEl = ed.querySelector(".ie-focus");
+    if(focusEl) payload.focus = focusEl.value;
+    const cs = [...ed.querySelectorAll(".ie-c")];
+    if(cs.length){
+      payload.choices = cs.map((el, i) => ({
+        letter: String.fromCharCode(65+i),
+        text: el.value,
+      }));
+    }
+    try {
+      const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if(j.ok){
+        toast(`Saved Q${q.number}`, "ok");
+        ed.remove();
+        // Update in-memory and re-render
+        Object.assign(q, payload);
+        rerender();
+      } else {
+        toast("Save failed: " + (j.error || ""), "err");
+      }
+    } catch(err){ toast("Save error: " + err.message, "err"); }
+  });
+  ed.querySelector(".ie-del").addEventListener("click", async () => {
+    if(!confirm(`Delete Q${q.number} from ${q._bucket}?
+
+This is recorded as an annotation so reprocess will respect it.`)) return;
+    try {
+      const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {method:"DELETE"});
+      const j = await r.json();
+      if(j.ok){
+        toast(`Deleted Q${q.number}`, "ok");
+        DATA.questions = DATA.questions.filter(x => !(x._bucket === q._bucket && String(x.number) === String(q.number)));
+        rerender();
+      } else { toast("Delete failed: " + (j.error || ""), "err"); }
+    } catch(err){ toast("Delete error: " + err.message, "err"); }
+  });
+}
+
+document.getElementById("results").addEventListener("click", e => {
+  if(e.target.classList && e.target.classList.contains("edit-btn")){
+    e.preventDefault();
+    const card = e.target.closest(".qcard");
+    const num = e.target.dataset.num;
+    const bucket = e.target.dataset.bucket;
+    const q = DATA.questions.find(x => x._bucket === bucket && String(x.number) === num);
+    if(q) openInlineEditor(card, q);
+  }
+  if(e.target.classList && e.target.classList.contains("gensim-btn")){
+    e.preventDefault();
+    const num = e.target.dataset.num;
+    const bucket = e.target.dataset.bucket;
+    const q = DATA.questions.find(x => x._bucket === bucket && String(x.number) === num);
+    if(q) openGenerateSimilar(q);
+  }
+  if(e.target.classList && e.target.classList.contains("gendiagram-btn")){
+    e.preventDefault();
+    const num = e.target.dataset.num;
+    const bucket = e.target.dataset.bucket;
+    const q = DATA.questions.find(x => x._bucket === bucket && String(x.number) === num);
+    if(q) openDiagramChat(q);
+  }
+});
+
+async function openGenerateSimilar(seed){
+  const n = parseInt(prompt(
+    `Ask Haiku to draft N new questions on the same concept as Q${seed.number}.
+
+` +
+    `Topic: ${seed.topic}
+Seed: "${(seed.text||"").slice(0,80)}…"
+
+` +
+    `How many (1-10)?`, "3"));
+  if(!n || n < 1 || n > 10) return;
+  toast(`Generating ${n} similar question(s) for Q${seed.number}…`);
+  let j;
+  try {
+    const r = await fetch(`${API}/generate-similar`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        seed_text:  seed.text,
+        seed_topic: seed.topic,
+        n,
+      }),
+    });
+    j = await r.json();
+  } catch(err){ toast("Generation failed: " + err.message, "err"); return; }
+  if(j.error){ toast("Error: " + j.error, "err"); return; }
+  if(!j.candidates || !j.candidates.length){
+    toast("Haiku returned no usable candidates (likely all duplicates)", "warn");
+    return;
+  }
+  // Show a quick modal with kept candidates and an Accept-all button
+  const html = j.candidates.map((c, i) => `
+    <div class="cand" style="background:var(--bg-card);border:1px solid var(--line);
+         border-radius:6px;padding:12px;margin-bottom:8px">
+      <div class="row" style="font-size:12px;color:var(--muted);margin-bottom:5px">
+        <span class="badge type">${c.type}</span>
+        <span class="badge topic">${esc(c.topic)}</span>
+      </div>
+      <div style="font-size:13px;margin-bottom:6px">${esc(c.text)}</div>
+      ${(c.choices||[]).length ? `<ul style="font-size:12px;margin:4px 0;padding-left:20px">${
+        c.choices.map(ch => `<li><b>${esc(ch.letter)}.</b> ${esc(ch.text)}</li>`).join("")
+      }</ul>` : ""}
+      <div style="font-size:12px;color:var(--ok)"><b>Answer:</b> ${esc(c.answer||"—")}</div>
+      ${c.rationale ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;font-style:italic">${esc(c.rationale)}</div>` : ""}
+    </div>`).join("");
+  document.getElementById("compare_grid").innerHTML = `
+    <div style="grid-column:span 2">
+      <div style="margin-bottom:12px;font-size:13px;color:var(--muted)">
+        ${j.candidates.length} new question(s) on the same concept as Q${seed.number}.
+        ${j.rejected.length ? `${j.rejected.length} auto-rejected as duplicates.` : ""}
+      </div>
+      ${html}
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button class="primary" onclick="acceptSimilar()" title="Accept every generated candidate and write them into the question bank">Accept all &amp; save</button>
+        <button onclick="closeCompare()" title="Throw away the generated candidates without saving">Discard</button>
+      </div>
+    </div>`;
+  document.getElementById("compare_modal").style.display = "block";
+  // Stash for the Accept handler
+  window._lastSimilarBatch = j.candidates;
+  window._lastSimilarSeed = seed;
+}
+
+window.acceptSimilar = async function(){
+  const cands = window._lastSimilarBatch;
+  const seed = window._lastSimilarSeed;
+  if(!cands || !cands.length) return;
+  try {
+    const r = await fetch(`${API}/generate/accept`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        candidates: cands,
+        source: `similar to Q${seed.number} (${(seed.text||"").slice(0,40)})`,
+      }),
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`Saved ${j.added} new question(s) to ${j.bucket}`, "ok");
+      closeCompare();
+      // Pull fresh data so the new questions appear
+      load();
+    } else { toast("Save failed: " + (j.error||""), "err"); }
+  } catch(err){ toast("Save failed: " + err.message, "err"); }
+};
+
+// ---------- Diagram generation chat ----------
+// Same backend endpoints review.html uses (keyed by bucket + Q#, not tied to
+// a real PDF file), so this works for synthetic buckets too — that's the
+// only place imported/generated questions can reach this capability from.
+let DIAGRAM_CHAT = null;   // {q, messages: [...]}
+
+function openDiagramChat(q){
+  DIAGRAM_CHAT = { q, messages: [] };
+  const m = document.getElementById("diagram_modal");
+  m.style.display = "flex";
+  document.getElementById("dc_qnum").textContent = "Q" + q.number;
+  document.getElementById("dc_topic").textContent = q.topic || "—";
+  const seed = (q.image_descriptions || {}).__pending__
+            || ((q.image_descriptions || {}) && Object.values(q.image_descriptions || {}).filter(Boolean)[0])
+            || "";
+  document.getElementById("dc_history").innerHTML = "";
+  const seedHint = seed
+    ? `Author-provided diagram description: "${esc(seed.slice(0, 200))}". Refine or just say "draw it" to start.`
+    : `Describe the diagram you want — Claude Sonnet will produce an SVG you can preview and save.`;
+  document.getElementById("dc_hint").textContent = seedHint;
+  const ta = document.getElementById("dc_input");
+  ta.value = seed
+    ? `Please draw the diagram described above. Keep labels readable; use a clean line-art style.`
+    : `Draw an annotated diagram for this question.`;
+  ta.focus();
+  scheduleDiagramCostEstimate();
+}
+
+function closeDiagramChat(){
+  document.getElementById("diagram_modal").style.display = "none";
+  DIAGRAM_CHAT = null;
+}
+
+document.getElementById("dc_input").addEventListener("input", () => {
+  if(DIAGRAM_CHAT) scheduleDiagramCostEstimate();
+});
+
+let DC_COST_TIMER = null;
+function scheduleDiagramCostEstimate(){
+  clearTimeout(DC_COST_TIMER);
+  DC_COST_TIMER = setTimeout(updateDiagramCostEstimate, 400);
+}
+async function updateDiagramCostEstimate(){
+  if(!DIAGRAM_CHAT) return;
+  const costEl = document.getElementById("dc_cost");
+  const draft = document.getElementById("dc_input").value.trim();
+  const msgs = DIAGRAM_CHAT.messages
+    .filter(m => m.role === "user" || m.role === "assistant")
+    .map(m => ({role: m.role, content: m.content}));
+  if(draft) msgs.push({role: "user", content: draft});
+  if(!msgs.length){ costEl.textContent = ""; return; }
+  costEl.textContent = "estimating cost…";
+  try {
+    const r = await fetch(
+      `${API}/q/${encodeURIComponent(DIAGRAM_CHAT.q._bucket)}/${encodeURIComponent(DIAGRAM_CHAT.q.number)}/diagram-chat/estimate`,
+      {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ messages: msgs }),
+      },
+    );
+    const j = await r.json();
+    if(j.error){ costEl.textContent = ""; return; }
+    costEl.textContent = `≈ $${j.estimated_cost_usd.toFixed(4)} for this turn (${j.provider})`;
+    costEl.title = `${j.input_tokens} input token(s)${j.exact ? "" : " (approx.)"} + an assumed `
+      + `${j.assumed_output_tokens} output token(s) at ${j.provider}/${j.model} pricing `
+      + `($${j.input_price_per_mtok}/$${j.output_price_per_mtok} per Mtok in/out). `
+      + `Actual cost depends on how long the reply is.`;
+  } catch(err){
+    costEl.textContent = "";
+  }
+}
+
+async function diagramChatSend(){
+  if(!DIAGRAM_CHAT) return;
+  const ta = document.getElementById("dc_input");
+  const userMsg = ta.value.trim();
+  if(!userMsg) return;
+  DIAGRAM_CHAT.messages.push({role: "user", content: userMsg});
+  renderDiagramChat();
+  ta.value = "";
+  document.getElementById("dc_cost").textContent = "";
+  const sendBtn = document.getElementById("dc_send");
+  sendBtn.disabled = true; sendBtn.textContent = "Drawing…";
+  ta.disabled = true;
+  const hist = document.getElementById("dc_history");
+  hist.insertAdjacentHTML("beforeend", `<div class="dc-thinking" id="dc_thinking">
+    <span class="dc-star">✦</span> Claude is drawing the diagram…
+  </div>`);
+  hist.scrollTop = 1e9;
+  try {
+    const r = await fetch(
+      `${API}/q/${encodeURIComponent(DIAGRAM_CHAT.q._bucket)}/${encodeURIComponent(DIAGRAM_CHAT.q.number)}/diagram-chat`,
+      {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ messages: DIAGRAM_CHAT.messages }),
+      },
+    );
+    const j = await r.json();
+    if(j.error){
+      toast("Diagram chat error: " + j.error, "err");
+      return;
+    }
+    DIAGRAM_CHAT.messages.push({
+      role: "assistant",
+      content: j.assistant || "(empty response)",
+      svg: j.svg || null,
+      provider: j.provider || "", model: j.model || "",
+    });
+    renderDiagramChat();
+  } catch(err){
+    toast("Chat error: " + err.message, "err");
+  } finally {
+    document.getElementById("dc_thinking")?.remove();
+    sendBtn.disabled = false; sendBtn.textContent = "Send";
+    ta.disabled = false;
+    scheduleDiagramCostEstimate();
+  }
+}
+
+function renderDiagramChat(){
+  const root = document.getElementById("dc_history");
+  root.innerHTML = DIAGRAM_CHAT.messages.map((m, i) => {
+    if(m.role === "user"){
+      return `<div class="dc-msg dc-user"><b>You</b><div>${esc(m.content)}</div></div>`;
+    }
+    const proseOnly = m.svg
+      ? m.content.replace(/```(?:svg|xml|html)?[\s\S]*?```/i, "")
+                 .replace(/<svg[\s\S]*?<\/svg>/i, "").trim()
+      : m.content;
+    const svgBlock = m.svg
+      ? `<div class="dc-svg" data-idx="${i}">
+           <div class="dc-svg-render">${m.svg}</div>
+           <div class="dc-svg-actions">
+             <button class="primary btn-tiny" data-act="dc-save" data-idx="${i}"
+                     title="Convert this SVG to PNG, save into images/, and attach it to the question.">
+               ✓ Use this diagram
+             </button>
+             <button class="btn-tiny" data-act="dc-copy-svg" data-idx="${i}"
+                     title="Copy the raw SVG markup to clipboard">📋 Copy SVG</button>
+           </div>
+         </div>`
+      : "";
+    return `<div class="dc-msg dc-assistant">
+      <b>${esc(m.provider || "Claude")}${m.model ? " (" + esc(m.model) + ")" : ""}</b>
+      ${svgBlock}
+      ${proseOnly ? `<div class="dc-prose">${esc(proseOnly)}</div>` : ""}
+    </div>`;
+  }).join("");
+  root.querySelectorAll("[data-act='dc-save']").forEach(b => {
+    b.addEventListener("click", () => saveDiagramSvg(Number(b.dataset.idx)));
+  });
+  root.querySelectorAll("[data-act='dc-copy-svg']").forEach(b => {
+    b.addEventListener("click", () => {
+      const msg = DIAGRAM_CHAT.messages[Number(b.dataset.idx)];
+      if(msg && msg.svg){
+        navigator.clipboard.writeText(msg.svg).then(
+          () => toast("SVG copied to clipboard", "ok"),
+          () => toast("Copy failed", "err"),
+        );
+      }
+    });
+  });
+  root.scrollTop = 1e9;
+}
+
+async function saveDiagramSvg(idx){
+  if(!DIAGRAM_CHAT) return;
+  const msg = DIAGRAM_CHAT.messages[idx];
+  if(!msg || !msg.svg){ toast("No SVG in that message", "err"); return; }
+  // Auto-derive the alt-text/search description from the assistant's own
+  // explanation of what it drew, instead of interrupting with a native
+  // browser prompt() for it.
+  const desc = (msg.content || "")
+    .replace(/```(?:svg|xml|html)?[\s\S]*?```/i, "")
+    .replace(/<svg[\s\S]*?<\/svg>/i, "")
+    .trim()
+    .slice(0, 200);
+  try {
+    const r = await fetch(
+      `${API}/q/${encodeURIComponent(DIAGRAM_CHAT.q._bucket)}/${encodeURIComponent(DIAGRAM_CHAT.q.number)}/save-svg`,
+      {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ svg: msg.svg, description: (desc || "").trim() }),
+      },
+    );
+    const j = await r.json();
+    if(!j.ok){ toast("Save failed: " + (j.error || ""), "err"); return; }
+    const q = DIAGRAM_CHAT.q;
+    q.images = q.images || [];
+    q.images.push(j.image);
+    if((desc || "").trim()){
+      q.image_descriptions = q.image_descriptions || {};
+      q.image_descriptions[j.image] = desc.trim();
+      delete q.image_descriptions.__pending__;
+    }
+    closeDiagramChat();
+    rerender();
+    toast(`Diagram attached to Q${q.number} as ${j.image}.`, "ok");
+  } catch(err){
+    toast("Save error: " + err.message, "err");
+  }
+}
+
+// Selection / compare / bulk delete
+document.getElementById("results").addEventListener("change", e => {
+  if(e.target.classList && e.target.classList.contains("qcard-check")){
+    updateSelectionBar();
+  }
+});
+
+function selectedQs(){
+  return [...document.querySelectorAll(".qcard-check:checked")].map(cb => {
+    const num = cb.dataset.num, bucket = cb.dataset.bucket;
+    return DATA.questions.find(x => x._bucket === bucket && String(x.number) === num);
+  }).filter(Boolean);
+}
+function updateSelectionBar(){
+  const sel = selectedQs();
+  document.getElementById("sel_count").textContent = sel.length;
+  document.getElementById("bulk_bar").style.display = (sel.length || FILTERED.length) ? "flex" : "none";
+}
+window.bulkAction = function(action){
+  const sel = selectedQs();
+  if(action === "selectall"){
+    document.querySelectorAll(".qcard-check").forEach(cb => cb.checked = true);
+    updateSelectionBar(); return;
+  }
+  if(action === "deselect"){
+    document.querySelectorAll(".qcard-check:checked").forEach(cb => cb.checked = false);
+    updateSelectionBar(); return;
+  }
+  if(action === "compare"){
+    if(sel.length < 2){ toast("Select 2+ questions to compare", "err"); return; }
+    const html = sel.map(q => `
+      <div style="background:var(--bg-alt);border:1px solid var(--line);
+                  border-radius:6px;padding:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+          ${esc(q._bucket)} · Q${esc(q.number)} · ${esc(q.topic)}
+        </div>
+        <div style="font-size:13px;line-height:1.4">${esc(q.text)}</div>
+        ${q.choices && q.choices.length
+          ? `<ul style="font-size:12px;margin:6px 0;padding-left:20px">${q.choices.map(c =>
+              `<li>${esc(c.letter)}. ${esc(c.text)}</li>`).join("")}</ul>` : ""}
+        <div style="font-size:12px;color:var(--ok);margin-top:4px"><b>A:</b> ${esc(q.answer || "—")}</div>
+      </div>`).join("");
+    document.getElementById("compare_grid").innerHTML = html;
+    document.getElementById("compare_modal").style.display = "block";
+    renderMath(document.getElementById("compare_grid"));
+    return;
+  }
+  if(action === "delete"){
+    if(!sel.length){ toast("No questions selected", "err"); return; }
+    if(!confirm(`Delete ${sel.length} selected question(s) from their respective buckets?
+This is recorded as an annotation and will replay on reprocess.`)) return;
+    (async () => {
+      let done = 0;
+      const failures = [];
+      for(const q of sel){
+        try {
+          const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {method:"DELETE"});
+          const j = await r.json();
+          if(j.ok){
+            DATA.questions = DATA.questions.filter(x => !(x._bucket === q._bucket && String(x.number) === String(q.number)));
+            done++;
+          } else {
+            failures.push(`Q${q.number}: ${j.error || "delete returned !ok"}`);
+          }
+        } catch(err){
+          failures.push(`Q${q.number}: ${err.message || err}`);
+        }
+      }
+      if(failures.length){
+        // Show the first failure so the user knows something went wrong;
+        // full list ends up in the toast-history popup via the count log.
+        toast(`Deleted ${done}/${sel.length}. ${failures.length} failed (first: ${failures[0]})`, "err");
+      } else {
+        toast(`Deleted ${done}/${sel.length}`, "ok");
+      }
+      rerender();
+    })();
+  }
+};
+window.closeCompare = function(){
+  document.getElementById("compare_modal").style.display = "none";
+};
+
+// Wire export menu
+document.getElementById("export_btn").addEventListener("click", e => {
+  e.stopPropagation();
+  const m = document.getElementById("export_menu");
+  m.style.display = m.style.display === "none" ? "block" : "none";
+  const r = e.target.getBoundingClientRect();
+  m.style.top = (r.bottom + 4) + "px";
+  m.style.right = "28px";
+});
+document.addEventListener("click", e => {
+  if(!e.target.closest("#export_btn") && !e.target.closest("#export_menu"))
+    document.getElementById("export_menu").style.display = "none";
+});
+document.getElementById("export_menu").addEventListener("click", e => {
+  const kind = e.target.dataset.export;
+  if(!kind) return;
+  if(kind === "csv" || kind === "json" || kind === "apkg" || kind === "pdf"){
+    window.location.href = `${API}/export.${kind}`;
+    return;
+  }
+  // Filtered exports — build client-side
+  if(kind === "csv-filtered"){
+    const rows = [["number","topic","focus","text","answer","choices","source","bucket","validation_status"]];
+    FILTERED.forEach(q => {
+      const choices = (q.choices||[]).map(c => `${c.letter}. ${c.text}`).join(" | ");
+      const v = q.validation || {};
+      rows.push([q.number, q.topic, q.focus, q.text, q.answer, choices, q.source, q._bucket, v.status || ""]);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
+    downloadBlob(csv, "text/csv", `${EVENT_SLUG}-filtered.csv`);
+  } else if(kind === "json-filtered"){
+    downloadBlob(JSON.stringify(FILTERED, null, 2), "application/json", `${EVENT_SLUG}-filtered.json`);
+  } else if(kind === "markdown-filtered"){
+    let md = `# Filtered question bank · ${esc(DATA.event_name)}\n\n*${FILTERED.length} questions*\n\n`;
+    FILTERED.forEach((q,i) => {
+      md += `## Q${i+1} (orig #${q.number})\n*${q.source} · topic: ${q.topic}${q.focus?' · focus: '+q.focus:''}*\n\n${q.text}\n\n`;
+      if(q.choices && q.choices.length) md += q.choices.map(c => `- **${c.letter}.** ${c.text}`).join("\n") + "\n\n";
+      if(q.answer) md += `**Answer:** ${q.answer}\n\n`;
+      md += "---\n\n";
+    });
+    downloadBlob(md, "text/markdown", `${EVENT_SLUG}-filtered.md`);
+  }
+  document.getElementById("export_menu").style.display = "none";
+});
+function downloadBlob(content, mime, filename){
+  const blob = new Blob([content], {type:mime});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  toast(`Downloaded ${filename}`, "ok");
+}
+
+// Wire all filter controls
+["f_search","f_topic","f_focus","f_source","f_bucket","f_validation","f_type","f_image","f_sort","f_recent"]
+  .forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener(el.tagName === "INPUT" ? "input" : "change", rerender);
+  });
+
+document.getElementById("clear_all").addEventListener("click", () => {
+  ["f_search","f_topic","f_focus","f_source","f_bucket","f_validation","f_type","f_image"]
+    .forEach(id => { const el = document.getElementById(id); if(el) el.value = ""; });
+  rerender();
+});
+
+// Click anywhere on a card (other than buttons/links/images) to open its source
+document.getElementById("results").addEventListener("click", e => {
+  if(e.target.closest("a,button,img,[data-lb]")) return;
+  const card = e.target.closest(".qcard");
+  if(!card) return;
+  const lnk = card.querySelector('.src-row a');
+  if(lnk) window.open(lnk.href, "_blank");
+});
+
+// Click a filter chip to remove just that filter
+document.addEventListener("click", e => {
+  if(e.target.dataset.clearFilter !== undefined){
+    const txt = e.target.textContent;
+    const map = {search:"f_search", topic:"f_topic", focus:"f_focus", source:"f_source",
+                 status:"f_validation", type:"f_type", image:"f_image"};
+    const key = (txt.split(":")[0] || "").trim();
+    const id = map[key];
+    if(id){ const el = document.getElementById(id); if(el){ el.value = ""; rerender(); } }
+  }
+});
+
+// Image lightbox
+const lb = document.getElementById("lightbox"), lbImg = document.getElementById("lbimg");
+document.addEventListener("click", e => {
+  if(e.target.dataset && e.target.dataset.lb !== undefined){
+    lbImg.src = e.target.src;
+    lb.classList.add("on");
+  } else if(e.target === lb){
+    lb.classList.remove("on"); lbImg.src = "";
+  }
+});
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape"){ lb.classList.remove("on"); lbImg.src = ""; }
+  if(e.key === "/" && document.activeElement.tagName !== "INPUT"){
+    e.preventDefault(); document.getElementById("f_search").focus();
+  }
+});
+
+load();
+</script>
+</body></html>

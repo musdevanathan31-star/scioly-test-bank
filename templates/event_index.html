@@ -1,0 +1,366 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Review · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.list-wrap{padding:18px}
+table{width:100%;border-collapse:collapse;background:#fff;
+  border:1px solid var(--line);border-radius:6px;overflow:hidden}
+th,td{padding:9px 14px;border-bottom:1px solid var(--line);text-align:left;
+  font-size:13px}
+th{background:#fafafa;cursor:pointer;user-select:none;
+  font-weight:600;color:#444}
+th:hover{background:#f0f0f0}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafbfc}
+th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
+.controls{margin-bottom:12px;display:flex;gap:8px;align-items:center}
+.numcell{text-align:right;font-variant-numeric:tabular-nums}
+.group-row td{background:var(--bg-alt);border-top:2px solid var(--line);
+  border-bottom:1px solid var(--line);font-size:12px;color:var(--fg-soft);
+  padding:6px 14px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="/" title="Back to event list" style="font-size:18px">←</a>
+  <h1>{{ event_name }} — Review</h1>
+  <span id="status" class="muted"></span>
+  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
+  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+  <a href="/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
+  <a href="/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
+  <a href="/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+</header>
+<div class="list-wrap">
+  <div class="controls">
+    <span class="muted">Click a row to review. Sort by column. Tick boxes to bulk-reprocess.</span>
+    <form id="upload_test_form" enctype="multipart/form-data"
+          style="display:flex;gap:8px;align-items:center;margin-left:18px">
+      <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
+        Upload test
+        <input type="file" name="test_file" accept=".pdf" required
+               title="The test / question-paper PDF to add to this event">
+      </label>
+      <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
+        + key (optional)
+        <input type="file" name="key_file" accept=".pdf"
+               title="The matching answer-key PDF, if you have one">
+      </label>
+      <button type="submit"
+              title="Upload this test (and key, if provided) and extract its questions immediately">
+        Upload
+      </button>
+    </form>
+    <span style="flex:1"></span>
+    <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
+      Group by
+      <select id="group_by" title="Visually group PDF rows">
+        <option value="">none</option>
+        <option value="year">year</option>
+        <option value="division">division</option>
+      </select>
+    </label>
+    <button id="bulk_reprocess" class="danger" disabled
+            title="Re-extract every selected PDF using the latest pipeline (annotations are replayed on top).">
+      Bulk reprocess (<span id="bulk_count">0</span>)
+    </button>
+  </div>
+  <table id="tbl">
+    <thead><tr>
+      <th><input type="checkbox" id="select_all" title="Select all PDFs"></th>
+      <th data-sort="name">PDF<span class="arrow"></span></th>
+      <th data-sort="mtime">Modified<span class="arrow"></span></th>
+      <th data-sort="size" class="numcell">Size<span class="arrow"></span></th>
+      <th data-sort="questions" class="numcell" title="Number of questions extracted">
+        Questions<span class="arrow"></span>
+      </th>
+      <th data-sort="images" class="numcell" title="Number of questions with at least one image attached">
+        With images<span class="arrow"></span>
+      </th>
+      <th data-sort="answers" class="numcell" title="Number of questions with a recorded answer">
+        With answers<span class="arrow"></span>
+      </th>
+      <th>Status</th>
+      <th></th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="9">
+      <div class="skeleton skeleton-row"></div>
+      <div class="skeleton skeleton-row" style="width:80%"></div>
+      <div class="skeleton skeleton-row" style="width:60%"></div>
+    </td></tr></tbody>
+  </table>
+</div>
+<script>
+const EVENT_SLUG = "{{ event_slug }}";
+let sortKey = "name";
+let sortOrder = "asc";
+
+function esc_grp(s){ return (s||"").toString().replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+
+document.getElementById("group_by").addEventListener("change", load);
+
+document.getElementById("upload_test_form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const form = e.target;
+  const btn = form.querySelector("button[type=submit]");
+  btn.disabled = true;
+  setStatusHtml(`Uploading and extracting... <span class='spinner'></span>`);
+  try {
+    const r = await fetch(`/event/${EVENT_SLUG}/api/upload-test-pdf`, {
+      method: "POST", body: new FormData(form),
+    });
+    const j = await r.json();
+    if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); return; }
+    setStatus(`Uploaded ${j.pdf_name}: ${j.n_questions} question(s) extracted`
+              + (j.has_key ? " (with key)" : ""), "ok");
+    form.reset();
+    load();
+  } catch(err){
+    setStatus("Upload error: " + err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function extractGroupKey(name, mode){
+  // Filenames look like: <prefix>_<year>_<div>_<tournament>_test.pdf
+  const m = String(name).match(/^[a-z]+_([0-9]{4})_([a-z]+)_/i);
+  if(!m) return "(other)";
+  if(mode === "year") return m[1];
+  if(mode === "division") return m[2].toUpperCase();
+  return "";
+}
+
+async function load(){
+  const r = await fetch(`/event/${EVENT_SLUG}/api/pdfs?sort=${sortKey}&order=${sortOrder}`);
+  let rows = await r.json();
+  const groupBy = (document.getElementById("group_by") || {}).value || "";
+  // When grouping, sort rows by group then by current sortKey
+  if(groupBy){
+    rows.sort((a, b) => {
+      const ga = extractGroupKey(a.name, groupBy);
+      const gb = extractGroupKey(b.name, groupBy);
+      if(ga !== gb) return ga.localeCompare(gb);
+      return 0; // stable within group
+    });
+  }
+  let html = "";
+  let lastGroup = null;
+  rows.forEach(r => {
+    // Highlight rows that probably need attention: zero questions, or
+    // sparse answer coverage (under half), or sparse image coverage when
+    // some are expected.
+    let needsAttention = "";
+    if(r.n_questions === 0) needsAttention = 'style="background:#fcebea"';
+    else if(r.n_questions > 0 && r.n_with_ans / r.n_questions < 0.3)
+      needsAttention = 'style="background:#fff5e7"';
+    const viewQ = `/event/${EVENT_SLUG}/browse?bucket=${encodeURIComponent(r.name)}`;
+    // Emit a group header row when needed
+    if(groupBy){
+      const grp = extractGroupKey(r.name, groupBy);
+      if(grp !== lastGroup){
+        lastGroup = grp;
+        html += `<tr class="group-row"><td colspan="9">
+          <b>${groupBy === "year" ? "Year" : "Division"} ${esc_grp(grp)}</b>
+        </td></tr>`;
+      }
+    }
+    html += `
+      <tr ${needsAttention}>
+        <td><input type="checkbox" class="row-check" data-pdf="${r.name}" title="Select for bulk reprocess"></td>
+        <td><a href="/event/${EVENT_SLUG}/review/${r.name}" title="Review questions extracted from this PDF">${r.name}</a>
+          ${r.has_key ? '' : '<span class="badge fresh" title="No answer-key PDF found for this test">no key</span>'}</td>
+        <td>${r.mtime_h}</td>
+        <td class="numcell">${r.size_h}</td>
+        <td class="numcell">${r.n_questions}</td>
+        <td class="numcell">${r.n_with_img}</td>
+        <td class="numcell">${r.n_with_ans}</td>
+        <td>${
+           r.manual_edited ? '<span class="badge edited" title="You have edited this PDF\'s questions in the review UI">manual edits</span>'
+         : r.processed ? '<span class="badge processed">processed</span>'
+         : '<span class="badge fresh">not processed</span>'
+        }</td>
+        <td class="row-actions">
+          <a href="${viewQ}" title="See these questions in the browse view"><button class="ghost">View questions</button></a>
+          <button class="ghost" data-reprocess="${r.name}" title="Wipe cache and re-extract; replays your annotations">Reprocess</button>
+          <button class="ghost" data-delall="${r.name}" title="Delete every question that came from this PDF (recorded as annotations; survives reprocess)">🗑 Delete all Qs</button>
+        </td>
+      </tr>`;
+  });
+  document.getElementById("rows").innerHTML = html || `<tr><td colspan="9" class="muted">
+    <div style="padding:18px 14px">
+      <p style="margin:0 0 8px 0"><b>No PDFs found yet.</b></p>
+      <p style="margin:0 0 12px 0">Either download them from scioly.org now, or copy your own PDFs into <code>{{ event_slug }}/</code>, or use the Sources page to upload.</p>
+      <button id="btn_dl_event" class="primary" title="Run download_event.py for this event in the background. Progress shows below.">⬇ Download PDFs from scioly.org</button>
+      <div id="dl_progress" style="margin-top:14px;display:none;
+           background:var(--bg-card);border:1px solid var(--line);
+           border-radius:6px;padding:12px;max-width:720px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div><b id="dl_phase">Starting…</b> <span class="muted" id="dl_elapsed" style="margin-left:8px">0s</span></div>
+          <div><span id="dl_count" class="muted"></span></div>
+        </div>
+        <div style="height:8px;background:var(--bg-alt);border-radius:4px;overflow:hidden">
+          <div id="dl_bar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+        </div>
+        <pre id="dl_log" style="margin:8px 0 0 0;max-height:240px;overflow:auto;
+             font-size:11px;line-height:1.45;color:var(--fg-soft);background:var(--bg-alt);
+             padding:6px 8px;border-radius:4px;white-space:pre-wrap"></pre>
+      </div>
+    </div>
+  </td></tr>`;
+  const dlBtn = document.getElementById("btn_dl_event");
+  if(dlBtn) dlBtn.addEventListener("click", startEventDownload);
+  document.querySelectorAll("th[data-sort] .arrow").forEach(a=>{
+    const k = a.parentElement.dataset.sort;
+    a.textContent = (k === sortKey) ? (sortOrder === "asc" ? "▲" : "▼") : "";
+  });
+  // Re-wire row checkboxes
+  document.querySelectorAll(".row-check").forEach(cb => {
+    cb.addEventListener("change", updateBulkCount);
+  });
+  updateBulkCount();
+}
+
+function updateBulkCount(){
+  const n = document.querySelectorAll(".row-check:checked").length;
+  document.getElementById("bulk_count").textContent = n;
+  document.getElementById("bulk_reprocess").disabled = (n === 0);
+}
+
+// Select-all checkbox
+document.getElementById("select_all").addEventListener("change", e => {
+  document.querySelectorAll(".row-check").forEach(cb => cb.checked = e.target.checked);
+  updateBulkCount();
+});
+
+// Bulk reprocess
+document.getElementById("bulk_reprocess").addEventListener("click", async () => {
+  const picked = [...document.querySelectorAll(".row-check:checked")].map(cb => cb.dataset.pdf);
+  if(!picked.length) return;
+  if(!confirm(`Reprocess ${picked.length} PDF(s)?
+
+`
+              + `Annotations are replayed automatically. Hold Shift while clicking Reprocess on `
+              + `a single PDF if you need to wipe annotations too — bulk mode always preserves them.`)) return;
+  document.getElementById("bulk_reprocess").disabled = true;
+  let done = 0;
+  for(const name of picked){
+    setStatusHtml(`Reprocessing ${done+1}/${picked.length}: ${escHtml(name)}... <span class='spinner'></span>`);
+    try {
+      const r = await fetch(`/event/${EVENT_SLUG}/api/pdf/${encodeURIComponent(name)}/reprocess`, {method:"POST"});
+      const j = await r.json();
+      done++;
+      toast(`(${done}/${picked.length}) Reprocessed ${name}: ${j.n_questions || 0} questions`, "ok");
+    } catch(err){
+      toast(`Error on ${name}: ${err.message}`, "err");
+    }
+  }
+  setStatus(`Bulk reprocess done: ${done}/${picked.length} succeeded.`);
+  load();
+});
+
+document.querySelectorAll("th[data-sort]").forEach(th=>{
+  th.addEventListener("click", ()=>{
+    const k = th.dataset.sort;
+    if(sortKey === k) sortOrder = (sortOrder === "asc") ? "desc" : "asc";
+    else { sortKey = k; sortOrder = (k === "mtime" || k === "size" || k.startsWith("n_")) ? "desc" : "asc"; }
+    load();
+  });
+});
+
+document.addEventListener("click", async e=>{
+  const n = e.target.dataset.reprocess;
+  if(n){
+    if(!confirm(`Reprocess ${n}? Manual edits will be lost.`)) return;
+    e.target.textContent = "Working...";
+    e.target.disabled = true;
+    try{
+      const r = await fetch(`/event/${EVENT_SLUG}/api/pdf/${n}/reprocess`, {method:"POST"});
+      const j = await r.json();
+      setStatus(`Reprocessed: ${j.n_questions} questions`);
+    } catch(err){ setStatus("Error: " + err.message); }
+    load();
+    return;
+  }
+  const d = e.target.dataset.delall;
+  if(d){
+    if(!confirm(`Delete ALL questions from ${d}?
+
+` +
+                `Recorded as annotations — deletions survive Reprocess.
+` +
+                `You can re-add questions from regions in the review page.`)) return;
+    e.target.textContent = "Deleting...";
+    e.target.disabled = true;
+    try{
+      const r = await fetch(`/event/${EVENT_SLUG}/api/pdf/${d}/delete-all-questions`, {method:"POST"});
+      const j = await r.json();
+      if(j.ok){ setStatus(`Deleted ${j.deleted} question(s) from ${d}.`); }
+      else { setStatus("Error: " + (j.error || "unknown")); }
+    } catch(err){ setStatus("Error: " + err.message); }
+    load();
+    return;
+  }
+});
+
+function setStatus(s){
+  const el = document.getElementById("status");
+  el.textContent = s;
+  if(s) setTimeout(()=>{ if(el.textContent === s) el.textContent = ""; }, 4000);
+}
+
+// --- Run download_event.py for this event with progress ---
+let DL_POLL = null;
+let DL_JOB = null;
+async function startEventDownload(){
+  const btn = document.getElementById("btn_dl_event");
+  const prog = document.getElementById("dl_progress");
+  btn.disabled = true; btn.textContent = "Starting…";
+  prog.style.display = "block";
+  document.getElementById("dl_phase").textContent = "Launching download_event.py…";
+  document.getElementById("dl_log").textContent = "";
+  document.getElementById("dl_bar").style.width = "0%";
+  document.getElementById("dl_count").textContent = "";
+  try {
+    const r = await fetch(`/event/${EVENT_SLUG}/api/download/start`, {method: "POST"});
+    const j = await r.json();
+    if(j.error){ setStatus("Error: " + j.error); btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org"; return; }
+    DL_JOB = j.job_id;
+    pollDownload();
+  } catch(err){
+    setStatus("Error: " + err.message);
+    btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org";
+  }
+}
+async function pollDownload(){
+  if(!DL_JOB){ return; }
+  try {
+    const r = await fetch(`/event/${EVENT_SLUG}/api/download/${DL_JOB}`);
+    const j = await r.json();
+    if(j.error){ setStatus("Error: " + j.error); return; }
+    document.getElementById("dl_phase").textContent = j.phase || "Working…";
+    document.getElementById("dl_elapsed").textContent = (j.elapsed_s || 0) + "s";
+    document.getElementById("dl_log").textContent = (j.log || []).join("\n");
+    document.getElementById("dl_log").scrollTop = 1e9;
+    if(j.total){
+      const pct = Math.round(100 * (j.done_count || 0) / j.total);
+      document.getElementById("dl_bar").style.width = pct + "%";
+      document.getElementById("dl_count").textContent = `${j.done_count}/${j.total}`;
+    }
+    if(j.finished){
+      DL_JOB = null;
+      document.getElementById("dl_bar").style.width = "100%";
+      setStatus(j.success ? "Download finished — reloading PDF list." : "Download finished with errors.");
+      setTimeout(() => load(), 800);
+      return;
+    }
+    setTimeout(pollDownload, 1000);
+  } catch(err){
+    setStatus("Poll error: " + err.message);
+    setTimeout(pollDownload, 2000);
+  }
+}
+
+load();
+</script>
+</body></html>

@@ -1,0 +1,335 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:24px;max-width:820px;margin:0 auto}
+.evtbl{width:100%;border-collapse:collapse;background:#fff;
+  border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
+.evtbl th,.evtbl td{padding:10px 16px;border-bottom:1px solid var(--line);
+  text-align:left;font-size:14px}
+.evtbl th{background:#fafafa;font-weight:600;color:#444}
+.evtbl tr:last-child td{border-bottom:none}
+.evtbl tr:hover td{background:#fafbfc}
+.evtbl td.num,.evtbl th.num{font-variant-numeric:tabular-nums;text-align:right}
+.evtbl th{cursor:pointer;user-select:none}
+.evtbl th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
+.evtbl td.actions{text-align:right}
+.evtbl .dir-cell{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.new-event{background:#fff;border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-top:18px}
+.new-event h2{margin:0 0 4px 0;font-size:14px}
+.new-event p.muted{margin:0 0 10px 0;font-size:12px}
+.new-event details > summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+.new-event details[open] > summary{margin-bottom:10px}
+.new-event .form{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;
+  align-items:center;font-size:13px}
+.new-event .form input{padding:5px 8px;border:1px solid var(--line);
+  border-radius:3px;font:inherit;font-size:13px}
+.new-event .form .help{grid-column:2;color:var(--muted);font-size:11px;margin-top:-2px}
+.new-event .actions{margin-top:12px;text-align:right}
+.new-event .err{color:var(--bad);font-size:12px;margin-top:6px}
+.new-event .ok{color:var(--ok);font-size:12px;margin-top:6px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <h1>NCMS Sci-Oly Question Banks</h1>
+  <span id="msg" class="muted"></span>
+  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
+  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+</header>
+<div class="wrap">
+  <p class="muted">Pick an event to review. Each event has its own corpus,
+     state file and markdown output.</p>
+  <table class="evtbl" id="ev_tbl">
+    <thead><tr>
+      <th data-sort="name">Event<span class="arrow"></span></th>
+      <th data-sort="pdfs" class="num">PDFs<span class="arrow"></span></th>
+      <th data-sort="q" class="num">Questions<span class="arrow"></span></th>
+      <th data-sort="dir">Directory<span class="arrow"></span></th>
+      <th></th>
+    </tr></thead>
+    <tbody>{% for r in rows %}
+      <tr data-name="{{ r.name }}" data-pdfs="{{ r.n_pdfs }}"
+          data-q="{{ r.n_questions }}" data-dir="{{ r.base_dir }}">
+        <td><a href="/event/{{ r.slug }}/">{{ r.name }}</a>
+            {%- if r.n_pdfs != 0 %}
+            <span class="muted" style="font-size:11px"> · {{ r.n_processed_pdfs }}/{{ r.n_pdfs }} processed</span>
+            {%- endif %}
+        </td>
+        <td class="num">{{ r.n_pdfs }}</td>
+        <td class="num">{{ r.n_questions }}</td>
+        <td class="muted dir-cell">{{ r.base_dir }}</td>
+        <td class="actions">
+          {%- if r.is_builtin %}
+          <span class="muted" style="font-size:11px">built-in</span>
+          {%- else %}
+          <button class="ghost" data-edit-ev="{{ r.slug }}" title="Edit foci/topics/wiki" style="margin-right:4px">✎ Edit</button>
+          <button class="ghost" data-del="{{ r.slug }}" title="Remove this custom event">✕ Remove</button>
+          {%- endif %}
+        </td>
+      </tr>
+    {% endfor %}</tbody>
+  </table>
+
+  <div class="new-event">
+    <details>
+      <summary>+ Register a new event</summary>
+      <p class="muted">
+        Add an event the web app doesn't ship with. Once registered, you can
+        download PDFs (`download_event.py --event &lt;slug&gt;`), scrape the wiki,
+        upload your own source PDFs, and start generating questions — all from
+        the UI. To add proper keyword-based topic classification later, edit
+        <code>events.py</code>.
+      </p>
+      <div class="form">
+        <label for="ne_slug">Slug *</label>
+        <input id="ne_slug" type="text" placeholder="anatomy_physiology" autocomplete="off">
+        <div class="help">URL/dir-safe. Lowercase letters, digits, underscores. Cannot be changed later.</div>
+
+        <label for="ne_name">Display name *</label>
+        <input id="ne_name" type="text" placeholder="Anatomy &amp; Physiology" autocomplete="off">
+
+        <label for="ne_match">scioly.org event name *</label>
+        <input id="ne_match" type="text" placeholder="disease detectives" autocomplete="off">
+        <div class="help">The event's name on scioly.org (lowercase, with spaces). Comma-separated if multiple aliases match. By default the PDF filename prefix is derived from this by stripping spaces (<code>disease detectives</code> → <code>diseasedetectives_*_test.pdf</code>). Leave blank if you only plan to upload your own PDFs.</div>
+
+        <label for="ne_prefix">Filename prefix (override)</label>
+        <input id="ne_prefix" type="text" placeholder="(auto: scioly.org name with spaces removed)" autocomplete="off">
+        <div class="help">Only fill this in if scioly.org's PDFs are named differently than the event itself. E.g. Anatomy &amp; Physiology PDFs are <code>anatomy_*.pdf</code>, not <code>anatomyphysiology_*.pdf</code>.</div>
+
+        <label for="ne_wiki">Wiki page name</label>
+        <input id="ne_wiki" type="text" placeholder="Anatomy_(Event)" autocomplete="off">
+        <div class="help">scioly.org/wiki/index.php/&lt;value&gt;. Leave blank to use the display name with spaces→_.</div>
+
+        <label for="ne_topics">Initial topics</label>
+        <input id="ne_topics" type="text" placeholder="Hormone Function, Glands, Disorders" autocomplete="off">
+        <div class="help">Comma-separated. "Other / General" is always added. You can add more from any question card later.</div>
+
+        <label for="ne_foci">Rotating foci (optional)</label>
+        <input id="ne_foci" type="text" placeholder="Endocrine, Nervous, Sense Organs" autocomplete="off">
+        <div class="help">Comma-separated. Use when the event has a yearly sub-topic rotation (Anatomy &amp; Physiology, Dynamic Planet, Water Quality, Materials Science, …). Each question can be tagged with one focus; the markdown groups by focus when set.</div>
+      </div>
+      <div class="actions">
+        <button id="ne_submit" class="primary" title="Register the event using the values above. Persisted to events_custom.json.">Create event</button>
+      </div>
+      <div id="ne_err" class="err" style="display:none"></div>
+      <div id="ne_ok" class="ok" style="display:none"></div>
+    </details>
+  </div>
+</div>
+
+<!-- Edit event modal -->
+<div id="ev_edit_modal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.55);z-index:300;align-items:center;
+     justify-content:center;padding:32px">
+  <div style="background:var(--bg-card);border:1px solid var(--line);
+       border-radius:10px;padding:22px 26px;min-width:520px;max-width:640px;
+       box-shadow:0 12px 40px rgba(0,0,0,.4);color:var(--fg)">
+    <h3 style="margin:0 0 14px 0">Edit event
+      <span class="muted" style="font-size:13px;font-weight:400" id="ev_edit_slug"></span>
+    </h3>
+    <div class="form" style="display:grid;grid-template-columns:160px 1fr;gap:8px 14px;align-items:center;font-size:13px">
+      <label for="ev_edit_name">Display name</label>
+      <input id="ev_edit_name" type="text" autocomplete="off">
+
+      <label for="ev_edit_prefix">Filename prefix</label>
+      <input id="ev_edit_prefix" type="text" readonly title="Cannot be changed after creation — files on disk use this prefix" style="background:var(--bg-alt);color:var(--muted)">
+
+      <label for="ev_edit_match">scioly.org event match</label>
+      <input id="ev_edit_match" type="text" placeholder="anatomy, anatomy &amp; physiology">
+      <div class="muted" style="grid-column:2;font-size:11px;margin-top:-4px">Comma-separated lowercase substrings to match against scioly_tests.json. Used by download_event.py.</div>
+
+      <label for="ev_edit_wiki">Wiki page name</label>
+      <input id="ev_edit_wiki" type="text" placeholder="Anatomy_(Event)">
+      <div class="muted" style="grid-column:2;font-size:11px;margin-top:-4px">scioly.org/wiki/index.php/&lt;value&gt;. Leave blank to use display name with spaces→_.</div>
+
+      <label for="ev_edit_topics">Topics</label>
+      <input id="ev_edit_topics" type="text" placeholder="Hormone Function, Glands, Disorders">
+      <div class="muted" style="grid-column:2;font-size:11px;margin-top:-4px">Comma-separated. "Other / General" is always included.</div>
+
+      <label for="ev_edit_foci">Rotating foci</label>
+      <input id="ev_edit_foci" type="text" placeholder="Endocrine, Nervous, Sense Organs">
+      <div class="muted" style="grid-column:2;font-size:11px;margin-top:-4px">Comma-separated. For events whose sub-topic rotates yearly.</div>
+    </div>
+    <div id="ev_edit_err" style="color:var(--bad);font-size:12px;margin-top:8px;display:none"></div>
+    <div style="text-align:right;margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
+      <button id="ev_edit_cancel" title="Discard changes and close">Cancel</button>
+      <button id="ev_edit_save" class="primary" title="Persist the edits to events_custom.json">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- sortable event table ---
+let sortKey_ev = "name", sortDir_ev = 1;
+function sortEventTable(){
+  const tbody = document.querySelector("#ev_tbl tbody");
+  if(!tbody) return;
+  const rows = [...tbody.querySelectorAll("tr")];
+  rows.sort((a,b) => {
+    const av = a.dataset[sortKey_ev] || "";
+    const bv = b.dataset[sortKey_ev] || "";
+    if(!isNaN(parseFloat(av)) && !isNaN(parseFloat(bv))){
+      return (parseFloat(av) - parseFloat(bv)) * sortDir_ev;
+    }
+    return av.localeCompare(bv) * sortDir_ev;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+  document.querySelectorAll("#ev_tbl th .arrow").forEach(a => a.textContent = "");
+  const th = document.querySelector(`#ev_tbl th[data-sort="${sortKey_ev}"] .arrow`);
+  if(th) th.textContent = sortDir_ev > 0 ? "▲" : "▼";
+}
+document.querySelectorAll("#ev_tbl th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    if(k === sortKey_ev) sortDir_ev = -sortDir_ev;
+    else { sortKey_ev = k; sortDir_ev = (k === "pdfs" || k === "q") ? -1 : 1; }
+    sortEventTable();
+  });
+});
+sortEventTable();
+
+// --- delete a custom event ---
+document.addEventListener("click", async e => {
+  const slug = e.target.dataset.del;
+  if(slug){
+    if(!confirm(`Remove the "${slug}" event from the registry?
+
+` +
+                `This only deletes the registration; the ${slug}/ directory ` +
+                `and its files are left in place.`)) return;
+    try {
+      const r = await fetch(`/api/events/${encodeURIComponent(slug)}`, {method:"DELETE"});
+      const j = await r.json();
+      if(j.ok){ toast(`Removed "${slug}"`, "ok"); location.reload(); }
+      else toast("Error: " + (j.error || "delete failed"), "err");
+    } catch(err){ toast("Network error: " + err.message, "err"); }
+    return;
+  }
+  const editSlug = e.target.dataset.editEv;
+  if(editSlug){
+    openEventEditModal(editSlug);
+  }
+});
+
+let _editingSlug = null;
+async function openEventEditModal(slug){
+  const err = document.getElementById("ev_edit_err");
+  err.style.display = "none";
+  try {
+    const r = await fetch(`/api/events/${encodeURIComponent(slug)}`);
+    const j = await r.json();
+    if(j.error){ toast("Error: " + j.error, "err"); return; }
+    _editingSlug = slug;
+    document.getElementById("ev_edit_slug").textContent = "(" + slug + ")";
+    document.getElementById("ev_edit_name").value   = j.name || "";
+    document.getElementById("ev_edit_prefix").value = j.filename_prefix || "";
+    document.getElementById("ev_edit_match").value  = (j.event_match || []).join(", ");
+    document.getElementById("ev_edit_wiki").value   = j.wiki_page || "";
+    document.getElementById("ev_edit_topics").value = (j.topics || []).filter(t => t !== "Other / General").join(", ");
+    document.getElementById("ev_edit_foci").value   = (j.foci || []).join(", ");
+    document.getElementById("ev_edit_modal").style.display = "flex";
+    document.getElementById("ev_edit_name").focus();
+  } catch(e){ toast("Network error: " + e.message, "err"); }
+}
+function closeEventEditModal(){
+  document.getElementById("ev_edit_modal").style.display = "none";
+  _editingSlug = null;
+}
+document.getElementById("ev_edit_cancel").addEventListener("click", closeEventEditModal);
+document.getElementById("ev_edit_save").addEventListener("click", async () => {
+  if(!_editingSlug) return;
+  const name   = document.getElementById("ev_edit_name").value.trim();
+  const match  = document.getElementById("ev_edit_match").value.trim();
+  const wiki   = document.getElementById("ev_edit_wiki").value.trim();
+  const topics = document.getElementById("ev_edit_topics").value.trim();
+  const foci   = document.getElementById("ev_edit_foci").value.trim();
+  const err = document.getElementById("ev_edit_err");
+  const btn = document.getElementById("ev_edit_save");
+  err.style.display = "none";
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    const r = await fetch(`/api/events/${encodeURIComponent(_editingSlug)}`, {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name, topics, foci, wiki_page: wiki, event_match: match}),
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`Updated "${_editingSlug}"`, "ok");
+      closeEventEditModal();
+      location.reload();
+    } else {
+      err.textContent = j.error || "edit failed";
+      err.style.display = "block";
+    }
+  } catch(e){
+    err.textContent = "Network error: " + e.message;
+    err.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = "Save";
+  }
+});
+// Esc closes the modal
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape" && document.getElementById("ev_edit_modal").style.display !== "none"){
+    closeEventEditModal();
+  }
+});
+
+// --- form validation: disable submit until required fields filled ---
+const _requiredIds = ["ne_slug", "ne_name"];
+function validateNewEventForm(){
+  const ok = _requiredIds.every(id => document.getElementById(id).value.trim());
+  document.getElementById("ne_submit").disabled = !ok;
+}
+_requiredIds.forEach(id => {
+  const el = document.getElementById(id);
+  if(el) el.addEventListener("input", validateNewEventForm);
+});
+validateNewEventForm();
+
+const msg = document.getElementById("msg");
+document.getElementById("ne_submit").addEventListener("click", async () => {
+  const slug   = document.getElementById("ne_slug").value.trim();
+  const name   = document.getElementById("ne_name").value.trim();
+  const prefix = document.getElementById("ne_prefix").value.trim();
+  const match  = document.getElementById("ne_match").value.trim();
+  const wiki   = document.getElementById("ne_wiki").value.trim();
+  const topics = document.getElementById("ne_topics").value.trim();
+  const foci   = document.getElementById("ne_foci").value.trim();
+  const errEl = document.getElementById("ne_err");
+  const okEl  = document.getElementById("ne_ok");
+  errEl.style.display = "none"; okEl.style.display = "none";
+  const btn = document.getElementById("ne_submit");
+  btn.disabled = true; btn.textContent = "Creating…";
+  let j;
+  try {
+    const r = await fetch("/api/events", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        slug, name, filename_prefix: prefix,
+        event_match: match, wiki_page: wiki, topics, foci,
+      }),
+    });
+    j = await r.json();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "Create event";
+    errEl.textContent = "Network error: " + (e.message || e);
+    errEl.style.display = "block";
+    return;
+  }
+  btn.disabled = false; btn.textContent = "Create event";
+  if (j.error) {
+    errEl.textContent = j.error;
+    errEl.style.display = "block";
+    return;
+  }
+  okEl.innerHTML = `Created <b>${j.name}</b>. Opening event…`;
+  okEl.style.display = "block";
+  setTimeout(() => { window.location.href = j.url; }, 600);
+});
+</script>
+</body></html>

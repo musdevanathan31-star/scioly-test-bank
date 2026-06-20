@@ -1,0 +1,347 @@
+# NCMS Sci-Oly Question Banks
+
+A Science Olympiad test-prep tool. It downloads past test PDFs from scioly.org, extracts questions topic-by-topic, attaches diagrams to the right question, validates answers with an LLM, and produces a browsable markdown question bank per event. A Flask review UI lets you correct anything the pipeline got wrong; corrections persist through re-runs.
+
+Adding another event is a single entry in `events.py` (see [Adding a new event](#adding-a-new-event)).
+
+> **Desktop browsers only.** The web UI is built for desktop-sized viewports (≥ 1200 px). Mobile and tablet layouts are explicitly out of scope; the review page assumes the PDF-pane / question-pane split, drag-to-capture uses a mouse, and the browse page sidebar is always visible. Use Chrome / Edge / Firefox / Safari on a real computer.
+
+## Configured events
+
+| `--event <slug>` | Display name | Source-filename prefix | Topic taxonomy |
+|---|---|---|---|
+| `circuit_lab` | Circuit Lab | `circuitlab_*.pdf` | 11 topics (Ohm's Law, Series & Parallel, Kirchhoff, RLC, semiconductors, …) |
+| `thermodynamics` | Thermodynamics | `thermodynamics_*.pdf` | 12 topics (Heat Transfer, Gas Laws, Carnot Engine, Entropy, …) |
+
+The slug is the value to pass to `--event` on every CLI tool. To see what's registered:
+
+```
+python -c "from events import EVENTS; [print(s, '|', e.name) for s, e in EVENTS.items()]"
+```
+
+## Rotating foci
+
+Several Sci-Oly events rotate sub-topics per year — Anatomy & Physiology cycles through body systems (Endocrine / Nervous / Sense Organs / Cardiovascular / Muscular / Skeletal / Integumentary / Excretory / Immune / Lymphatic), Dynamic Planet alternates (Oceanography / Glaciers / Tectonics / Earthquakes & Volcanoes), Water Quality picks (Freshwater / Saltwater) per year, Materials Science assigns a focus (Nanomaterials / Polymers / Ceramics / Metals).
+
+The pipeline supports this via an optional `foci` field on each event:
+
+- **Register foci** when creating the event: comma-separated values like `"Endocrine, Nervous, Sense Organs"` in the "+ Register a new event" form.
+- **scio.ly scrape**: the Sources page shows a **Focus** dropdown when the event has foci. Pick one and the scraper rewrites the scio.ly event name to match their `"<Event> - <Focus>"` naming convention (e.g. `"Anatomy - Endocrine"`) and tags every returned question with the chosen focus.
+- **Review UI**: every question card gets a focus dropdown next to the topic dropdown. Edit it like any other field; "+ New focus…" lets you add ones the event config didn't anticipate. Edits go into `field_overrides` and survive reprocess.
+- **Markdown output**: if the event has foci declared AND any question has one set, `question_bank.md` groups by focus first (as top-level `# Focus` headings), then by topic within each (as `## Topic` headings). Otherwise it falls back to the flat topic-only layout used for non-rotating events.
+
+Events worth registering with foci:
+
+| Event | Suggested foci |
+|---|---|
+| Anatomy & Physiology | Endocrine, Nervous, Sense Organs, Cardiovascular, Muscular, Skeletal, Integumentary, Excretory, Immune, Lymphatic, Respiratory, Digestive |
+| Dynamic Planet | Oceanography, Glaciers, Tectonics, Earthquakes & Volcanoes |
+| Water Quality | Freshwater, Saltwater |
+| Materials Science | Nanomaterials, Polymers, Ceramics, Metals |
+| Disease Detectives | Population, Environmental, Food |
+
+You don't have to declare every possible focus up-front — register the ones you care about today and add more via the "+ New focus…" option later.
+
+## Suggested slugs for other Sci-Oly events
+
+These aren't shipped yet, but `scioly_tests.json` already contains the metadata. Add a single entry in `events.py` to enable any of them (see [Adding a new event](#adding-a-new-event)).
+
+**Best fits** — large corpora and clean topic axes; the pipeline shines here.
+
+| Suggested slug | Event | PDFs available | Filename prefix to use |
+|---|---|---:|---|
+| `anatomy_physiology` | Anatomy & Physiology | 61 | `anatomy` ¹ |
+| `codebusters` | Codebusters | 47 | `codebusters` |
+| `disease_detectives` | Disease Detectives | 45 | `diseasedetectives` |
+| `dynamic_planet` | Dynamic Planet | 38 | `dynamicplanet` |
+| `chemistry_lab` | Chemistry Lab | 34 | `chemistrylab` |
+| `astronomy` | Astronomy | 31 | `astronomy` |
+| `forensics` | Forensics | 29 | `forensics` |
+| `fermi_questions` | Fermi Questions | 27 | `fermiquestions` |
+| `optics` | Optics | 25 | `optics` |
+| `rocks_minerals` | Rocks & Minerals | 25 | `rocksminerals` |
+
+¹ Anatomy & Physiology PDFs are uploaded under **two** prefixes on scioly.org: `anatomy_*` (68 files) and `anatomyphysiology_*` (51 files). Pick one for `filename_prefix` and you'll get roughly half the corpus; the other half will download but won't be picked up by the pipeline's filename glob until you switch the prefix. A simple workaround is to rename the files on disk to share one prefix; a cleaner fix would be to extend `Event.filename_prefix` to a tuple — file an issue if you need this.
+
+**Also viable** — 10–25 PDFs each, mostly knowledge tests with usable topic structure.
+
+| Suggested slug | Event | PDFs |
+|---|---|---:|
+| `microbe_mission` | Microbe Mission | 24 |
+| `experimental_design` | Experimental Design | 17 |
+| `ecology` | Ecology | 21 |
+| `herpetology` | Herpetology | 21 |
+| `hovercraft` | Hovercraft (written portion) | 21 |
+| `fossils` | Fossils | 18 |
+| `remote_sensing` | Remote Sensing | 20 |
+| `ornithology` | Ornithology | 19 |
+| `materials_science` | Materials Science | 17 |
+| `crime_busters` | Crime Busters | 16 |
+| `invasive_species` | Invasive Species | 13 |
+| `heredity` | Heredity | 14 |
+| `designer_genes` | Designer Genes | 12 |
+| `protein_modeling` | Protein Modeling | 12 |
+| `hydrogeology` | Hydrogeology | 10 |
+| `sounds_of_music` | Sounds of Music (acoustics) | 10 |
+| `water_quality` | Water Quality | 9 |
+| `meteorology` | Meteorology | 5 |
+| `reach_for_the_stars` | Reach for the Stars (Div B Astronomy) | 5 |
+| `solar_system` | Solar System | 5 |
+
+**Won't work** — pure construction/build events. `scioly_tests.json` has 0 PDFs for these because there's no written test to extract. Skip:
+
+Towers · Boomilever · Wright Stuff · Mousetrap Vehicle · Gravity Vehicle · Helicopters · Electric Vehicle · Bottle Rocket · Battery Buggy · Robot Arm · Trajectory · Rollercoaster · Mission Possible · Bridge events.
+
+> **Filename prefix tip:** the prefix is the lowercase event name with spaces and punctuation stripped, matching what's before the first underscore in scioly.org URLs (e.g. `chemistrylab_2022_c_uflorida_test.pdf` → prefix `chemistrylab`). To check before configuring:
+>
+> ```
+> python -c "import json; data=json.load(open('scioly_tests.json'));\
+> from collections import Counter;\
+> p=Counter(d['test_link'].split('/')[-1].split('_')[0] for d in data if 'test_link' in d and 'YOUR_EVENT_NAME'.lower() in d['event'].lower());\
+> print(p.most_common())"
+> ```
+
+## What you get (per event)
+
+- `<event>/` — all downloaded PDFs (test + key files)
+- `<event>/question_bank.md` — a topic-organised question bank
+- `<event>/images/` — extracted diagrams
+- `<event>/texts/` — wiki dump + user-supplied source PDFs (for LLM question generation)
+- `<event>/.qbank_state.json` — pipeline cache + user annotations + LLM verdicts + generated questions
+
+## Quick start
+
+```
+# 1. Install deps
+pip install pymupdf requests flask anthropic playwright \
+            markdownify beautifulsoup4
+playwright install chromium    # one-time browser download for bot-bypass
+
+# 2. (Optional) put your Anthropic key in .env so vision OCR, math capture,
+#    answer validation, and LLM question generation work. The pipeline still
+#    runs without it (degraded — no vision, no LLM features).
+cp .env.example .env   # then set ANTHROPIC_API_KEY=sk-ant-...
+
+# 3. Download the source PDFs for the event you want
+python download_event.py --event circuit_lab
+python download_event.py --event thermodynamics
+
+# 4. Build the question bank (caches by PDF)
+python build_question_bank.py --event circuit_lab
+python build_question_bank.py --event thermodynamics --rebuild   # start fresh
+python build_question_bank.py --event circuit_lab --text-only    # skip vision
+
+# 5. Open the review UI — single server handles every event
+python review_app.py
+# → http://127.0.0.1:5000/   (event landing page)
+```
+
+The pipeline always reads the latest state from each event's `.qbank_state.json`, so the CLI and the review UI feed each other.
+
+### scioly.org bot challenge — handled automatically
+
+scioly.org uses Anubis JavaScript proof-of-work bot protection. The first time `download_event.py` hits a challenge page, it launches a real Chromium via Playwright, lets the PoW finish (5–30 seconds), captures the cookies into `.scioly_cookies.json`, then resumes the downloads using `requests`. Subsequent runs reuse the saved cookies until they expire.
+
+Prerequisite (one-time):
+```
+pip install playwright
+playwright install chromium
+```
+
+To force a fresh bypass (e.g. cookies expired):
+```
+python download_event.py --event <slug> --reauth
+```
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `events.py` | Event registry: per-event topics, keywords, paths, filename prefix, wiki page |
+| `download_event.py` | Generic PDF downloader; takes `--event <slug>` (required). Auto-bypasses scioly.org's Anubis bot challenge via Playwright. |
+| `build_question_bank.py` | The extraction pipeline (CLI). Run after downloading. `--event <slug>` (required). |
+| `texts.py` | Scrapes the scioly.org wiki for an event into markdown; converts user-supplied source PDFs to markdown |
+| `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
+| `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape |
+| `review_app.py` | Flask review UI — single server, multi-event, with a Generate page (sources + LLM generation) per event |
+| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`) |
+| `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
+| `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
+| `.env.example` | Template for the Anthropic API key |
+| `.scioly_cookies.json` | Cached Anubis cookies (auto-managed; delete to force a fresh bot-bypass) |
+| `events_custom.json` | Auto-generated registry of events created via the web UI (built-ins stay in `events.py`) |
+| `TODO_brittleness.md` | Self-audit of fragility / brittleness in the codebase with a suggested refactor ordering |
+| `TODO_ux.md` | Self-audit of UX rough edges with suggestions grouped by effort (⚡/🛠/🏗) |
+| `spec.md` | Technical spec — data shapes, pipeline stages, annotation/validation/generation schemas |
+
+## Workflow
+
+1. **Download** — `download_event.py --event <slug>` pulls every test and key PDF for the chosen event from scioly.org. It uses a Chrome User-Agent and auto-bypasses Anubis bot protection via Playwright on the first challenge (saving cookies to `.scioly_cookies.json` for subsequent runs). Already have a test on disk? The event index page (`/event/<slug>/`) has an **upload test PDF + key** form — drop in a test (and optionally its key), and it's saved with the correct `_test.pdf`/`_key.pdf` naming and run through the extraction pipeline immediately, no separate Reprocess step needed.
+
+2. **Extract** — `build_question_bank.py` runs three stages per PDF:
+   - PyMuPDF text extraction → topic-classified questions, choices, answers
+   - Spatial image association → each circuit diagram is attached to the question it sits closest to on the page
+   - (Optional) Haiku vision pass to OCR image-only PDFs and to refine image-to-question assignments when the heuristic is ambiguous
+
+3. **Browse** (`/event/<slug>/browse`) — an event-wide question explorer that aggregates every question across every bucket (PDF-extracted, LLM-generated, scio.ly-scraped) into one searchable, filterable view. Filter by topic, focus, source, **bucket**, validation status, MCQ-vs-FRQ, has-image; sort by Q#, topic, source, length, or validation; click anywhere on a card (or "Open source ↗") to jump straight to its review page with that question pre-focused. Topic badges are colour-coded by a deterministic hash so each topic has a stable visual identity; question-type icons (🔘 MCQ / 📝 FRQ) for quick scanning. Filter state is persisted in the URL, so reload and back-button work and links are shareable. Search box is hotkeyed to `/`; image lightbox on click; sidebar shows live counts of topics/sources/validation.
+
+4. **Review** (`review_app.py`) — a browser UI shows each PDF page next to its extracted questions. You can:
+   - **Drag a rectangle on the PDF** to capture stem, choices, or answer text directly from the source
+   - **+ Add question from region** — drag once; the next available Q# is auto-assigned, MC options are auto-split into the choices list when present
+   - **Capture math** — drag around an equation; Haiku converts it to LaTeX (`$...$`) and inserts at your cursor. KaTeX live-preview shows the rendered formula as you type.
+   - **Reassign images** by click-then-click (click image → click target question card)
+   - **Edit anything** inline — number, text, topic (with create-new), choices, answer
+   - **Validate answers** with Haiku per-question or per-page; verdict + rationale + primary source is stored next to each answer
+   - **Reprocess** a PDF to apply pipeline improvements; your annotations are replayed on top (hold Shift to wipe instead)
+   - **Attach images** to a question — 📁 Upload a file (PNG/JPG/SVG/WebP) from disk, OR 🤖 Generate diagram via a small Claude Sonnet chat. The chat is seeded with the question stem + topic + any author-provided diagram description (third-party LLM imports can carry an `image_description` field that lights up as a "Diagram recommended:" note until you fulfil it). Each assistant turn renders the SVG live; one click saves it into the event's `images/` dir and attaches it to the question with an optional textual description. The description doubles as alt-text and as the seed for the *next* diagram-chat session if you re-open it.
+
+5. **Generate** (per-event `/event/<slug>/sources` page) — pull in third-party questions and feed the LLM new material so it can write fresh questions:
+
+   ### Pull from scio.ly/practice
+   - One-click scrape of public practice questions from [scio.ly/practice](https://scio.ly/practice)'s public JSON API. No auth required.
+   - Form fields: scio.ly event name (defaults to the current event's display name, editable for events scio.ly names differently like "Anatomy - Endocrine"), count, division, MCQ/FRQ toggles.
+   - "Validate with Haiku" toggle: each scraped question is run through the same answer validator the rest of the bank uses. scio.ly's questions are notoriously partial/context-stripped — the validator flags incomplete or unanswerable ones as `uncertain`/`incorrect` so you can drop them in one click.
+   - Result view: every candidate shows its validation badge (✓ correct / ⚠ likely wrong / ? incomplete) with the rationale inline. Quick-filter buttons: **Keep only ✓ Correct**, **Drop ⚠/?**, **Keep all**, **Drop all**.
+   - **Two-layer dedup**:
+     1. *Exact* — scio.ly's question UUIDs are tracked so re-scraping the same event never re-imports a question already in the scio.ly bucket.
+     2. *Fuzzy* — every candidate's stem is compared (Jaccard on word-3-grams, threshold 0.4) against every question already in the bank, regardless of which bucket they came from (PDF-extracted, LLM-generated, prior scio.ly scrapes). Matches are auto-rejected and shown in a collapsible "rejected as duplicates" section with the matched bank question's text and source for visual verification.
+   - Accepted questions land in a synthetic PDF bucket `_scioly_<event>.pdf` with `source: "scio.ly · <tournament name>"` and their full validation verdict.
+   - Polite rate-limit: ~2 req/s, and you can only scrape one event at a time per session.
+
+   ### Sources & LLM generation
+   - **Scrape Sci-Oly wiki** — one button. Uses the saved scioly.org cookies, converts the wiki HTML into clean markdown at `<event>/texts/wiki.md`
+   - **Upload PDFs** — drop your own textbook chapters, study guides, or notes into `<event>/texts/` (via the UI or by hand). A *Process → MD* button converts each PDF to markdown.
+   - **Generate** — pick a source, pick count + types (multiple choice / short answer / numerical), click Generate. Haiku drafts candidates with rationale and a quoted source snippet. The button is disabled and a progress panel with an elapsed-time counter is shown while the LLM is working; a **Cancel** button aborts in-flight. Output token budget scales with `n` (~550 tokens per question) so larger requests don't get silently truncated.
+   - **Dedup** — every candidate is compared (Jaccard on word-3-grams, threshold 0.4) against every question already in the bank; near-duplicates are auto-rejected and listed separately.
+   - **Keep / Drop** — review each candidate, accept individually or *Accept all kept*. Accepted questions go into a synthetic PDF bucket `_generated_<event>.pdf` so they're easy to identify, and they carry the LLM's rationale + source snippet in their `validation` field.
+   - **Failure surfacing** — if Haiku returns malformed JSON or hits `stop_reason: max_tokens`, the UI shows the raw response inline instead of failing silently. Network/HTTP errors and parse errors get a status-bar message; warnings (e.g. truncation) are rendered as a banner above the candidates.
+
+   ### Shared textbooks (generate from one chapter, reusable across every event)
+   - A textbook is too big and too generic to dump wholesale into one event's source list — upload it once at the top-level `textbooks/` directory (via the **Shared textbooks** panel on any event's Sources page) and it's available to *every* event's Generate dropdown, split by chapter.
+   - **Chapter detection**, tried in order: (1) the PDF's own embedded outline/bookmarks (`fitz`'s `get_toc()`), used as-is when present; (2) a regex scan of the page-tagged markdown dump for `Chapter N` / `Unit N` / `Section N` style heading lines. If neither finds anything, the textbook is flagged `needs_manual_chapters` and a **Set chapters manually** panel lets you type `Title, start page` one per line — end pages cascade from the next chapter's start automatically.
+   - Re-run detection any time via **Detect chapters** (e.g. after re-uploading a cleaner copy of the same book).
+   - In the Generate source dropdown, textbooks appear under a **Shared textbooks** optgroup; picking one reveals a **Chapter** dropdown, and Generate is disabled until a chapter is chosen. The selected chapter's page range is extracted and sent to Haiku exactly like any other source — same dedup, same Keep/Drop flow.
+
+   ### Import questions (from another LLM or hand-written JSON)
+   - Below the Generate panel: paste JSON into a textarea, or upload a `.json` file from disk.
+   - Accepts the same candidate shape `qgen.py` produces — either the full `{"candidates": [...]}` envelope or a bare array. Click the schema link in the panel for the exact field list.
+   - **Auto-repairs broken JSON server-side**, covering the two most common real-world breakages in hand-typed or LLM-exported question banks: unescaped LaTeX (`\theta`, `\frac{Q}{T}`, `\Delta`, …  — valid LaTeX, invalid bare JSON escapes) and unescaped literal quotes inside string values (e.g. units like `5"`). The browser no longer hard-rejects unparsable input — it sends the raw text to the server, which runs it through `build_question_bank.repair_json_text()` / `_parse_json()`'s repair ladder (markdown fences, smart quotes, trailing commas, single-quoted strings, backslash/quote/control-character repair) before parsing. The response's `repaired` flag tells you whether a fix was needed.
+   - Runs through the identical normalisation + dedup pass as Generate (strip point-markers, re-letter choices A/B/C/…, Jaccard dedup against the whole bank) before landing in `_generated_<event>.pdf` alongside Haiku-generated questions.
+   - **Mark all as validated** checkbox (default off) — when checked, every imported question gets `validation.status = "correct"` immediately, skipping the usual Haiku validation step. Use this when you trust the source (e.g. you wrote the questions yourself, or already validated them elsewhere); leave it off to validate later via the normal per-question/per-page Validate buttons.
+   - Response reports `added` / `rejected_duplicates` / `rejected_invalid` so you know exactly what happened to a large batch.
+
+6. **Markdown** — `build_question_bank.py` writes `question_bank.md` grouped by topic, with figures, choice lists, answers, and validation/derivation verdicts as blockquotes. (Generated only when you run the CLI; the web UI works directly from the JSON state and no longer exposes a regenerate-markdown button — JSON is canonical.)
+
+## The cache & annotations
+
+Everything writes back to a single file per event: `<event>/.qbank_state.json`. It contains:
+
+- `_schema_version` — bump-on-breaking-change marker; older files are migrated forward on load
+- `questions[<pdf>]` — the canonical extracted question list. Generated questions live under a synthetic key `_generated_<event>.pdf`; scio.ly-imported questions under `_scioly_<event>.pdf`. Pipeline reprocess skips any PDF whose name starts with `_`.
+- `vision[<pdf>]` — cached Haiku outputs (so vision is paid for once)
+- `annotations[<pdf>]` — your edits, organised by what you did:
+  - `field_overrides` — text/topic/answer edits (incl. multi-page `extra_pages` and `context_id` link)
+  - `added` / `deleted` — questions you created or removed
+  - `image_overrides` — image reassignments (an assignment value may be a list to share one image across multiple questions)
+  - `regions` — provenance of every drag-rectangle (for auditing)
+  - `validations` — LLM verdicts: `{status, correct_answer, rationale, source, ...}`
+  - `contexts` — shared context blocks (passages/intros/tables that several questions reference): `[{id, text, images:[], pages:[]}]`. A question opts in via `context_id`; the review UI then renders the context above the stem and edits to the shared text flow through to every linked question. Contexts can span pages just like questions.
+
+Writes are atomic (tempfile + `os.replace`) and serialised by a per-event lock, so concurrent saves never leave a half-written JSON on disk.
+
+When the pipeline runs again (CLI or "Reprocess" in the UI), it re-extracts fresh from the PDF then **replays your annotations on top**. So:
+
+- Pipeline improvements take effect on questions you didn't touch
+- Your manual corrections stick
+- Validation verdicts stay attached (and auto-flag as **stale** if the question text or answer changes underneath them)
+
+The review page's **Reprocess ▾** menu offers three modes:
+
+| Mode | Effect |
+|---|---|
+| Re-extract · keep annotations | Default. Wipe extraction cache, replay your saved annotations on top. |
+| Re-extract · wipe annotations | Start from scratch — discards every field edit / delete / image move for this PDF. |
+| Manual · region-by-region | Wipes all questions; you then drag a region on each page to build new questions. Multi-page (Shift+drag) supported. A "Try Haiku" fallback appears after each capture so you can re-extract via vision when pure-Python struggles. |
+
+## Cost notes
+
+Vision calls go to `claude-haiku-4-5-20251001` (cheapest with vision). Rough per-PDF cost when vision is enabled:
+- Image association: ~$0.01–0.05 (one Haiku call per page with embedded images)
+- OCR a fully-image-based PDF: ~$0.10
+- Answer validation: ~$0.003 per question
+- Math capture: ~$0.005 per equation
+- Question generation: ~$0.01 per Generate-button click (~5 candidates)
+
+Set `--text-only` on the CLI to skip vision entirely. The review UI is the place to spend money selectively — vision, validation, math capture, and generation are explicit button-presses, never automatic.
+
+## Configuration
+
+Put your key in `.env` next to the scripts:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Without a key, the pipeline still runs: it skips vision OCR (image-based PDFs yield no questions) and skips image-association refinement (falls back to y-coordinate heuristic). The review UI still works; vision-dependent buttons disable themselves.
+
+## CLI reference
+
+```
+python build_question_bank.py --event <slug> [--limit N] [--rebuild] [--text-only]
+```
+
+- `--event <slug>` — required. See [Configured events](#configured-events) for valid values.
+- `--limit N` — only process the first N test PDFs
+- `--rebuild` — ignore caches, clear extracted images, restart from scratch
+- `--text-only` — never call the Anthropic API
+
+```
+python download_event.py --event <slug> [--no-skip-existing] [--no-bypass-bot] [--reauth]
+```
+
+- `--event <slug>` — required. See [Configured events](#configured-events). Accepts case- and underscore-insensitive matches: `--event diseasedetectives` resolves to `disease_detectives` and writes into `disease_detectives/`.
+- `--no-skip-existing` — re-download files that already exist
+- `--no-bypass-bot` — don't launch Playwright on a bot-challenge response (just fail)
+- `--reauth` — discard the saved cookie file and re-run the browser bypass
+
+The review page's empty-PDFs state lets you trigger `download_event.py` from the browser with a live progress bar — no terminal required.
+
+```
+python review_app.py [--host 127.0.0.1] [--port 5000]
+```
+
+```
+python -m pytest tests/ -q
+```
+
+Runs the regression suite covering the extraction/dedup heuristics (`split_choices`, `_strip_points`, `classify_topic`, `_section_suffix`, `qgen.is_duplicate`). Add a case any time you tune one of those functions.
+
+## Adding a new event
+
+You have two routes — pick based on whether you need topic-keyword classification working from day one.
+
+### Route A (recommended for most users): register from the web UI
+
+1. Open the landing page at `http://127.0.0.1:5000/`
+2. Expand **+ Register a new event**, fill in slug, display name, **scioly.org event name** (lowercase, with spaces — this also drives the PDF filename prefix by default), optional wiki page, optional initial topics, and **optional rotating foci** (see [Rotating foci](#rotating-foci) below — leave blank for events that don't rotate, like Circuit Lab). The **Filename prefix** field is optional and only needed when scioly.org's PDFs are named differently than the event itself (e.g. Anatomy &amp; Physiology PDFs are `anatomy_*.pdf`, not `anatomyphysiology_*.pdf`).
+3. Submit. The event is added to the registry and persisted to `events_custom.json` so it survives restarts. The UI redirects you straight into the event.
+4. From there: scrape the wiki, upload PDFs, generate questions, or `python download_event.py --event <slug>` to pull scioly.org tests.
+
+UI-registered events have `topic_keywords = {}` — the keyword scorer will not classify their questions, so every pipeline-extracted question lands in `Other / General` until you re-topic it manually (via the topic dropdown on each question card). Generated questions from `qgen.py` get their topic directly from Haiku, so generation still works fine.
+
+### Route B (recommended when you want auto-classification): edit `events.py`
+
+1. Open `events.py`. Add one `Event(...)` entry to `EVENTS` with:
+   - `slug` — directory/url slug (e.g. `"wright_stuff"`)
+   - `name` — human display name
+   - `event_match` — lowercase substrings used to filter `scioly_tests.json` event names. The first one also drives the PDF filename prefix by default (`"disease detectives"` → `diseasedetectives_*.pdf`).
+   - `filename_prefix` — *optional*. Override only when the PDFs on scioly.org are named differently than the event (e.g. Anatomy &amp; Physiology PDFs are `anatomy_*.pdf`).
+   - `topics` — your taxonomy tuple
+   - `topic_keywords` — `{topic: [(phrase, weight), ...]}` for classification
+2. `python download_event.py --event <slug>`
+3. `python build_question_bank.py --event <slug>`
+4. The review UI auto-discovers it on next page load.
+
+No other code changes needed: the pipeline, the review UI, the annotation/validation system are all event-agnostic.
+
+`spec.md` documents the data shapes, pipeline stages, and the custom-event JSON schema in detail.
