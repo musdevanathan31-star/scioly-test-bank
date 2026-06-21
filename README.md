@@ -23,6 +23,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [Authentication & roles](#authentication--roles)
 - [Deploying (shared, multi-user instance)](#deploying-shared-multi-user-instance)
 - [Production deployment (current state)](#production-deployment-current-state)
+  - [Admin app](#admin-app)
 - [Maintaining the server](#maintaining-the-server)
 - [Security hardening](#security-hardening)
 - [CLI reference](#cli-reference)
@@ -459,10 +460,26 @@ Everything above this point describes the *general* deployment patterns. This se
 |---|---|---|---|---|---|
 | NCMS | `https://scioly-02864.com/testbank/ncms/` | `/opt/qbank/app` | `qbank` | `127.0.0.1:5000` | `qbank.service` |
 | CHS | `https://scioly-02864.com/testbank/chs/` | `/opt/qbank-chs/app` | `qbank-chs` | `127.0.0.1:5001` | `qbank-chs.service` |
+| Admin app | `https://scioly-02864.com/testbank/admin/` | `/opt/qbank-admin/app` | `qbank-admin` | `127.0.0.1:5002` | `admin-app.service` |
 
-Both units' `ExecStart` point at the same shared venv, `/opt/qbank/venv` — see ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) above for why the venv can be shared even though the code+data trees can't.
+Both qbank/qbank-chs units' `ExecStart` point at the same shared venv, `/opt/qbank/venv` — see ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) above for why the venv can be shared even though the code+data trees can't. The admin app reuses the same venv too (Flask/Werkzeug/gunicorn are already there — no extra dependencies).
 
-**Code-update account**: `qbank-deploy` owns `/opt/qbank-src` (the canonical `git clone` of the public repo that [`deploy/update-from-github.sh`](deploy/update-from-github.sh) fetches into). The one step that needs root — [`deploy/_apply-update.sh`](deploy/_apply-update.sh), installed on the server as `/usr/local/sbin/qbank-apply-update.sh` — is reachable via a `NOPASSWD` sudoers rule scoped to that *exact* path (`/etc/sudoers.d/qbank-deploy`), nothing broader.
+**Code-update account**: `qbank-deploy` owns `/opt/qbank-src` (the canonical `git clone` of the public repo that [`deploy/update-from-github.sh`](deploy/update-from-github.sh) fetches into). The one step that needs root — [`deploy/_apply-update.sh`](deploy/_apply-update.sh), installed on the server as `/usr/local/sbin/qbank-apply-update.sh` — is reachable via a `NOPASSWD` sudoers rule scoped to that *exact* path (`/etc/sudoers.d/qbank-deploy`), nothing broader. Both `qbank.service`/`qbank-chs.service` and `instances.conf` (the registry both the apply script and the admin app read) live alongside this in [`deploy/`](deploy/).
+
+### Admin app
+
+[`admin_app.py`](admin_app.py) is a small, separate Flask app (its own process, system user, and sudoers grants — a deliberately different privilege boundary from the review apps it manages) at `/testbank/admin` for doing routine server operations from a browser instead of SSH:
+
+- **Stop / start / restart** any instance listed in [`deploy/instances.conf`](deploy/instances.conf) — shells out to `sudo /usr/local/sbin/qbank-service-ctl.sh <verb> <instance>`.
+- **Update from GitHub** — runs `update-from-github.sh` as `qbank-deploy` (same low-privilege fetch step as the manual command below), streaming its output live. `_apply-update.sh` now backs up each instance's current code to `/opt/qbank-backups/<instance>/<timestamp>/` *before* overwriting it — a fast, local, code-only safety net, distinct in purpose from the offsite S3/databank data backups described below.
+- **Roll back** any instance to one of its last 10 local code backups — `sudo /usr/local/sbin/qbank-rollback.sh <instance> <timestamp>`.
+- **View console** — the last 200 `journalctl` lines for an instance's systemd unit, refreshable on demand. No sudo needed for this: the `qbank-admin` system user is a member of the `systemd-journal` group, which grants read-only journal access by default.
+
+Single hardcoded username (`admin`); the password's hash (never the plaintext) lives in `/opt/qbank-admin/.env` as `ADMIN_PASSWORD_HASH`, generated with:
+```
+python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('your-password'))"
+```
+Every action is appended to `/var/log/qbank-admin-actions.log` (who/when/what/outcome) — see `spec.md` for why the rollback/service-ctl scripts validate their own arguments against `instances.conf` rather than following `_apply-update.sh`'s fixed-path-no-arguments rule.
 
 **Backup destinations** (NCMS only as of this writing — CHS doesn't have its own yet):
 - Credentials for both backup scripts live in `/opt/qbank/backup/.env` (mode 600, `qbank`-owned, never read by the app itself).
@@ -473,7 +490,8 @@ Both units' `ExecStart` point at the same shared venv, `/opt/qbank/venv` — see
 **Known loose ends, kept visible on purpose so they don't get lost**:
 - `/etc/sudoers.d/ncms-deploy` (`ncms ALL=(ALL) NOPASSWD: ALL`) — set up for initial interactive bring-up, broader than anything routine needs now that `qbank-deploy` exists. Candidate for removal or narrowing.
 - CHS has no backup destination yet (no GitHub repo or S3 bucket created for it), and is still running with a placeholder `ANTHROPIC_API_KEY` in its `.env`.
-- The GitHub PAT and AWS access key used to set up NCMS's backups, and the RHEL admin password used during initial bring-up, were all typed in plaintext during setup conversations — worth rotating once things are confirmed stable.
+- The GitHub PAT and AWS access key used to set up NCMS's backups, and the RHEL admin password used during initial bring-up, were all typed in plaintext during setup conversations — worth rotating once things are confirmed stable. The admin app's password is the *same* RHEL admin password, by deliberate choice when it was set up — rotating one should mean rotating the other.
+- No IP allowlist in front of `/testbank/admin` — the login is the only gate, also a deliberate choice (so it stays reachable while traveling), revisit if that tradeoff stops making sense.
 
 ## Maintaining the server
 
@@ -484,7 +502,7 @@ A periodic checklist, organized by how often each item actually needs doing:
 git push
 sudo -u qbank-deploy bash /opt/qbank-deploy/update-from-github.sh
 ```
-This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant — if you find yourself reaching for broader sudo access for a routine task, that's a sign something should be added to the update script instead.
+This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant — if you find yourself reaching for broader sudo access for a routine task, that's a sign something should be added to the update script instead. Equivalently, click **Update from GitHub** in the [admin app](#admin-app) — same script, same backup-before-apply behavior, no SSH needed. The admin app's Stop/Start/Restart buttons and Console view cover most other routine SSH trips too.
 
 **Weekly-ish**:
 - Skim `/var/log/qbank-backup.log` for failures.
@@ -504,7 +522,7 @@ This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant 
 
 **As-needed, not scheduled**: rotating the GitHub PAT / AWS keys / restic password is *not* a calendar habit — it's a deliberate one-off. The restic password especially must never be rotated casually: rotating it means re-encrypting or losing access to every existing snapshot, so confirm you don't need anything from the old encryption before touching it.
 
-**When onboarding a new school**: repeat the full pattern in ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) for the app itself, then create that school's own private GitHub databank repo and S3 bucket and repeat ["Backups"](#backups) — nothing in the backup mechanism is shared between schools by design.
+**When onboarding a new school**: repeat the full pattern in ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) for the app itself, then create that school's own private GitHub databank repo and S3 bucket and repeat ["Backups"](#backups) — nothing in the backup mechanism is shared between schools by design. Add a line for it to [`deploy/instances.conf`](deploy/instances.conf) so the admin app and `_apply-update.sh` both pick it up immediately — that's the only file to touch for the admin app to start managing it.
 
 ## Security hardening
 
