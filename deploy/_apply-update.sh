@@ -7,9 +7,13 @@
 # no parameter an attacker (or a bug) could use to make it do something
 # other than what's written here.
 #
-# Validates the fetched source in $SRC, and only if validation passes,
-# backs up each instance's current code (for rollback via
-# qbank-rollback.sh) and syncs the code-only allow-list into each live
+# By the time this runs, update-from-github.sh has already validated the
+# fetched source in $SRC (pip install + py_compile + pytest, as the
+# unprivileged qbank-deploy account, against its own dedicated venv) — this
+# script never executes anything from $SRC itself, only rsync/chown/
+# systemctl against it, so it never runs arbitrary fetched code as root.
+# Backs up each instance's current code (for rollback via
+# qbank-rollback.sh), syncs the code-only allow-list into each live
 # instance, then restarts it. A failure for one instance is logged and does
 # not roll back an instance that already succeeded.
 #
@@ -26,7 +30,6 @@
 set -euo pipefail
 
 SRC="/opt/qbank-src"
-VENV="/opt/qbank/venv"
 LOG="/var/log/qbank-deploy.log"
 BACKUP_ROOT="/opt/qbank-backups"
 KEEP_BACKUPS=10
@@ -42,15 +45,8 @@ cd "$SRC"
 CODE_PATHS=(*.py templates static deploy requirements.txt requirements-dev.txt)
 cd - >/dev/null
 
-"$VENV/bin/pip" install -q -r "$SRC/requirements.txt"
-"$VENV/bin/python" -m py_compile "$SRC"/*.py
-if ! "$VENV/bin/python" -m pytest "$SRC/tests" -q; then
-  log "FAILED validation at $SHA — nothing deployed"
-  exit 1
-fi
-
 mapfile -t INSTANCE_LINES < <(grep -v '^\s*#' "$INSTANCES_CONF" | grep -v '^\s*$')
-log "Validated $SHA — deploying to ${#INSTANCE_LINES[@]} instance(s)"
+log "Deploying already-validated $SHA to ${#INSTANCE_LINES[@]} instance(s)"
 
 for entry in "${INSTANCE_LINES[@]}"; do
   IFS=: read -r name label dir svc user port <<< "$entry"

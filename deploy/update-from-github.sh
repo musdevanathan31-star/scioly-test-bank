@@ -18,19 +18,32 @@
 # This script itself runs as qbank-deploy with no special privileges — it
 # only fetches into a clone qbank-deploy already owns (/opt/qbank-src, a
 # plain directory outside any other account's home, so qbank-deploy needs
-# no special access to anything else on the box). The one moment that needs
-# root (pip install into the shared venv, rsyncing into qbank/qbank-chs
-# owned directories, restarting systemd units) is delegated to
-# qbank-apply-update.sh, a fixed, non-parameterized, root-owned script in a
-# standard sbin location — the NOPASSWD grant above covers exactly that one
-# script path, nothing else. qbank-deploy can never use it to run arbitrary
-# root commands.
+# no special access to anything else on the box), and validates that fetch
+# using its own dedicated venv (/opt/qbank-deploy/venv — deliberately
+# separate from the shared /opt/qbank/venv that actually serves live
+# traffic, so this validation step never needs write access to anything
+# another account owns). The one moment that needs root — rsyncing
+# already-validated code into qbank/qbank-chs-owned directories and
+# restarting systemd units — is delegated to qbank-apply-update.sh, a
+# fixed, non-parameterized, root-owned script in a standard sbin location —
+# the NOPASSWD grant above covers exactly that one script path, nothing
+# else. qbank-deploy can never use it to run arbitrary root commands.
+#
+# Validating here (as the unprivileged qbank-deploy account) rather than
+# inside qbank-apply-update.sh (root) is load-bearing, not stylistic: this
+# is the step that executes arbitrary code from whatever was just fetched
+# (pip's build-script hooks, pytest collection/execution) — running that as
+# root would mean anyone who can land a malicious commit or dependency on
+# the tracked branch gets root code execution the moment this script runs.
+# By the time qbank-apply-update.sh (root) ever touches the fetched code,
+# it has already passed py_compile + the test suite as a low-privilege user.
 
 set -euo pipefail
 
 REPO_URL="https://github.com/musdevanathan31-star/scioly-test-bank.git"
 REF="${1:-main}"
 SRC="/opt/qbank-src"
+VENV="/opt/qbank-deploy/venv"
 LOG="/var/log/qbank-deploy.log"
 
 log() { echo "$(date -Is) $*" >> "$LOG"; }
@@ -44,6 +57,14 @@ git -C "$SRC" checkout "$REF"
 git -C "$SRC" reset --hard "origin/$REF" 2>/dev/null || true   # no-op for a pinned tag/SHA
 SHA=$(git -C "$SRC" rev-parse --short HEAD)
 log "Fetched $REF @ $SHA"
+
+"$VENV/bin/pip" install -q -r "$SRC/requirements.txt"
+"$VENV/bin/python" -m py_compile "$SRC"/*.py
+if ! "$VENV/bin/python" -m pytest "$SRC/tests" -q; then
+  log "FAILED validation at $SHA — nothing deployed"
+  exit 1
+fi
+log "Validated $SHA as qbank-deploy — applying as root"
 
 sudo /usr/local/sbin/qbank-apply-update.sh
 echo "Done — see $LOG for per-instance results."
