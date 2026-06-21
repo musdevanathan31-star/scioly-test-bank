@@ -59,8 +59,14 @@ SHA=$(git -C "$SRC" rev-parse --short HEAD)
 log "Fetched $REF @ $SHA"
 
 "$VENV/bin/pip" install -q -r "$SRC/requirements.txt"
-"$VENV/bin/python" -m py_compile "$SRC"/*.py
-if ! "$VENV/bin/python" -m pytest "$SRC/tests" -q; then
+# -B / no:cacheprovider: this clone is qbank-deploy's own, but it was the
+# *root*-run validation before this fix that first left root-owned
+# __pycache__/.pytest_cache entries in it (qbank-deploy then can't
+# overwrite them on a later run). Not writing either cache here at all
+# sidesteps that whole class of ownership drift permanently, rather than
+# just cleaning it up once.
+PYTHONDONTWRITEBYTECODE=1 "$VENV/bin/python" -B -m py_compile "$SRC"/*.py
+if ! PYTHONDONTWRITEBYTECODE=1 "$VENV/bin/python" -B -m pytest "$SRC/tests" -q -p no:cacheprovider; then
   log "FAILED validation at $SHA — nothing deployed"
   exit 1
 fi
