@@ -9,13 +9,17 @@
 # Caddy issues/renews the Let's Encrypt cert automatically once DNS points
 # at this machine and ports 80+443 are forwarded to it — nothing else to do.
 #
-# The app is mounted under /testbank/ncms (set via APPLICATION_ROOT in
-# .env — see review_app.py's _PrefixMiddleware), so `handle` here matches
-# and forwards that path *without* stripping it — Flask's middleware expects
-# the full path including the prefix. Don't change this to `handle_path`.
+# Each school is mounted under its own path (set via APPLICATION_ROOT in
+# that instance's .env — see review_app.py's _PrefixMiddleware), so `handle`
+# here matches and forwards the path *without* stripping it — Flask's
+# middleware expects the full path including the prefix. Don't change these
+# to `handle_path`.
 scioly-02864.com {
 	handle /testbank/ncms* {
 		reverse_proxy 127.0.0.1:5000
+	}
+	handle /testbank/chs* {
+		reverse_proxy 127.0.0.1:5001
 	}
 	handle {
 		respond 404
