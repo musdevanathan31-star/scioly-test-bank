@@ -37,6 +37,7 @@
   <span id="msg" class="muted"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+  {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
   <p class="muted">Pick an event to review. Each event has its own corpus,
@@ -52,7 +53,7 @@
     <tbody>{% for r in rows %}
       <tr data-name="{{ r.name }}" data-pdfs="{{ r.n_pdfs }}"
           data-q="{{ r.n_questions }}" data-dir="{{ r.base_dir }}">
-        <td><a href="/event/{{ r.slug }}/">{{ r.name }}</a>
+        <td><a href="{{ request.script_root }}/event/{{ r.slug }}/">{{ r.name }}</a>
             {%- if r.n_pdfs != 0 %}
             <span class="muted" style="font-size:11px"> · {{ r.n_processed_pdfs }}/{{ r.n_pdfs }} processed</span>
             {%- endif %}
@@ -61,17 +62,20 @@
         <td class="num">{{ r.n_questions }}</td>
         <td class="muted dir-cell">{{ r.base_dir }}</td>
         <td class="actions">
+          {%- if current_user.role == "coach" %}
           {%- if r.is_builtin %}
           <span class="muted" style="font-size:11px">built-in</span>
           {%- else %}
           <button class="ghost" data-edit-ev="{{ r.slug }}" title="Edit foci/topics/wiki" style="margin-right:4px">✎ Edit</button>
-          <button class="ghost" data-del="{{ r.slug }}" title="Remove this custom event">✕ Remove</button>
+          <button class="ghost" data-del="{{ r.slug }}" title="Archive this event — hides it here, reversible, never touches its files on disk">🗄 Archive</button>
+          {%- endif %}
           {%- endif %}
         </td>
       </tr>
     {% endfor %}</tbody>
   </table>
 
+  {% if current_user.role == "coach" %}
   <div class="new-event">
     <details>
       <summary>+ Register a new event</summary>
@@ -117,6 +121,26 @@
       <div id="ne_ok" class="ok" style="display:none"></div>
     </details>
   </div>
+
+  {% if archived_rows %}
+  <div class="new-event">
+    <details>
+      <summary>Show archived events ({{ archived_rows|length }})</summary>
+      <p class="muted">Archived events are hidden from the list above but
+         never deleted — their directory, PDFs, and state file are untouched
+         on disk. Unarchive to bring one back.</p>
+      <table class="evtbl">
+        <tbody>{% for r in archived_rows %}
+          <tr>
+            <td>{{ r.name }} <span class="muted" style="font-size:11px">({{ r.slug }})</span></td>
+            <td class="actions"><button class="ghost" data-unarchive="{{ r.slug }}">↩ Unarchive</button></td>
+          </tr>
+        {% endfor %}</tbody>
+      </table>
+    </details>
+  </div>
+  {% endif %}
+  {% endif %}
 </div>
 
 <!-- Edit event modal -->
@@ -190,20 +214,31 @@ document.querySelectorAll("#ev_tbl th[data-sort]").forEach(th => {
 });
 sortEventTable();
 
-// --- delete a custom event ---
+// --- archive / unarchive a custom event ---
 document.addEventListener("click", async e => {
   const slug = e.target.dataset.del;
   if(slug){
-    if(!confirm(`Remove the "${slug}" event from the registry?
+    if(!confirm(`Archive the "${slug}" event?
 
 ` +
-                `This only deletes the registration; the ${slug}/ directory ` +
-                `and its files are left in place.`)) return;
+                `It'll disappear from this list but its directory, PDFs, ` +
+                `and state file are never touched — unarchive any time ` +
+                `from "Show archived events" below.`)) return;
     try {
-      const r = await fetch(`/api/events/${encodeURIComponent(slug)}`, {method:"DELETE"});
+      const r = await fetch(`${APP_ROOT}/api/events/${encodeURIComponent(slug)}`, {method:"DELETE"});
       const j = await r.json();
-      if(j.ok){ toast(`Removed "${slug}"`, "ok"); location.reload(); }
-      else toast("Error: " + (j.error || "delete failed"), "err");
+      if(j.ok){ toast(`Archived "${slug}"`, "ok"); location.reload(); }
+      else toast("Error: " + (j.error || "archive failed"), "err");
+    } catch(err){ toast("Network error: " + err.message, "err"); }
+    return;
+  }
+  const unarchiveSlug = e.target.dataset.unarchive;
+  if(unarchiveSlug){
+    try {
+      const r = await fetch(`${APP_ROOT}/api/events/${encodeURIComponent(unarchiveSlug)}/unarchive`, {method:"POST"});
+      const j = await r.json();
+      if(j.ok){ toast(`Unarchived "${unarchiveSlug}"`, "ok"); location.reload(); }
+      else toast("Error: " + (j.error || "unarchive failed"), "err");
     } catch(err){ toast("Network error: " + err.message, "err"); }
     return;
   }
@@ -218,7 +253,7 @@ async function openEventEditModal(slug){
   const err = document.getElementById("ev_edit_err");
   err.style.display = "none";
   try {
-    const r = await fetch(`/api/events/${encodeURIComponent(slug)}`);
+    const r = await fetch(`${APP_ROOT}/api/events/${encodeURIComponent(slug)}`);
     const j = await r.json();
     if(j.error){ toast("Error: " + j.error, "err"); return; }
     _editingSlug = slug;
@@ -250,7 +285,7 @@ document.getElementById("ev_edit_save").addEventListener("click", async () => {
   err.style.display = "none";
   btn.disabled = true; btn.textContent = "Saving…";
   try {
-    const r = await fetch(`/api/events/${encodeURIComponent(_editingSlug)}`, {
+    const r = await fetch(`${APP_ROOT}/api/events/${encodeURIComponent(_editingSlug)}`, {
       method: "PATCH",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({name, topics, foci, wiki_page: wiki, event_match: match}),
@@ -279,6 +314,10 @@ document.addEventListener("keydown", e => {
 });
 
 // --- form validation: disable submit until required fields filled ---
+// Whole block is a no-op for volunteers — the "+ Register a new event" form
+// isn't rendered for them (coach-only), so none of these elements exist.
+const msg = document.getElementById("msg");
+if (document.getElementById("ne_submit")) {
 const _requiredIds = ["ne_slug", "ne_name"];
 function validateNewEventForm(){
   const ok = _requiredIds.every(id => document.getElementById(id).value.trim());
@@ -290,7 +329,6 @@ _requiredIds.forEach(id => {
 });
 validateNewEventForm();
 
-const msg = document.getElementById("msg");
 document.getElementById("ne_submit").addEventListener("click", async () => {
   const slug   = document.getElementById("ne_slug").value.trim();
   const name   = document.getElementById("ne_name").value.trim();
@@ -306,7 +344,7 @@ document.getElementById("ne_submit").addEventListener("click", async () => {
   btn.disabled = true; btn.textContent = "Creating…";
   let j;
   try {
-    const r = await fetch("/api/events", {
+    const r = await fetch(`${APP_ROOT}/api/events`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -331,5 +369,6 @@ document.getElementById("ne_submit").addEventListener("click", async () => {
   okEl.style.display = "block";
   setTimeout(() => { window.location.href = j.url; }, 600);
 });
+}
 </script>
 </body></html>

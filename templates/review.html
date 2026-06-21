@@ -226,7 +226,7 @@
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> {{ pdf_name }}</h1>
   <div style="position:relative;display:inline-block" id="reprocessWrap">
     <button id="reprocess" class="danger" title="Re-run the extraction pipeline. Click for mode options.">Reprocess ▾</button>
@@ -241,15 +241,20 @@
       </button>
       <button class="ghost" style="display:block;width:100%;text-align:left;padding:8px 14px"
               data-rp-mode="wipe"
-              title="Wipe ALL your manual edits/annotations for this PDF AND re-run the extraction pipeline. Cannot be undone.">
+              title="Wipe ALL your manual edits/annotations for this PDF AND re-run the extraction pipeline. A snapshot is saved first — recoverable from Snapshot history below.">
         🧹 Re-extract · <b>wipe annotations</b>
-        <div class="muted" style="font-size:11px">Start over from scratch — discards your field edits, deletes, image moves.</div>
+        <div class="muted" style="font-size:11px">Discards your field edits, deletes, image moves — but a snapshot is saved first, see "Snapshot history" below.</div>
       </button>
       <button class="ghost" style="display:block;width:100%;text-align:left;padding:8px 14px"
               data-rp-mode="manual"
-              title="Wipe all questions; then use '+ Add question from region' to manually select each question's region(s). Multi-page questions supported via Shift+drag onto next page.">
+              title="Wipe all questions; then use '+ Add question from region' to manually select each question's region(s). A snapshot is saved first.">
         ✏ Manual · <b>region-by-region</b>
-        <div class="muted" style="font-size:11px">Deletes all questions. You'll then drag regions on each page; Haiku fallback available when Python extraction is weak.</div>
+        <div class="muted" style="font-size:11px">Deletes all questions (snapshot saved first). You'll then drag regions on each page; Haiku fallback available when Python extraction is weak.</div>
+      </button>
+      <div style="border-top:1px solid var(--line);margin:4px 0"></div>
+      <button class="ghost" id="rp_snapshots_btn" style="display:block;width:100%;text-align:left;padding:8px 14px"
+              title="View and restore past snapshots saved before a wipe/manual reprocess">
+        🕘 Snapshot history
       </button>
     </div>
   </div>
@@ -258,6 +263,7 @@
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
   <button id="save" class="primary" disabled title="Persist edits to .qbank_state.json (Ctrl+S)">Save</button>
+  {% include "_user_badge.html" %}
 </header>
 <div class="toolbar">
   <div class="page-nav">
@@ -286,6 +292,19 @@
   <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
   <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
   <button id="delAllQ" class="danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">🗑 Delete all</button>
+</div>
+<div id="snapshotsModal" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.55);z-index:300;padding:32px;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card);border-radius:8px;padding:20px 22px;
+       width:520px;max-width:95vw;max-height:80vh;overflow:auto;color:var(--fg);
+       box-shadow:0 12px 40px rgba(0,0,0,.45)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin:0">Snapshot history <span class="muted" style="font-weight:400">· {{ pdf_name }}</span></h3>
+      <button onclick="closeSnapshotsModal()">✕ Close</button>
+    </div>
+    <p class="muted" style="font-size:12px">Saved automatically right before a "wipe annotations" or "manual mode" reprocess. Restoring brings back this PDF's annotations, manual-edit tracking, and question list as they were at that point.</p>
+    <div id="snapshotsList"></div>
+  </div>
 </div>
 <div id="cmpModal" style="display:none;position:fixed;inset:0;
      background:rgba(0,0,0,.55);z-index:300;padding:32px;overflow:auto">
@@ -387,8 +406,8 @@
 <script>
 const PDF = "{{ pdf_name }}";
 const EVENT_SLUG = "{{ event_slug }}";
-const API = `/event/${EVENT_SLUG}/api`;
-const IMG_BASE = `/event/${EVENT_SLUG}/images`;
+const API = `${APP_ROOT}/event/${EVENT_SLUG}/api`;
+const IMG_BASE = `${APP_ROOT}/event/${EVENT_SLUG}/images`;
 let STATE = { questions: [], page_count: 1, topics: [], vision_available: false, has_key: false };
 let IMAGES = { images: [], used_by: {} };
 let curPage = 1;
@@ -1383,7 +1402,6 @@ function bindCardEvents(){
           }
           annOverride(q.number, "context_id", el.value || "");
           renderCards();
-          return;
         } else {
           q[key] = el.value;
           annOverride(q.number, key, el.value);
@@ -2333,7 +2351,57 @@ document.getElementById("save").addEventListener("click", async ()=>{
       await runReprocess(mode);
     });
   });
+  document.getElementById("rp_snapshots_btn").addEventListener("click", () => {
+    menu.style.display = "none";
+    openSnapshotsModal();
+  });
 })();
+
+async function openSnapshotsModal(){
+  const listEl = document.getElementById("snapshotsList");
+  listEl.innerHTML = `<p class="muted">Loading…</p>`;
+  document.getElementById("snapshotsModal").style.display = "flex";
+  try {
+    const r = await fetch(`${API}/pdf/${PDF}/snapshots`);
+    const j = await r.json();
+    const snaps = j.snapshots || [];
+    if(!snaps.length){
+      listEl.innerHTML = `<p class="muted">No snapshots yet — one is saved automatically the next time you wipe annotations or use manual mode.</p>`;
+      return;
+    }
+    listEl.innerHTML = snaps.map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;
+           padding:8px 0;border-bottom:1px solid var(--line-soft)">
+        <span style="font-size:13px">${s.saved_at ? new Date(s.saved_at).toLocaleString() : s.file}</span>
+        <button class="ghost" data-restore-snapshot="${s.file}">↩ Restore</button>
+      </div>`).join("");
+  } catch(e){
+    listEl.innerHTML = `<p class="muted">Network error: ${e.message}</p>`;
+  }
+}
+function closeSnapshotsModal(){
+  document.getElementById("snapshotsModal").style.display = "none";
+}
+document.getElementById("snapshotsModal").addEventListener("click", async e => {
+  const file = e.target.dataset.restoreSnapshot;
+  if(!file) return;
+  if(!confirm(`Restore this snapshot? It will overwrite ${PDF}'s current annotations, manual-edit tracking, and question list with what was saved at this point. The page will reload.`)) return;
+  try {
+    const r = await fetch(`${API}/pdf/${PDF}/restore-snapshot`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({snapshot: file}),
+    });
+    const j = await r.json();
+    if(j.ok){ toast("Snapshot restored", "ok"); location.reload(); }
+    else toast("Error: " + (j.error || "restore failed"), "err");
+  } catch(err){ toast("Network error: " + err.message, "err"); }
+});
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape" && document.getElementById("snapshotsModal").style.display !== "none"){
+    closeSnapshotsModal();
+  }
+});
 
 async function runReprocess(mode){
   // mode: "keep" | "wipe" | "manual"
@@ -2341,12 +2409,12 @@ async function runReprocess(mode){
     if(!confirm(`Re-extract ${PDF} and WIPE all manual edits & annotations?
 
 ` +
-                `This is unreversible. Field overrides, deletes, image moves, and validations will be lost.`)) return;
+                `Field overrides, deletes, image moves, and validations will be cleared from this PDF — but a snapshot is saved first, so you can restore them later from "Snapshot history" in this menu.`)) return;
   } else if(mode === "manual"){
     if(!confirm(`Enter manual mode for ${PDF}?
 
 ` +
-                `• Existing questions and annotations will be wiped
+                `• A snapshot of existing questions/annotations is saved first (see "Snapshot history" in this menu) — they'll then be wiped
 ` +
                 `• Use "+ Add question from region" to draw each question's region
 ` +

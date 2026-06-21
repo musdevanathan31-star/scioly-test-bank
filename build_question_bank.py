@@ -36,6 +36,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import fitz  # PyMuPDF
+import pdf_safety
 
 import llm_providers
 
@@ -1394,7 +1395,7 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
 
     # ---- open test PDF ----
     try:
-        doc = fitz.open(str(test_pdf))
+        doc = pdf_safety.open_pdf_safely(test_pdf)
     except Exception as e:
         log.error("vision pipeline call failed: %s", e)
         print(f"    [ERR] {e}")  # also surface to operator
@@ -1452,7 +1453,7 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
     # ---- key PDF — answer extraction only (never question extraction) ----
     if key_pdf and key_pdf.exists():
         try:
-            kdoc = fitz.open(str(key_pdf))
+            kdoc = pdf_safety.open_pdf_safely(key_pdf)
             kpage_texts = [p.get_text("text") for p in kdoc]
             has_key_text = any(p.strip() for p in kpage_texts)
             if has_key_text:
@@ -1521,7 +1522,8 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
 
     Annotation shape:
       {
-        "field_overrides": {qnum: {text?, choices?, answer?, topic?, page?}},
+        "field_overrides": {qnum: {text?, choices?, answer?, topic?, page?,
+                                    validation?, lastEditedBy?, lastEditedDateTime?}},
         "added":           [full question dicts],
         "deleted":         [qnum, ...],
         "image_overrides": {
@@ -1574,7 +1576,8 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
         ov = overrides.get(q.get("number"))
         if ov:
             for k in ("text", "choices", "answer", "topic", "focus", "page",
-                      "extra_pages", "context_id", "image_descriptions"):
+                      "extra_pages", "context_id", "image_descriptions",
+                      "lastEditedBy", "lastEditedDateTime", "validation"):
                 if k in ov:
                     q[k] = ov[k]
 

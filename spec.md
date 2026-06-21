@@ -101,9 +101,13 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
   "year":     "2020",
   "division": "C",
   "page":     3,                    // for the review UI
-  "validation": Validation          // optional, set by LLM check
+  "validation": Validation,         // optional, set by either an LLM check or a human (see Validation below)
+  "lastEditedBy":       "srikanth", // username of whoever last edited this question (server-stamped from the session, never client-supplied)
+  "lastEditedDateTime": "2026-06-21T13:04:47"  // ISO-8601, set alongside lastEditedBy
 }
 ```
+
+`lastEditedBy`/`lastEditedDateTime` are set by `api_patch_question` (`review_app.py`) on every edit made through the Browse page's always-editable cards — including a validation change, since setting/overriding a verdict is itself an edit. Pre-existing questions (from before these fields existed) were backfilled once via `backfill_last_edited.py` (idempotent, safe to re-run) with `lastEditedBy="srikanth"` and `lastEditedDateTime` taken from that bucket's existing `manual[bucket].edited_at` where available.
 
 ### Annotations
 
@@ -112,7 +116,8 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
 ```jsonc
 {
   "field_overrides": {
-    "5": { "text": "...", "choices": [...], "answer": "...", "topic": "..." }
+    "5": { "text": "...", "choices": [...], "answer": "...", "topic": "...",
+           "validation": Validation, "lastEditedBy": "...", "lastEditedDateTime": "..." }
   },
   "added": [ Question, ... ],          // user-created questions
   "deleted": [ "12", "13" ],           // qnums to drop
@@ -138,6 +143,7 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
   "rationale":      "Ohm's law gives V=IR=2×5=10V.",
   "source":         "Ohm's Law (V=IR)",
   "validated_at":   "ISO-8601",
+  "validated_by":   "ai" | "human",    // who set this verdict — see below
   "model":          "claude-haiku-4-5-20251001",
   "text_at_validation":   "... first 300 chars of question text ...",
   "answer_at_validation": "10V",
@@ -145,13 +151,19 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
 }
 ```
 
+The Browse page (`templates/browse.html`) can set this two ways, both through `PATCH /event/<slug>/api/q/<bucket>/<num>`'s `validation` field (`review_app.py`'s `api_patch_question`, which validates `status` against `{correct, incorrect, uncertain, unavailable}` and rejects anything else with a 400):
+- **AI Validate button** — calls the existing stateless `POST /event/<slug>/api/validate-question` (same Haiku check `review.html` already used), then immediately PATCHes the result with `validated_by: "ai"` so it's persisted right away (unlike `review.html`, which only persists via its page-level Save button).
+- **Validation dropdown** — a human sets `status` directly; PATCHes `{"validation": {"status": ..., "validated_by": "human"}}`. Sending `{"validation": null}` clears it outright.
+
+Whichever happens most recently simply overwrites `q["validation"]` server-side — no merge logic, no protection either direction, so a human can always override a stale/wrong AI verdict and a fresh AI Validate run can equally override a human's.
+
 ## 5. Annotation replay (`apply_annotations`)
 
 Order matters:
 
 1. Drop questions whose number appears in `deleted`
 2. Append `added` questions (skip if number collision)
-3. Apply `field_overrides[qnum]` to all questions (pipeline-extracted *and* added)
+3. Apply `field_overrides[qnum]` to all questions (pipeline-extracted *and* added) — restricted to a hardcoded whitelist of field names in `apply_annotations` (`build_question_bank.py`): `text, choices, answer, topic, focus, page, extra_pages, context_id, image_descriptions, lastEditedBy, lastEditedDateTime, validation`. Adding a new per-question field that should survive reprocess means adding it to this tuple too, or it silently vanishes on the next Reprocess.
 4. Image overrides: strip `detached` and any reassigned images from every question, then attach `assignments[fname] = qnum` to the target
 5. Attach `validations[qnum]` to each question; mark `stale: true` if `text_at_validation` or `answer_at_validation` no longer matches
 
@@ -235,20 +247,40 @@ State store and pipeline are the same. The UI is just a graphical front-end that
 
 ### Pages
 
-- `GET /` — event landing page (one row per registered event)
+- `GET /` — event landing page. Coaches see every registered event; volunteers only the ones a coach assigned them (filtered in `index()`, `review_app.py`).
+- `GET/POST /login`, `POST /logout` — session login/logout (see Authentication & roles below).
+- `GET /admin/users` — coach-only user management page.
 - `GET /event/<slug>/` — sortable PDF list for one event. Includes an upload-test-PDF form (test + optional key).
 - `GET /event/<slug>/review/<pdf>` — single-PDF review (PDF page + question cards). Accepts `?q=<number>` to focus a specific question on load (used by the "Open source ↗" link from the browse page).
 - `GET /event/<slug>/sources` — source-material management + LLM question generation
 - `GET /event/<slug>/browse` — event-wide question browser: every question across every bucket on one filterable/sortable page. Filters: full-text search, topic, focus, source, validation status, MCQ-vs-FRQ, has-image. Sorts: Q#, topic, focus, source, validation, length, bucket-then-Q#. Each card links back to the source PDF's review page with that Q pre-focused.
 
-Every API route is namespaced under `/event/<slug>/`. Each handler calls `_select_event(slug)` first, which mutates the `build_question_bank` module globals (`BASE_DIR`, `IMAGE_DIR`, `OUT_MD`, `STATE_FILE`, `TOPICS`, `EVENT`) so the rest of the request runs in the right context. Flask's dev server is single-threaded by default, so this works correctly without locking.
+Every API route is namespaced under `/event/<slug>/`. Each handler calls `_select_event(slug)` first, which mutates the `build_question_bank` module globals (`BASE_DIR`, `IMAGE_DIR`, `OUT_MD`, `STATE_FILE`, `TOPICS`, `EVENT`) so the rest of the request runs in the right context, and — since B#1 — checks the logged-in user's event access. `bqb.set_event` writes to a `ContextVar`, so this is correct per-request/per-thread under a multi-threaded WSGI server; the only piece that still requires a single worker *process* is the per-event state lock (`build_question_bank.py`'s `threading.RLock` dict — see Deploying in the README).
+
+### Authentication & roles
+
+`auth.py` holds two roles — `coach` (implicit access to every event, plus user/textbook management) and `volunteer` (access only to their assigned `events` list) — backed by `auth_users.json` at the repo root (same flat-JSON, atomic-write pattern as `events.py`'s `events_custom.json`; gitignored, never committed). Passwords are hashed with `werkzeug.security.generate_password_hash`.
+
+- `app.before_request` redirects any request without a valid session to `/login`, except `/login` itself, `/static/*`, and the favicon.
+- `_select_event(slug)` (`review_app.py`) is the single chokepoint for per-event access: every `/event/<slug>/...` route calls it first, so adding the access check there (instead of decorating ~80 routes individually) covers all of them. Coaches pass unconditionally; volunteers get `403` if `slug` isn't in their assigned list.
+- `@coach_required` gates routes that aren't event-scoped: event create/edit/delete (`/api/events*`), shared-textbook write routes (`/api/textbooks/upload`, `/<id>/detect`, `/<id>/chapters` — reads stay open to volunteers), and the `/admin/users*` routes below.
+- `g.user` (set in `before_request`) and the `current_user` Jinja global (set via `@app.context_processor`) make the logged-in user available to every route handler and every template without threading it through each `render_template` call.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/users` | Coach-only. Lists every account with role + assigned events. |
+| `POST /admin/users` | Coach-only. Body: `{username, password, role, events}`. |
+| `PATCH /admin/users/<username>` | Coach-only. Body: `{role?, events?}` — partial update. |
+| `DELETE /admin/users/<username>` | Coach-only. Refuses to delete the caller's own account. |
+
+First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates the first account directly, since a fresh `auth_users.json` has no coach who could otherwise use the admin UI.
 
 ### API — review
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /event/<slug>/api/all-questions` | Flat list of every question in the bank with bucket provenance + computed flags (`_bucket`, `_synthetic_bucket`, `_has_image`, `_is_mcq`, `_validation_status`, `_edited_at`) and pre-aggregated stats baskets. Powers the browse page. |
-| `PATCH /event/<slug>/api/q/<bucket>/<num>` | Single-question edit (text/topic/focus/answer/choices) for the browse-page inline editor. Records the change as a `field_overrides[<num>]` annotation so reprocess respects it. |
+| `PATCH /event/<slug>/api/q/<bucket>/<num>` | Single-question edit (text/topic/focus/answer/choices/image_descriptions/validation) for Browse's always-editable cards — every field autosaves independently, no page-level Save. Records the change as a `field_overrides[<num>]` annotation so reprocess respects it, and server-stamps `lastEditedBy`/`lastEditedDateTime` from the session on every call that actually changes something (see §4's Question/Validation schemas). |
 | `DELETE /event/<slug>/api/q/<bucket>/<num>` | Remove a single question from a bucket; records `<num>` in `annotations[<bucket>].deleted` so reprocess respects it. |
 | `GET /event/<slug>/api/export.csv` | Whole bank as CSV (one row per question, columns: number/topic/focus/text/answer/choices/source/year/division/bucket/validation_status/rationale). |
 | `GET /event/<slug>/api/export.json` | Whole bank as JSON (every question dict). |
@@ -568,3 +600,38 @@ The CLI tools (`download_event.py`, `build_question_bank.py`) take `--event <slu
 - **scioly.org bot protection** is Anubis JavaScript proof-of-work. `download_event.py` and the wiki scraper auto-handle it via Playwright (see §11b). Requires `playwright install chromium` once. Cookies expire after a few hours; `--reauth` (downloader) or simply re-running scrape-wiki after expiry forces a fresh challenge.
 - **Generated questions are not validated against authoritative sources** — Haiku's rationale + source snippet are the LLM's claim, not a check. Treat them as draft material: use the answer-validation button (§9) to cross-check generated questions before relying on them.
 - **Generation prompts only use the first chunk** of a source by default (`max_chunks=1`). For a long textbook this skews coverage to the early sections. Repeat the Generate action or pre-chunk the source by hand to spread coverage.
+
+## 14. Security hardening
+
+### No-permanent-deletion data model
+
+Every destructive action the app exposes — including to coaches — is now a reversible flag flip or a pre-action snapshot, not a real delete. The only true deletion left is an operator-run CLI, never a web route.
+
+**`archive.py`** — snapshot/restore for destructive reprocesses, plus the operator-only purge:
+- `snapshot_pdf_state(event, pdfname, state)` writes `state["annotations"]/["manual"]/["questions"]` for one PDF to `<event_base_dir>/.archive/<pdfname>/<ISO-timestamp>.json` (atomic tempfile+`os.replace`, same pattern as `build_question_bank.py`'s `_save_state`). No retention limit — small JSON, not PDFs.
+- `list_snapshots`/`load_snapshot` back the review-page UI. `load_snapshot` validates the filename against a strict timestamp regex before touching disk — rejects path traversal outright.
+- `python archive.py --purge-snapshots-older-than-days N` is the only thing that actually deletes a snapshot file. Never called from `review_app.py`.
+
+**Reprocess hook** (`review_app.py`'s `api_reprocess`): when `discard_annotations` is set and the PDF actually has annotations/manual-edits/questions to lose, `archive.snapshot_pdf_state(...)` runs *before* the wipe. `GET .../snapshots` and `POST .../restore-snapshot` (same `_select_event` access gate as every other PDF route — restoring is protective, not destructive) round out the UI in `templates/review.html`'s Reprocess dropdown.
+
+**Event archive** (`events.py`): `Event.archived: bool = False`, threaded through `_event_to_dict`/`_dict_to_event` same as every other field. `archive_custom_event`/`unarchive_custom_event` replace the old `remove_custom_event` — built-ins still can't be archived (same `is_builtin()` guard as edit/delete). `index()` (`review_app.py`) excludes archived events from the normal landing-page list and surfaces them to coaches in a separate "Show archived" section; `_select_event` 404s any direct access to an archived event until it's unarchived.
+
+**User disable** (`auth.py`): `User.disabled: bool = False`, same threading through `_load`/`_save`. `disable_user`/`enable_user` wrap `update_user`. `verify_login` rejects disabled accounts outright; `_require_login`'s `before_request` (`review_app.py`) treats a disabled user exactly like a deleted one — clears the session and redirects to `/login` on their very next request, so a disable takes effect immediately even for an already-logged-in session. `auth.delete_user` (true removal) still exists as a primitive but is only ever meant to be called from an operator shell, not from any route.
+
+### Upload & request hardening
+
+**`pdf_safety.py`** — defensive PDF opening shared by `build_question_bank.py`'s `process_pair` and `texts.py`'s `pdf_to_markdown`/`detect_chapters`:
+- `looks_like_pdf(path)` checks for the `%PDF-` magic header — cheap, called both inline in the three upload routes (immediate rejection, deletes the bad upload) and inside `open_pdf_safely`.
+- `open_pdf_safely(path)` runs `fitz.open()` in a `ThreadPoolExecutor` with a 30s timeout (deliberately not a `with` block — `Executor.__exit__` calls `shutdown(wait=True)`, which would block on a genuinely hung open; `shutdown(wait=False)` lets the request return promptly and leaks the stuck worker thread instead, an acceptable tradeoff at this app's request volume) and rejects anything over `MAX_PAGES = 2000` right after open (cheap metadata read) and before any caller loops over every page.
+
+**SVG sanitization**: `_sanitize_svg` (`review_app.py`) strips `<script>` elements and `on*=` attributes from an uploaded SVG question image before it's written to disk. Not a full sanitizer (doesn't touch `<foreignObject>` or external refs) — defense-in-depth on top of the app only ever rendering these via `<img>` tags, which don't execute embedded scripts.
+
+**Path containment**: `_safe_join(base_dir, user_supplied_name)` (`review_app.py`) runs `secure_filename()` then verifies the resolved path `.is_relative_to(base_dir.resolve())` before returning it, `abort(400)` otherwise. Applied to `serve_image`, `api_process_source`, `api_source_raw` — the three routes that build a filesystem path from a single dynamic URL segment.
+
+**CSRF**: double-submit cookie. `/login` sets a non-HttpOnly `csrf_token` cookie alongside the session cookie. `_check_csrf` (`before_request`, registered after `_require_login`) rejects any `POST`/`PUT`/`PATCH`/`DELETE` whose `X-CSRF-Token` header doesn't match the cookie (`secrets.compare_digest`), except `login`/`logout` (native `<form>` POSTs, can't attach a custom header — both are auth-flow routes, not data mutations). The frontend's existing `window.fetch` monkey-patch (the one that auto-attaches `X-LLM-Keys`, see §9) gained a sibling patch that reads the cookie and attaches `X-CSRF-Token` to every non-GET/HEAD request — no per-call-site changes needed anywhere in the templates.
+
+**Login rate limiting**: `_login_attempts` (`review_app.py`), an in-process `dict[ip, list[float]]` guarded by a `threading.Lock`. 5 failures within a 15-minute sliding window locks that IP out (`429`) until the window clears; a successful login clears its history. Deliberately keyed on `request.remote_addr`, never `X-Forwarded-For` — this app runs no trusted-proxy config, so honoring a client-supplied header would let an attacker spoof a fresh IP per request and bypass the limiter entirely. Behind Caddy without further config every visitor shares Caddy's address (rate-limits the whole app together) — fails safe rather than spoofable. Resets on process restart.
+
+**Fail-fast startup config**: two checks, both in `review_app.py`. (1) Module level: if `SESSION_COOKIE_SECURE=true` (the operator's own signal this is a real HTTPS deployment) but `FLASK_SECRET_KEY` isn't set, `sys.exit` before the app object finishes configuring — catches the gunicorn/production path. (2) In `main()`: if `--host` isn't loopback (`127.0.0.1`/`localhost`/`::1`) and `FLASK_SECRET_KEY` isn't set, `sys.exit` before `app.run()` — catches the `python review_app.py` dev-server path exposed to a real interface. Neither check fires for default local-dev usage (loopback host, no env vars set), which keeps working exactly as before.
+
+**Subpath mounting**: `_PrefixMiddleware` (`review_app.py`) wraps `app.wsgi_app` when `APPLICATION_ROOT` is set in the environment — the standard Werkzeug pattern for an app sitting behind a reverse proxy that mounts it under a path prefix (e.g. `/testbank/ncms`) instead of the domain root. It strips the prefix from `PATH_INFO` into `SCRIPT_NAME`, so `url_for()` and `request.script_root` produce correctly-prefixed URLs everywhere, including the redirect target built from `request.script_root + request.path` in `_require_login`. Server-rendered template links use `url_for(...)`/`request.script_root` directly; client-side JS has no equivalent, so `_user_badge.html` injects a `const APP_ROOT = "{{ request.script_root }}";` global that every page's inline `<script>` block prefixes its `fetch()` URLs with. Unset (the local-dev default), the middleware is a no-op and `APP_ROOT` is `""`. The reverse proxy must forward the full path **unstripped** — Caddy's `handle /testbank/ncms* { ... }` (not `handle_path`) — since the middleware does its own stripping.

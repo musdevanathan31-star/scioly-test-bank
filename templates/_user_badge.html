@@ -1,0 +1,10 @@
+{% if current_user %}
+<script>const APP_ROOT = {{ request.script_root|tojson }};</script>
+<span class="muted" style="font-size:12px;margin-left:auto;display:flex;align-items:center;gap:8px">
+  Signed in as <b>{{ current_user.username }}</b> ({{ current_user.role }})
+  {% if current_user.role == "coach" %}<a href="{{ url_for('admin_users_page') }}">Manage users</a>{% endif %}
+  <form action="{{ url_for('logout') }}" method="post" style="display:inline;margin:0">
+    <button type="submit" class="ghost" style="font-size:12px">Logout</button>
+  </form>
+</span>
+{% endif %}

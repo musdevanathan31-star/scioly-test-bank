@@ -43,6 +43,11 @@ class Event:
     filename_prefix: str = ""
     foci: tuple[str, ...] = ()                      # rotating sub-topics (e.g. Endocrine, Nervous)
     wiki_page: str = ""                             # MediaWiki page name; default = name with _
+    # Soft-delete flag for custom events. The web app never removes an
+    # event's directory/PDFs/state file — "deleting" an event just hides it
+    # from the landing page via this flag, fully reversible. Built-ins can't
+    # be archived (see is_builtin() guard at every call site).
+    archived: bool = False
     cover_markers: tuple[str, ...] = (
         "team name", "team number", "team #", "names:", "score:",
         "final score", "do not flip", "do not turn",
@@ -366,6 +371,7 @@ def _event_to_dict(ev: Event) -> dict:
         "topic_keywords":  ev.topic_keywords,
         "foci":            list(ev.foci),
         "wiki_page":       ev.wiki_page,
+        "archived":        ev.archived,
     }
 
 
@@ -380,6 +386,7 @@ def _dict_to_event(d: dict) -> Event:
         topic_keywords=d.get("topic_keywords") or {},
         foci=tuple(d.get("foci") or ()),
         wiki_page=d.get("wiki_page") or "",
+        archived=bool(d.get("archived", False)),
     )
 
 
@@ -470,14 +477,27 @@ def add_custom_event(
     return ev
 
 
-def remove_custom_event(slug: str) -> None:
-    """Unregister a user-added event. Built-ins cannot be removed."""
+def _set_archived(slug: str, archived: bool) -> None:
     if slug in _BUILTIN_SLUGS:
-        raise ValueError("cannot remove a built-in event")
+        raise ValueError("cannot archive a built-in event")
     if slug not in EVENTS:
         raise ValueError(f"event {slug!r} not registered")
-    del EVENTS[slug]
+    import dataclasses
+    EVENTS[slug] = dataclasses.replace(EVENTS[slug], archived=archived)
     _save_custom_events()
+
+
+def archive_custom_event(slug: str) -> None:
+    """Hide a user-added event from the landing page. The web app never
+    deletes the event's directory/PDFs/state file on disk — this only flips
+    a flag in events_custom.json, fully reversible via unarchive_custom_event.
+    Built-ins cannot be archived."""
+    _set_archived(slug, True)
+
+
+def unarchive_custom_event(slug: str) -> None:
+    """Reverse archive_custom_event."""
+    _set_archived(slug, False)
 
 
 # Load any events that were registered in a previous run

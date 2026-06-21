@@ -1,0 +1,11 @@
+# Dev/local-only extras — not needed on a production server.
+#
+# playwright is only used by `download_event.py --reauth` to bypass
+# scioly.org's Anubis bot challenge and save fresh cookies. review_app.py
+# never imports it at runtime, so a hosted instance can skip this entirely
+# unless someone needs to refresh .scioly_cookies.json from that machine.
+#
+# Install with: pip install -r requirements.txt -r requirements-dev.txt
+# then: playwright install chromium
+
+playwright>=1.40

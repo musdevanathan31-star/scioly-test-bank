@@ -183,7 +183,13 @@ python download_event.py --event <slug> --reauth
    - Spatial image association → each circuit diagram is attached to the question it sits closest to on the page
    - (Optional) Haiku vision pass to OCR image-only PDFs and to refine image-to-question assignments when the heuristic is ambiguous
 
-3. **Browse** (`/event/<slug>/browse`) — an event-wide question explorer that aggregates every question across every bucket (PDF-extracted, LLM-generated, scio.ly-scraped) into one searchable, filterable view. Filter by topic, focus, source, **bucket**, validation status, MCQ-vs-FRQ, has-image; sort by Q#, topic, source, length, or validation; click anywhere on a card (or "Open source ↗") to jump straight to its review page with that question pre-focused. Topic badges are colour-coded by a deterministic hash so each topic has a stable visual identity; question-type icons (🔘 MCQ / 📝 FRQ) for quick scanning. Filter state is persisted in the URL, so reload and back-button work and links are shareable. Search box is hotkeyed to `/`; image lightbox on click; sidebar shows live counts of topics/sources/validation.
+3. **Browse** (`/event/<slug>/browse`) — an event-wide question explorer that aggregates every question across every bucket (PDF-extracted, LLM-generated, scio.ly-scraped) into one searchable, filterable view. Filter by topic, focus, source, **bucket**, validation status, MCQ-vs-FRQ, has-image; sort by Q#, topic, source, length, or validation. Filter state is persisted in the URL, so reload and back-button work and links are shareable. Search box is hotkeyed to `/`; image lightbox on click; sidebar shows live counts of topics/sources/validation.
+
+   **Every card is directly editable, no Edit click required** — Topic, Focus, Stem, Choices, and Answer are live fields right on the card (topic select keeps the deterministic colour-hash background so it's still recognisable at a glance). Changes autosave ~600ms after you stop typing (no Save button) and a small status line shows "Saving…" → "Saved HH:MM:SS". An **"↺ Undo"** button appears after each autosave and reverts that question's fields back to what they were just before your most recent batch of edits (single-level — a *new* edit replaces the undo point). Every card also shows **"Last edited by `<user>` · `<timestamp>`"**, stamped server-side from the logged-in session on every save (never client-supplied).
+
+   **Validation, both AI and manual** — an **"🤖 AI Validate"** button calls the same Haiku check used elsewhere and persists the verdict immediately (Browse previously couldn't persist this at all). A **Validation** dropdown next to it (Correct/Incorrect/Uncertain/unset) lets a human set or override the status directly — whichever happens most recently simply wins, so a human can always correct a stale or wrong AI verdict, and re-running AI Validate can likewise override a human's. The badge shows who set it (`(ai)`/`(human)`).
+
+   PDF-sourced questions keep a persistent **"Open source ↗"** link to jump to that PDF's review page with the question pre-focused (absent for LLM-generated/scio.ly-imported questions, which have no source PDF).
 
 4. **Review** (`review_app.py`) — a browser UI shows each PDF page next to its extracted questions. You can:
    - **Drag a rectangle on the PDF** to capture stem, choices, or answer text directly from the source
@@ -284,6 +290,77 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 Without a key, the pipeline still runs: it skips vision OCR (image-based PDFs yield no questions) and skips image-association refinement (falls back to y-coordinate heuristic). The review UI still works; vision-dependent buttons disable themselves.
 
+## Authentication & roles
+
+The app supports two roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
+
+- **Coach** — full admin. Every event, plus user management (`/admin/users`) and shared-textbook uploads.
+- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL.
+
+A **student** role (read-only) is intentionally not built yet — the data model (a `role` string + a per-user `events` list) is generic enough to add one later without rework.
+
+**First-time setup** — a fresh `auth_users.json` has no accounts, so there's no one who could use the in-app admin UI yet. Bootstrap the first coach from the CLI:
+
+```
+python auth.py --create-coach
+```
+
+After that, log in and use **Manage users** (coach-only, linked from the header) to create volunteer accounts and check which events each one can access.
+
+Sessions are plain signed Flask cookies — set `FLASK_SECRET_KEY` (a random 32+ byte hex string) in `.env` for production so logins survive a restart; without it the app generates a throwaway key per process start and everyone gets logged out. Once served over HTTPS, also set `SESSION_COOKIE_SECURE=true` so the session cookie requires TLS.
+
+## Deploying (shared, multi-user instance)
+
+For a small team sharing one workspace, bare metal + a reverse proxy is enough — no Docker needed:
+
+```
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+# (requirements-dev.txt's playwright is only needed if you'll run
+#  download_event.py --reauth from this machine)
+venv/bin/python auth.py --create-coach
+```
+
+Then install [`deploy/qbank.service`](deploy/qbank.service) as a systemd unit (`gunicorn`, bound to `127.0.0.1:5000`) and [`deploy/Caddyfile`](deploy/Caddyfile) as a reverse proxy in front of it — both files have install steps in their header comments.
+
+**`--workers 1` is load-bearing** — `build_question_bank.py`'s per-event state lock is an in-process `threading.RLock`, which only serialises writes correctly within a single worker process. `--threads 8` gives real request concurrency for the I/O-bound LLM calls without that risk. Don't raise `--workers` above 1 without first replacing that lock with a file-based one (each worker process gets its own copy of an in-process lock, so it would silently stop protecting anything).
+
+Redeploy flow: `git pull && venv/bin/pip install -r requirements.txt && sudo systemctl restart qbank`.
+
+### Subpath mounting (e.g. `/testbank/ncms` instead of the domain root)
+
+If the reverse proxy doesn't own the whole domain, set `APPLICATION_ROOT=/testbank/ncms` (or whatever prefix) in `.env`. `review_app.py`'s `_PrefixMiddleware` strips that prefix into `SCRIPT_NAME` so `url_for()`/`request.script_root` produce correctly-prefixed URLs, and every template's JS already reads the `APP_ROOT` global (injected by `_user_badge.html`) to prefix its `fetch()` calls — no further app changes needed. The Caddyfile's `handle /testbank/ncms* { reverse_proxy ... }` block must forward the path **unstripped** (`handle`, not `handle_path`) to match what the middleware expects.
+
+### Home-network deployment (dynamic IP, no static cloud IP)
+
+Running behind a residential router instead of a cloud VM needs a few extra pieces beyond `deploy/Caddyfile`/`deploy/qbank.service`:
+
+- DHCP-reserve the box's LAN IP on the router, then forward WAN ports 80 and 443 to it. Caddy's automatic Let's Encrypt HTTP-01 challenge needs port 80 reachable from the internet, not just 443.
+- If the public IP isn't static, run `ddclient` (or an equivalent script) on the box to keep the domain's DNS A record pointed at the current IP — the exact config depends on whoever hosts the domain's DNS.
+- Don't forward SSH to the WAN — administer the box over the LAN (or a VPN back into the LAN) instead.
+
+## Security hardening
+
+### Nothing is ever permanently deleted through the app
+
+Every "delete" action in the UI is reversible — including for coaches. The only way to actually free disk space is an operator running a script directly on the server, never through the web app:
+
+- **Reprocess → "wipe annotations" / "manual mode"** snapshots the PDF's annotations, manual-edit tracking, and question list to `<event>/.archive/<pdfname>/<timestamp>.json` (`archive.py`) *before* wiping anything. Restore any snapshot from the Reprocess dropdown's "Snapshot history" entry on the review page.
+- **"Remove" an event** (`events.py`'s `archive_custom_event`) sets an `archived` flag — it disappears from the landing page but its directory, PDFs, and state file are never touched. Unarchive it from the landing page's "Show archived events" section.
+- **"Remove" a user** (`auth.py`'s `disable_user`) sets a `disabled` flag — blocks login and kicks any active session immediately, but the account and all their work stay intact. Re-enable from Manage Users.
+- Single/bulk question delete were already soft (recorded in `annotations[...].deleted`, survive reprocess) — unchanged.
+- There's still no route that deletes an uploaded file (test/key/source/textbook PDF) at all — by design.
+- Real cleanup, when an operator actually wants it: `python archive.py --purge-snapshots-older-than-days N` removes old snapshot files from disk. Nothing equivalent exists for archived events or disabled users — handle those by hand if truly necessary.
+
+### Upload & request hardening
+
+- Every uploaded PDF is checked for a `%PDF-` magic header before PyMuPDF ever touches it, capped at 2000 pages, and parsed with a 30s timeout (`pdf_safety.py`) — closes off a renamed-non-PDF or a hostile/malformed PDF hanging or OOMing the process.
+- Uploaded SVG question images have `<script>` tags and `on*=` event-handler attributes stripped before being saved (`_sanitize_svg` in `review_app.py`).
+- File-serving routes that build a path from a user-supplied filename (`serve_image`, source `process`/`raw`) go through a containment check (`_safe_join`) so a crafted filename can't resolve outside its intended directory.
+- All state-changing requests (`POST`/`PATCH`/`DELETE`) require a matching CSRF double-submit-cookie token, issued on login and auto-attached by the frontend's existing fetch-patch pattern — no per-call-site changes needed.
+- `/login` locks out an IP for 15 minutes after 5 failed attempts (in-memory, resets on restart — a real improvement over nothing, not a claim of perfect brute-force resistance).
+- The app refuses to start if it looks like a real deployment (`SESSION_COOKIE_SECURE=true`, or `--host` bound to something other than loopback) without `FLASK_SECRET_KEY` set, instead of silently running with a key that gets regenerated — and every session invalidated — on every restart.
+
 ## CLI reference
 
 ```
@@ -309,6 +386,12 @@ The review page's empty-PDFs state lets you trigger `download_event.py` from the
 ```
 python review_app.py [--host 127.0.0.1] [--port 5000]
 ```
+
+```
+python backfill_last_edited.py
+```
+
+One-time, idempotent migration that sets `lastEditedBy`/`lastEditedDateTime` on every pre-existing question missing them (added once those fields existed in the schema — see Browse page docs above). Safe to re-run; only touches questions that don't have the field yet.
 
 ```
 python -m pytest tests/ -q

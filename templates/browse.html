@@ -107,9 +107,16 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .inline-editor .ce-choice{display:flex;gap:6px;align-items:center}
 .inline-editor .ce-choice .lt{width:18px;text-align:center;font-weight:bold}
 .inline-editor .ce-c{flex:1}
-.inline-editor .ie-actions{display:flex;gap:8px;margin-top:10px}
+.inline-editor .ie-actions{display:flex;gap:8px;margin-top:10px;align-items:center}
 .qcard .pending-img-note{margin-top:8px;padding:6px 8px;background:#fff8e1;
   border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:3px}
+.save-status{font-size:11px;color:var(--muted)}
+.save-status.saving{color:var(--accent)}
+.save-status.err{color:var(--bad)}
+.last-edited{font-size:11px;color:var(--muted);margin-top:6px}
+.validation-row{display:flex;gap:8px;align-items:center;margin:6px 0}
+.validation-row select{padding:3px 6px;font-size:12px;border:1px solid var(--line);
+  border-radius:3px;font:inherit}
 /* Diagram chat panel */
 .dc-msg{padding:8px 10px;margin:6px 0;border-radius:5px;font-size:12px;line-height:1.5}
 .dc-msg.dc-user{background:var(--bg-card);border:1px solid var(--line)}
@@ -137,15 +144,16 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="/" title="Back to event list" style="font-size:18px">←</a>
+  <a href="{{ request.script_root }}/" title="Back to event list" style="font-size:18px">←</a>
   <h1 style="margin:0;font-size:15px;font-weight:600;flex:1">
-    <a href="/event/{{ event_slug }}/" style="text-decoration:none;color:var(--fg-soft)">{{ event_name }}</a>
+    <a href="{{ request.script_root }}/event/{{ event_slug }}/" style="text-decoration:none;color:var(--fg-soft)">{{ event_name }}</a>
     <span class="muted" style="font-weight:400"> · Browse</span>
   </h1>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
-  <a href="/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
-  <a href="/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  {% include "_user_badge.html" %}
 </header>
 <div class="layout">
   <aside class="sidebar">
@@ -300,7 +308,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 </div>
 <script>
 const EVENT_SLUG = "{{ event_slug }}";
-const API = `/event/${EVENT_SLUG}/api`;
+const API = `${APP_ROOT}/event/${EVENT_SLUG}/api`;
 let DATA = null;
 let FILTERED = [];
 
@@ -488,21 +496,19 @@ function topicChipStyle(t){
   return `background:hsl(${hue},70%,93%);color:hsl(${hue},55%,32%)`;
 }
 const TYPE_ICON = {mcq: "🔘", frq: "📝", num: "🧮"};
+const VALIDATION_ICONS = {correct: "✓", incorrect: "⚠", uncertain: "?", unavailable: "·"};
 
 function renderCard(q){
   const isReal = !q._synthetic_bucket;
   const sourceLink = isReal
-    ? `<a href="/event/${EVENT_SLUG}/review/${encodeURIComponent(q._bucket)}?q=${encodeURIComponent(q.number)}"
+    ? `<a href="${APP_ROOT}/event/${EVENT_SLUG}/review/${encodeURIComponent(q._bucket)}?q=${encodeURIComponent(q.number)}"
          target="_blank" title="Open the source PDF on its review page (Q${esc(q.number)} highlighted)">
          Open source ↗
        </a>`
     : "";
-  const choicesHtml = (q.choices && q.choices.length)
-    ? `<ul class="choices">${q.choices.map(c => `<li><b>${esc(c.letter)}.</b> ${esc(c.text)}</li>`).join("")}</ul>`
-    : "";
   const imagesHtml = (q.images && q.images.length)
     ? `<div class="images">${q.images.map(fn =>
-        `<img src="/event/${EVENT_SLUG}/images/${esc(fn)}" alt="figure" data-lb>`).join("")}</div>`
+        `<img src="${APP_ROOT}/event/${EVENT_SLUG}/images/${esc(fn)}" alt="figure" data-lb>`).join("")}</div>`
     : "";
   const pendingDesc = (q.image_descriptions || {}).__pending__ || "";
   const pendingNote = pendingDesc ? `
@@ -511,48 +517,84 @@ function renderCard(q){
       🖼️ <i>Diagram recommended:</i> ${esc(pendingDesc).slice(0, 140)}${pendingDesc.length > 140 ? '…' : ''}
     </div>` : "";
   const v = q.validation;
-  let vBadge = `<span class="badge v-none">unvalidated</span>`;
-  let vRationale = "";
-  if(v && v.status){
-    const cls = "v-" + v.status;
-    const icon = {correct:"✓",incorrect:"⚠",uncertain:"?",unavailable:"·"}[v.status] || "·";
-    vBadge = `<span class="badge ${cls}">${icon} ${esc(v.status)}${v.stale ? " (stale)" : ""}</span>`;
-    if(v.rationale){
-      vRationale = `<div class="rationale">
-        <b>Validation:</b> ${esc(v.rationale)}
-        ${v.source ? `<br><small>Source: ${esc(v.source)}</small>` : ""}
-        ${v.status === "incorrect" && v.correct_answer ? `<br><small>Likely correct: <b>${esc(v.correct_answer)}</b></small>` : ""}
-      </div>`;
-    }
-  }
+  const vIcon = v && v.status ? (VALIDATION_ICONS[v.status] || "·") : "";
   const bucketLabel = q._bucket.replace(/[.]pdf$/, "").replace(/^_/, "");
-  const focusBadge = q.focus ? `<span class="badge focus">${esc(q.focus)}</span>` : "";
 
   const thumb = (q.images && q.images.length)
-    ? `<img class="card-thumb" src="/event/${EVENT_SLUG}/images/${esc(q.images[0])}" alt="thumbnail" title="${q.images.length} image(s) attached">`
+    ? `<img class="card-thumb" src="${APP_ROOT}/event/${EVENT_SLUG}/images/${esc(q.images[0])}" alt="thumbnail" title="${q.images.length} image(s) attached">`
     : "";
+
+  const choicesHtml = (q.choices || []).map((c, i) =>
+    `<div class="ce-choice"><span class="lt">${esc(c.letter || String.fromCharCode(65+i))}</span>
+       <input type="text" class="ce-c qf" data-field="choices" data-idx="${i}" value="${esc(c.text)}"></div>`).join("");
+
+  const lastEdited = q.lastEditedBy
+    ? `<div class="last-edited">Last edited by <b>${esc(q.lastEditedBy)}</b>${q.lastEditedDateTime ? " · " + esc(q.lastEditedDateTime.replace("T", " ")) : ""}</div>`
+    : "";
+
   return `
   <div class="qcard ${q._synthetic_bucket ? "synthetic" : ""}" data-qid="${esc(q.number)}" data-bucket="${esc(q._bucket)}">
     <input type="checkbox" class="qcard-check" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Select for bulk compare/delete">
     ${thumb}
     <div class="head">
       <span class="qnum" title="Question number in its source PDF">Q${esc(q.number)}</span>
-      <span class="badge topic" style="${topicChipStyle(q.topic)}">${esc(q.topic || "Other / General")}</span>
-      ${focusBadge}
       <span class="badge type" title="${q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
-      ${vBadge}
       <span class="badge bucket" title="State-file bucket: ${esc(q._bucket)}">${esc(bucketLabel)}</span>
     </div>
-    <div class="qstem">${esc(q.text || "(empty)")}</div>
-    ${choicesHtml}
-    <div class="answer"><b>Answer:</b> ${esc(q.answer || "—")}</div>
+    <div class="inline-editor">
+      <div class="ie-row">
+        <label class="ie-lbl">Topic</label>
+        <select class="qf" data-field="topic" style="${topicChipStyle(q.topic)}">${(DATA.topics || []).concat(q.topic ? [q.topic] : [])
+          .filter((t,i,a) => a.indexOf(t)===i)
+          .map(t => `<option ${t===q.topic?"selected":""}>${esc(t)}</option>`).join("")}</select>
+      </div>
+      ${(DATA.foci && DATA.foci.length) ? `
+      <div class="ie-row">
+        <label class="ie-lbl">Focus</label>
+        <select class="qf" data-field="focus">
+          <option value="">(none)</option>
+          ${DATA.foci.map(f => `<option ${f===q.focus?"selected":""}>${esc(f)}</option>`).join("")}
+        </select>
+      </div>` : ""}
+      <div class="ie-row">
+        <label class="ie-lbl">Stem</label>
+        <textarea class="qf" data-field="text">${esc(q.text)}</textarea>
+      </div>
+      ${(q.choices && q.choices.length) ? `
+      <div class="ie-row">
+        <label class="ie-lbl">Choices</label>
+        <div class="ie-choices">${choicesHtml}</div>
+      </div>` : ""}
+      <div class="ie-row">
+        <label class="ie-lbl">Answer</label>
+        <input type="text" class="qf" data-field="answer" value="${esc(q.answer)}">
+      </div>
+      <div class="ie-actions">
+        <span class="save-status" data-role="save-status"></span>
+        <button class="ghost undo-btn" style="display:none" title="Undo the last autosaved change to this question">↺ Undo</button>
+        <span style="flex:1"></span>
+        <button class="danger del-btn" title="Delete this question entirely">🗑 Delete</button>
+      </div>
+    </div>
+    <div class="validation-row">
+      <select class="qf-validation" title="Set or override this question's validation status yourself">
+        <option value="" ${!v || !v.status ? "selected" : ""}>(unset)</option>
+        <option value="correct" ${v && v.status==="correct" ? "selected" : ""}>✓ Correct</option>
+        <option value="incorrect" ${v && v.status==="incorrect" ? "selected" : ""}>⚠ Incorrect</option>
+        <option value="uncertain" ${v && v.status==="uncertain" ? "selected" : ""}>? Uncertain</option>
+      </select>
+      <button class="ghost ai-validate-btn" title="Ask Haiku to check this answer (~$0.003)">🤖 AI Validate</button>
+      ${v && v.status ? `<span class="badge v-${v.status}" data-role="v-badge">${vIcon} ${esc(v.status)}${v.validated_by ? ` (${esc(v.validated_by)})` : ""}</span>` : `<span class="badge v-none" data-role="v-badge">unvalidated</span>`}
+    </div>
+    <div class="rationale" data-role="v-rationale" ${v && v.rationale ? "" : 'style="display:none"'}>
+      <b>Validation:</b> <span data-role="v-rationale-text">${esc((v && v.rationale) || "")}</span>
+    </div>
     ${imagesHtml}
     ${pendingNote}
-    ${vRationale}
+    ${lastEdited}
     <div class="src-row">
       <span class="src-label">${esc(q.source || "(no source)")}</span>
       <span style="display:flex;gap:8px;align-items:center">
-        <button class="ghost edit-btn" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Edit this question inline">✎ Edit</button>
         <button class="ghost gensim-btn" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Ask Haiku to write N new questions on the same concept as this one">✨ Generate similar</button>
         <button class="ghost gendiagram-btn" data-num="${esc(q.number)}" data-bucket="${esc(q._bucket)}" title="Open a small chat with Claude Sonnet to generate an SVG diagram for this question, seeded with the stem and topic.">🤖 Generate diagram</button>
         ${sourceLink}
@@ -561,110 +603,233 @@ function renderCard(q){
   </div>`;
 }
 
-function openInlineEditor(card, q){
-  if(card.querySelector(".inline-editor")) return; // already open
-  const choicesHtml = (q.choices || []).map((c, i) =>
-    `<div class="ce-choice"><span class="lt">${esc(c.letter || String.fromCharCode(65+i))}</span>
-       <input type="text" class="ce-c" data-idx="${i}" value="${esc(c.text)}"></div>`).join("");
-  const ed = document.createElement("div");
-  ed.className = "inline-editor";
-  ed.innerHTML = `
-    <div class="ie-row">
-      <label class="ie-lbl">Topic</label>
-      <select class="ie-topic">${(DATA.topics || []).concat(q.topic ? [q.topic] : [])
-        .filter((t,i,a) => a.indexOf(t)===i)
-        .map(t => `<option ${t===q.topic?"selected":""}>${esc(t)}</option>`).join("")}</select>
-    </div>
-    ${(DATA.foci && DATA.foci.length) ? `
-    <div class="ie-row">
-      <label class="ie-lbl">Focus</label>
-      <select class="ie-focus">
-        <option value="">(none)</option>
-        ${DATA.foci.map(f => `<option ${f===q.focus?"selected":""}>${esc(f)}</option>`).join("")}
-      </select>
-    </div>` : ""}
-    <div class="ie-row">
-      <label class="ie-lbl">Stem</label>
-      <textarea class="ie-text">${esc(q.text)}</textarea>
-    </div>
-    ${(q.choices && q.choices.length) ? `
-    <div class="ie-row">
-      <label class="ie-lbl">Choices</label>
-      <div class="ie-choices">${choicesHtml}</div>
-    </div>` : ""}
-    <div class="ie-row">
-      <label class="ie-lbl">Answer</label>
-      <input type="text" class="ie-answer" value="${esc(q.answer)}">
-    </div>
-    <div class="ie-actions">
-      <button class="primary ie-save" title="Save the inline edits back to the state file">Save</button>
-      <button class="ie-cancel" title="Discard inline edits and close the editor">Cancel</button>
-      <button class="danger ie-del" title="Delete this question entirely">Delete question</button>
-    </div>`;
-  card.appendChild(ed);
-  // Focus stem
-  setTimeout(()=>ed.querySelector(".ie-text").focus(), 30);
+// ---- Autosave + single-level undo --------------------------------------
+// Keyed by "<bucket>::<num>". Each entry: {timer, dirty: {field: value},
+// snapshot: {field: value} | null} — `snapshot` is the question's values
+// from just before the FIRST change in the current unsaved batch, used by
+// the Undo button. A debounce (not per-keystroke) collapses rapid edits to
+// one PATCH; a second edit before the timer fires just extends the window
+// and adds to `dirty` without losing the original `snapshot`.
+const _cardState = new Map();
+const AUTOSAVE_DEBOUNCE_MS = 600;
 
-  ed.querySelector(".ie-cancel").addEventListener("click", () => ed.remove());
-  ed.querySelector(".ie-save").addEventListener("click", async () => {
-    const payload = {
-      topic:  ed.querySelector(".ie-topic").value,
-      text:   ed.querySelector(".ie-text").value,
-      answer: ed.querySelector(".ie-answer").value,
+function _cardKey(bucket, num){ return `${bucket}::${num}`; }
+
+function _findQ(bucket, num){
+  return DATA.questions.find(x => x._bucket === bucket && String(x.number) === String(num));
+}
+
+function _setSaveStatus(card, text, cls){
+  const el = card.querySelector('[data-role="save-status"]');
+  if(!el) return;
+  el.textContent = text;
+  el.className = "save-status" + (cls ? " " + cls : "");
+}
+
+function scheduleAutosave(card, q, field, value){
+  const key = _cardKey(q._bucket, q.number);
+  let st = _cardState.get(key);
+  if(!st){
+    st = {timer: null, dirty: {}, snapshot: null};
+    _cardState.set(key, st);
+  }
+  if(!st.snapshot){
+    // First change in this batch — remember the pre-edit values so Undo
+    // has something to restore.
+    st.snapshot = {
+      topic: q.topic, focus: q.focus, text: q.text, answer: q.answer,
+      choices: (q.choices || []).map(c => ({...c})),
     };
-    const focusEl = ed.querySelector(".ie-focus");
-    if(focusEl) payload.focus = focusEl.value;
-    const cs = [...ed.querySelectorAll(".ie-c")];
-    if(cs.length){
-      payload.choices = cs.map((el, i) => ({
-        letter: String.fromCharCode(65+i),
-        text: el.value,
-      }));
-    }
-    try {
-      const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {
-        method: "PATCH",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload),
-      });
-      const j = await r.json();
-      if(j.ok){
-        toast(`Saved Q${q.number}`, "ok");
-        ed.remove();
-        // Update in-memory and re-render
-        Object.assign(q, payload);
-        rerender();
-      } else {
-        toast("Save failed: " + (j.error || ""), "err");
-      }
-    } catch(err){ toast("Save error: " + err.message, "err"); }
-  });
-  ed.querySelector(".ie-del").addEventListener("click", async () => {
-    if(!confirm(`Delete Q${q.number} from ${q._bucket}?
+  }
+  st.dirty[field] = value;
+  if(st.timer) clearTimeout(st.timer);
+  _setSaveStatus(card, "Saving…", "saving");
+  st.timer = setTimeout(() => flushAutosave(card, q), AUTOSAVE_DEBOUNCE_MS);
+}
 
-This is recorded as an annotation so reprocess will respect it.`)) return;
-    try {
-      const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {method:"DELETE"});
-      const j = await r.json();
-      if(j.ok){
-        toast(`Deleted Q${q.number}`, "ok");
-        DATA.questions = DATA.questions.filter(x => !(x._bucket === q._bucket && String(x.number) === String(q.number)));
-        rerender();
-      } else { toast("Delete failed: " + (j.error || ""), "err"); }
-    } catch(err){ toast("Delete error: " + err.message, "err"); }
-  });
+async function flushAutosave(card, q){
+  const key = _cardKey(q._bucket, q.number);
+  const st = _cardState.get(key);
+  if(!st) return;
+  const payload = {...st.dirty};
+  st.dirty = {};
+  st.timer = null;
+  try {
+    const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if(j.ok){
+      Object.assign(q, j.question);
+      _setSaveStatus(card, "Saved " + new Date().toLocaleTimeString(), "");
+      const undoBtn = card.querySelector(".undo-btn");
+      if(undoBtn) undoBtn.style.display = "";
+      const led = card.querySelector(".last-edited");
+      if(led) led.innerHTML = `Last edited by <b>${esc(q.lastEditedBy)}</b> · ${esc((q.lastEditedDateTime||"").replace("T"," "))}`;
+    } else {
+      _setSaveStatus(card, "Save failed: " + (j.error || ""), "err");
+    }
+  } catch(err){
+    _setSaveStatus(card, "Save error: " + err.message, "err");
+  }
+}
+
+async function undoLastChange(card, q){
+  const key = _cardKey(q._bucket, q.number);
+  const st = _cardState.get(key);
+  if(!st || !st.snapshot) return;
+  const payload = st.snapshot;
+  _cardState.delete(key);
+  _setSaveStatus(card, "Undoing…", "saving");
+  try {
+    const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if(j.ok){
+      Object.assign(q, j.question);
+      toast(`Undid last change to Q${q.number}`, "ok");
+      rerender();
+    } else {
+      _setSaveStatus(card, "Undo failed: " + (j.error || ""), "err");
+    }
+  } catch(err){ _setSaveStatus(card, "Undo error: " + err.message, "err"); }
+}
+
+function _readChoicesFromCard(card){
+  return [...card.querySelectorAll(".qf[data-field=choices]")].map((el, i) => ({
+    letter: String.fromCharCode(65 + i), text: el.value,
+  }));
+}
+
+document.getElementById("results").addEventListener("input", e => {
+  if(!e.target.classList.contains("qf")) return;
+  const card = e.target.closest(".qcard");
+  const bucket = card.dataset.bucket, num = card.dataset.qid;
+  const q = _findQ(bucket, num);
+  if(!q) return;
+  const field = e.target.dataset.field;
+  if(field === "choices"){
+    scheduleAutosave(card, q, "choices", _readChoicesFromCard(card));
+  } else {
+    scheduleAutosave(card, q, field, e.target.value);
+  }
+});
+document.getElementById("results").addEventListener("change", e => {
+  if(e.target.classList.contains("qf") && e.target.tagName === "SELECT"){
+    // Topic/Focus selects — same debounce path as typed fields (consistent
+    // single Undo snapshot regardless of which field changed first).
+    const card = e.target.closest(".qcard");
+    const bucket = card.dataset.bucket, num = card.dataset.qid;
+    const q = _findQ(bucket, num);
+    if(q) scheduleAutosave(card, q, e.target.dataset.field, e.target.value);
+    return;
+  }
+  if(e.target.classList.contains("qf-validation")){
+    const card = e.target.closest(".qcard");
+    const bucket = card.dataset.bucket, num = card.dataset.qid;
+    const q = _findQ(bucket, num);
+    if(!q) return;
+    const status = e.target.value || null;
+    setValidation(card, q, status ? {status, validated_by: "human"} : null);
+  }
+});
+
+async function setValidation(card, q, validationPayload){
+  _setSaveStatus(card, "Saving…", "saving");
+  try {
+    const r = await fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({validation: validationPayload}),
+    });
+    const j = await r.json();
+    if(j.ok){
+      Object.assign(q, j.question);
+      if(!("validation" in j.question)) delete q.validation;
+      _renderValidationBadge(card, q);
+      _setSaveStatus(card, "Saved " + new Date().toLocaleTimeString(), "");
+      const led = card.querySelector(".last-edited");
+      if(led) led.innerHTML = `Last edited by <b>${esc(q.lastEditedBy)}</b> · ${esc((q.lastEditedDateTime||"").replace("T"," "))}`;
+    } else {
+      _setSaveStatus(card, "Save failed: " + (j.error || ""), "err");
+    }
+  } catch(err){ _setSaveStatus(card, "Save error: " + err.message, "err"); }
+}
+
+function _renderValidationBadge(card, q){
+  const v = q.validation;
+  const badge = card.querySelector('[data-role="v-badge"]');
+  const rat = card.querySelector('[data-role="v-rationale"]');
+  const ratText = card.querySelector('[data-role="v-rationale-text"]');
+  if(v && v.status){
+    const icon = VALIDATION_ICONS[v.status] || "·";
+    badge.className = `badge v-${v.status}`;
+    badge.textContent = `${icon} ${v.status}${v.validated_by ? ` (${v.validated_by})` : ""}`;
+  } else {
+    badge.className = "badge v-none";
+    badge.textContent = "unvalidated";
+  }
+  if(v && v.rationale){
+    ratText.textContent = v.rationale;
+    rat.style.display = "";
+  } else {
+    rat.style.display = "none";
+  }
+}
+
+async function runAiValidate(card, q){
+  _setSaveStatus(card, "Validating…", "saving");
+  let v;
+  try {
+    const r = await fetch(`${API}/validate-question`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: q.text, answer: q.answer, choices: q.choices, number: q.number}),
+    });
+    v = await r.json();
+  } catch(err){ _setSaveStatus(card, "Validate error: " + err.message, "err"); return; }
+  if(v.error){ _setSaveStatus(card, "Validate failed: " + v.error, "err"); return; }
+  await setValidation(card, q, {...v, validated_by: "ai"});
 }
 
 document.getElementById("results").addEventListener("click", e => {
-  if(e.target.classList && e.target.classList.contains("edit-btn")){
-    e.preventDefault();
+  if(e.target.classList.contains("undo-btn")){
     const card = e.target.closest(".qcard");
-    const num = e.target.dataset.num;
-    const bucket = e.target.dataset.bucket;
-    const q = DATA.questions.find(x => x._bucket === bucket && String(x.number) === num);
-    if(q) openInlineEditor(card, q);
+    const q = _findQ(card.dataset.bucket, card.dataset.qid);
+    if(q) undoLastChange(card, q);
+    return;
   }
-  if(e.target.classList && e.target.classList.contains("gensim-btn")){
+  if(e.target.classList.contains("ai-validate-btn")){
+    const card = e.target.closest(".qcard");
+    const q = _findQ(card.dataset.bucket, card.dataset.qid);
+    if(q) runAiValidate(card, q);
+    return;
+  }
+  if(e.target.classList.contains("del-btn")){
+    const card = e.target.closest(".qcard");
+    const bucket = card.dataset.bucket, num = card.dataset.qid;
+    const q = _findQ(bucket, num);
+    if(!q) return;
+    if(!confirm(`Delete Q${q.number} from ${q._bucket}?
+
+This is recorded as an annotation so reprocess will respect it.`)) return;
+    fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {method:"DELETE"})
+      .then(r => r.json())
+      .then(j => {
+        if(j.ok){
+          toast(`Deleted Q${q.number}`, "ok");
+          DATA.questions = DATA.questions.filter(x => !(x._bucket === q._bucket && String(x.number) === String(q.number)));
+          rerender();
+        } else { toast("Delete failed: " + (j.error || ""), "err"); }
+      })
+      .catch(err => toast("Delete error: " + err.message, "err"));
+    return;
+  }
+  if(e.target.classList.contains("gensim-btn")){
     e.preventDefault();
     const num = e.target.dataset.num;
     const bucket = e.target.dataset.bucket;

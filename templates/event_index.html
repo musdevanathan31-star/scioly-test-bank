@@ -22,14 +22,15 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="/" title="Back to event list" style="font-size:18px">←</a>
+  <a href="{{ request.script_root }}/" title="Back to event list" style="font-size:18px">←</a>
   <h1>{{ event_name }} — Review</h1>
   <span id="status" class="muted"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
-  <a href="/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
-  <a href="/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
-  <a href="/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  {% include "_user_badge.html" %}
 </header>
 <div class="list-wrap">
   <div class="controls">
@@ -106,7 +107,7 @@ document.getElementById("upload_test_form").addEventListener("submit", async e =
   btn.disabled = true;
   setStatusHtml(`Uploading and extracting... <span class='spinner'></span>`);
   try {
-    const r = await fetch(`/event/${EVENT_SLUG}/api/upload-test-pdf`, {
+    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/upload-test-pdf`, {
       method: "POST", body: new FormData(form),
     });
     const j = await r.json();
@@ -132,7 +133,7 @@ function extractGroupKey(name, mode){
 }
 
 async function load(){
-  const r = await fetch(`/event/${EVENT_SLUG}/api/pdfs?sort=${sortKey}&order=${sortOrder}`);
+  const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdfs?sort=${sortKey}&order=${sortOrder}`);
   let rows = await r.json();
   const groupBy = (document.getElementById("group_by") || {}).value || "";
   // When grouping, sort rows by group then by current sortKey
@@ -154,7 +155,7 @@ async function load(){
     if(r.n_questions === 0) needsAttention = 'style="background:#fcebea"';
     else if(r.n_questions > 0 && r.n_with_ans / r.n_questions < 0.3)
       needsAttention = 'style="background:#fff5e7"';
-    const viewQ = `/event/${EVENT_SLUG}/browse?bucket=${encodeURIComponent(r.name)}`;
+    const viewQ = `${APP_ROOT}/event/${EVENT_SLUG}/browse?bucket=${encodeURIComponent(r.name)}`;
     // Emit a group header row when needed
     if(groupBy){
       const grp = extractGroupKey(r.name, groupBy);
@@ -168,7 +169,7 @@ async function load(){
     html += `
       <tr ${needsAttention}>
         <td><input type="checkbox" class="row-check" data-pdf="${r.name}" title="Select for bulk reprocess"></td>
-        <td><a href="/event/${EVENT_SLUG}/review/${r.name}" title="Review questions extracted from this PDF">${r.name}</a>
+        <td><a href="${APP_ROOT}/event/${EVENT_SLUG}/review/${r.name}" title="Review questions extracted from this PDF">${r.name}</a>
           ${r.has_key ? '' : '<span class="badge fresh" title="No answer-key PDF found for this test">no key</span>'}</td>
         <td>${r.mtime_h}</td>
         <td class="numcell">${r.size_h}</td>
@@ -247,7 +248,7 @@ document.getElementById("bulk_reprocess").addEventListener("click", async () => 
   for(const name of picked){
     setStatusHtml(`Reprocessing ${done+1}/${picked.length}: ${escHtml(name)}... <span class='spinner'></span>`);
     try {
-      const r = await fetch(`/event/${EVENT_SLUG}/api/pdf/${encodeURIComponent(name)}/reprocess`, {method:"POST"});
+      const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${encodeURIComponent(name)}/reprocess`, {method:"POST"});
       const j = await r.json();
       done++;
       toast(`(${done}/${picked.length}) Reprocessed ${name}: ${j.n_questions || 0} questions`, "ok");
@@ -275,7 +276,7 @@ document.addEventListener("click", async e=>{
     e.target.textContent = "Working...";
     e.target.disabled = true;
     try{
-      const r = await fetch(`/event/${EVENT_SLUG}/api/pdf/${n}/reprocess`, {method:"POST"});
+      const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${n}/reprocess`, {method:"POST"});
       const j = await r.json();
       setStatus(`Reprocessed: ${j.n_questions} questions`);
     } catch(err){ setStatus("Error: " + err.message); }
@@ -293,7 +294,7 @@ document.addEventListener("click", async e=>{
     e.target.textContent = "Deleting...";
     e.target.disabled = true;
     try{
-      const r = await fetch(`/event/${EVENT_SLUG}/api/pdf/${d}/delete-all-questions`, {method:"POST"});
+      const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${d}/delete-all-questions`, {method:"POST"});
       const j = await r.json();
       if(j.ok){ setStatus(`Deleted ${j.deleted} question(s) from ${d}.`); }
       else { setStatus("Error: " + (j.error || "unknown")); }
@@ -322,7 +323,7 @@ async function startEventDownload(){
   document.getElementById("dl_bar").style.width = "0%";
   document.getElementById("dl_count").textContent = "";
   try {
-    const r = await fetch(`/event/${EVENT_SLUG}/api/download/start`, {method: "POST"});
+    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/download/start`, {method: "POST"});
     const j = await r.json();
     if(j.error){ setStatus("Error: " + j.error); btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org"; return; }
     DL_JOB = j.job_id;
@@ -335,7 +336,7 @@ async function startEventDownload(){
 async function pollDownload(){
   if(!DL_JOB){ return; }
   try {
-    const r = await fetch(`/event/${EVENT_SLUG}/api/download/${DL_JOB}`);
+    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/download/${DL_JOB}`);
     const j = await r.json();
     if(j.error){ setStatus("Error: " + j.error); return; }
     document.getElementById("dl_phase").textContent = j.phase || "Working…";
