@@ -331,6 +331,25 @@ Redeploy flow: `git pull && venv/bin/pip install -r requirements.txt && sudo sys
 
 If the reverse proxy doesn't own the whole domain, set `APPLICATION_ROOT=/testbank/ncms` (or whatever prefix) in `.env`. `review_app.py`'s `_PrefixMiddleware` strips that prefix into `SCRIPT_NAME` so `url_for()`/`request.script_root` produce correctly-prefixed URLs, and every template's JS already reads the `APP_ROOT` global (injected by `_user_badge.html`) to prefix its `fetch()` calls — no further app changes needed. The Caddyfile's `handle /testbank/ncms* { reverse_proxy ... }` block must forward the path **unstripped** (`handle`, not `handle_path`) to match what the middleware expects.
 
+### Running multiple independent instances on one server (e.g. two schools)
+
+`auth.py`/`events.py`/`archive.py` all locate their data files relative to `Path(__file__).parent` — there's no `DATA_ROOT`-style override — so two instances can't share one code directory and stay isolated. Each school needs its own full code+data directory tree, but the venv can be shared since it's just an interpreter path referenced by each systemd unit, independent of `REPO_ROOT`. The pattern (mirrors `/opt/qbank` for NCMS and `/opt/qbank-chs` for CHS):
+
+- A dedicated, non-root system user per instance (`qbank`, `qbank-chs`, ...) — keeps a bug in one school's instance from touching another's files.
+- One `.env` per instance with its own `FLASK_SECRET_KEY` and `APPLICATION_ROOT` (and, if usage tracking per school matters, its own `ANTHROPIC_API_KEY`).
+- One systemd unit per instance (copy `deploy/qbank.service`, change `WorkingDirectory`, `EnvironmentFile`, `User`/`Group`, and the gunicorn `--bind` port — `127.0.0.1:5000`, `5001`, ... one per instance), all pointing at the same shared venv path if you're sharing one.
+- One more `handle /testbank/<school>* { reverse_proxy 127.0.0.1:<port> }` block per instance in the same Caddyfile, same domain, same certificate — no new DNS/port-forward/TLS work per additional school.
+- **Cookie isolation**: `review_app.py` sets `app.config["APPLICATION_ROOT"]`/`SESSION_COOKIE_PATH` (and passes `path=` on the CSRF cookie) from the `APPLICATION_ROOT` env var, so each instance's session/CSRF cookies are scoped to its own path — without this, two instances sharing a domain would each receive the other's cookies (harmless here since each instance also has its own `FLASK_SECRET_KEY`, so a foreign cookie just fails signature validation, but wasteful and worth keeping closed).
+
+### Updating code across multiple instances from GitHub
+
+Once there's more than one instance, `git pull && restart` in one directory doesn't touch the others. [`deploy/update-from-github.sh`](deploy/update-from-github.sh) fetches the public repo into a canonical clone and redeploys the code-only allow-list (`*.py`, `templates/`, `static/`, `deploy/`, `requirements*.txt` — never `.env`, `auth_users.json`, event directories, or anything else data-shaped) to every instance, restarting each independently. It's split into two scripts so the routine "pull updates" action never needs broad sudo:
+
+- **`update-from-github.sh`** runs as a dedicated low-privilege account (e.g. `qbank-deploy`) that owns its own clone outright — no elevated access needed for the git operations themselves.
+- **[`deploy/_apply-update.sh`](deploy/_apply-update.sh)** is the only part that needs root (installing into the shared venv, `chown`ing into each instance's user, restarting systemd units) — it takes no arguments and reads no untrusted input, so a `NOPASSWD` sudoers rule scoped to that *exact* script path (see the header comments in both scripts for the one-time setup commands) can't be used for anything beyond what's written in the script.
+- Validates with `py_compile` + `pytest tests/ -q` against the freshly fetched code *before* touching any live instance; a failed validation deploys nothing.
+- Run by hand (`sudo -u qbank-deploy bash update-from-github.sh [ref]`) when you're ready — deliberately not on a cron/timer, since auto-deploying unreviewed pushes adds blast-radius without saving meaningful effort at this scale.
+
 ### Home-network deployment (dynamic IP, no static cloud IP)
 
 Running behind a residential router instead of a cloud VM needs a few extra pieces beyond `deploy/Caddyfile`/`deploy/qbank.service`:
