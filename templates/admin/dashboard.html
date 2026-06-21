@@ -1,0 +1,223 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Server Admin</title>
+<style>
+:root{
+  --bg:#fff;--bg-alt:#f7f7f8;--bg-card:#fff;--fg:#222;--fg-soft:#444;--muted:#888;
+  --line:#e2e2e2;--accent:#0066cc;--ok:#1f8a4d;--warn:#b86b00;--bad:#c0392b;--hover:#f0f0f0;
+}
+*{box-sizing:border-box}
+body{font:14px -apple-system,system-ui,Segoe UI,Roboto,sans-serif;margin:0;color:var(--fg);background:var(--bg-alt)}
+header{padding:10px 18px;background:var(--bg-card);border-bottom:1px solid var(--line);
+  display:flex;gap:12px;align-items:center;position:sticky;top:0}
+header h1{margin:0;font-size:15px;font-weight:600;flex:1}
+main{padding:18px;max-width:960px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:8px;
+  padding:16px 18px;margin-bottom:18px}
+section h2{margin:0 0 12px 0;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+button{padding:5px 11px;border:1px solid var(--line);background:var(--bg-card);
+  color:var(--fg);border-radius:4px;cursor:pointer;font-size:13px}
+button:hover{background:var(--hover)}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.active{background:#e3f4e9;color:var(--ok)}
+.badge.inactive{background:#f0f0f0;color:var(--muted)}
+.badge.failed{background:#fde7e6;color:var(--bad)}
+select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px}
+pre.console{background:#1e1e1e;color:#ddd;padding:10px;border-radius:6px;max-height:320px;
+  overflow:auto;font-size:12px;white-space:pre-wrap}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.muted{color:var(--muted);font-size:12px}
+.msg{font-size:13px;margin-top:8px}
+.msg.ok{color:var(--ok)}
+.msg.err{color:var(--bad)}
+</style></head>
+<body>
+<header>
+  <h1>Server Admin</h1>
+  <form method="post" action="{{ url_for('logout') }}"><button type="submit">Sign out</button></form>
+</header>
+<main>
+
+  <section>
+    <h2>Instances</h2>
+    <table>
+      <thead><tr><th>Instance</th><th>Status</th><th>Port</th><th>Actions</th></tr></thead>
+      <tbody id="instance-rows">
+        {% for inst in instances %}
+        <tr data-instance="{{ inst.name }}">
+          <td>{{ inst.label }}</td>
+          <td><span class="badge {{ 'active' if inst.status == 'active' else ('failed' if inst.status == 'failed' else 'inactive') }}">{{ inst.status }}</span></td>
+          <td>{{ inst.port }}</td>
+          <td>
+            <button onclick="serviceCtl('{{ inst.name }}','stop')">Stop</button>
+            <button onclick="serviceCtl('{{ inst.name }}','start')">Start</button>
+            <button onclick="serviceCtl('{{ inst.name }}','restart')">Restart</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="muted" style="margin-top:8px">Auto-refreshes every 10s. <span id="service-msg"></span></div>
+  </section>
+
+  <section>
+    <h2>Update from GitHub</h2>
+    <div class="row">
+      <button class="primary" id="update-btn" onclick="startUpdate()">Update from GitHub</button>
+      <span class="muted" id="update-elapsed"></span>
+    </div>
+    <pre class="console" id="update-log" style="display:none"></pre>
+  </section>
+
+  <section>
+    <h2>Rollback</h2>
+    <div class="row">
+      <select id="rollback-instance" onchange="loadBackups()">
+        <option value="">Select instance…</option>
+        {% for inst in instances %}<option value="{{ inst.name }}">{{ inst.label }}</option>{% endfor %}
+      </select>
+      <select id="rollback-timestamp"><option value="">Select backup…</option></select>
+      <button class="danger" onclick="doRollback()">Roll back</button>
+    </div>
+    <div class="muted">Backups are taken automatically before every GitHub update; newest listed first.</div>
+    <div class="msg" id="rollback-msg"></div>
+  </section>
+
+  <section>
+    <h2>Console</h2>
+    <div class="row">
+      <select id="console-instance" onchange="loadConsole()">
+        <option value="">Select instance…</option>
+        {% for inst in instances %}<option value="{{ inst.name }}">{{ inst.label }}</option>{% endfor %}
+      </select>
+      <button onclick="loadConsole()">Refresh</button>
+    </div>
+    <pre class="console" id="console-log">Select an instance to view its log.</pre>
+  </section>
+
+</main>
+<script>
+const APP_ROOT = {{ request.script_root|tojson }};
+function csrfToken(){
+  const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+async function postJSON(url, body){
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken()},
+    body: JSON.stringify(body || {}),
+  });
+  const data = await resp.json().catch(() => ({}));
+  return {ok: resp.ok, data};
+}
+
+function statusBadgeClass(status){
+  if(status === "active") return "active";
+  if(status === "failed") return "failed";
+  return "inactive";
+}
+
+async function refreshStatus(){
+  const resp = await fetch(`${APP_ROOT}/api/status`);
+  const data = await resp.json().catch(() => ({instances: []}));
+  for(const inst of (data.instances || [])){
+    const row = document.querySelector(`tr[data-instance="${inst.name}"]`);
+    if(!row) continue;
+    const badge = row.querySelector(".badge");
+    badge.textContent = inst.status;
+    badge.className = "badge " + statusBadgeClass(inst.status);
+  }
+}
+setInterval(refreshStatus, 10000);
+
+async function serviceCtl(name, verb){
+  const msg = document.getElementById("service-msg");
+  msg.textContent = `${verb}ing ${name}…`;
+  const {ok, data} = await postJSON(`${APP_ROOT}/api/service/${name}/${verb}`);
+  msg.textContent = ok ? `${name}: ${verb} OK` : `${name}: ${verb} failed — ${data.error || data.output || "see logs"}`;
+  refreshStatus();
+}
+
+let updatePollTimer = null;
+async function startUpdate(){
+  const btn = document.getElementById("update-btn");
+  const log = document.getElementById("update-log");
+  const elapsed = document.getElementById("update-elapsed");
+  btn.disabled = true;
+  log.style.display = "block";
+  log.textContent = "Starting…";
+  const {ok, data} = await postJSON(`${APP_ROOT}/api/update/start`);
+  if(!ok){
+    log.textContent = "Failed to start: " + (data.error || "unknown error");
+    btn.disabled = false;
+    return;
+  }
+  const jobId = data.job_id;
+  updatePollTimer = setInterval(async () => {
+    const resp = await fetch(`${APP_ROOT}/api/update/${jobId}`);
+    const job = await resp.json().catch(() => ({}));
+    log.textContent = (job.log || []).join("\n") || "Working…";
+    log.scrollTop = log.scrollHeight;
+    elapsed.textContent = job.elapsed_s != null ? `${job.elapsed_s}s elapsed` : "";
+    if(job.finished){
+      clearInterval(updatePollTimer);
+      btn.disabled = false;
+      log.textContent += job.success ? "\n\n--- Update succeeded ---" : "\n\n--- Update FAILED ---";
+      refreshStatus();
+    }
+  }, 1000);
+}
+
+async function loadBackups(){
+  const name = document.getElementById("rollback-instance").value;
+  const select = document.getElementById("rollback-timestamp");
+  select.innerHTML = '<option value="">Select backup…</option>';
+  if(!name) return;
+  const resp = await fetch(`${APP_ROOT}/api/backups/${name}`);
+  const data = await resp.json().catch(() => ({backups: []}));
+  for(const ts of (data.backups || [])){
+    const opt = document.createElement("option");
+    opt.value = ts;
+    opt.textContent = ts;
+    select.appendChild(opt);
+  }
+}
+
+async function doRollback(){
+  const name = document.getElementById("rollback-instance").value;
+  const ts = document.getElementById("rollback-timestamp").value;
+  const msg = document.getElementById("rollback-msg");
+  if(!name || !ts){
+    msg.className = "msg err";
+    msg.textContent = "Pick an instance and a backup first.";
+    return;
+  }
+  if(!confirm(`Roll back ${name} to backup ${ts}? This restarts the service.`)) return;
+  msg.className = "msg";
+  msg.textContent = "Rolling back…";
+  const {ok, data} = await postJSON(`${APP_ROOT}/api/rollback`, {instance: name, timestamp: ts});
+  msg.className = "msg " + (ok ? "ok" : "err");
+  msg.textContent = ok ? `Rolled back ${name} to ${ts}.` : `Rollback failed: ${data.error || data.output || "see logs"}`;
+  refreshStatus();
+}
+
+async function loadConsole(){
+  const name = document.getElementById("console-instance").value;
+  const log = document.getElementById("console-log");
+  if(!name){
+    log.textContent = "Select an instance to view its log.";
+    return;
+  }
+  log.textContent = "Loading…";
+  const resp = await fetch(`${APP_ROOT}/api/console/${name}`);
+  const data = await resp.json().catch(() => ({}));
+  log.textContent = data.error ? `Error: ${data.error}` : (data.lines || []).join("\n");
+  log.scrollTop = log.scrollHeight;
+}
+</script>
+</body></html>
