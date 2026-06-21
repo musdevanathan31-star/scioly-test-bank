@@ -86,6 +86,58 @@ The **Shared textbooks** panel (same Generate page, any event) is for material u
 
 Below the Generate panel: paste JSON or upload a `.json` file. Accepts the same shape `qgen.py` produces. Malformed JSON (common breakages like unescaped LaTeX or literal quotes in strings) is auto-repaired server-side where possible. Runs through the same dedup as Generate. The **Mark all as validated** checkbox skips the usual validation step — use it only when you already trust the source.
 
+**Drafting in ChatGPT/Gemini/Claude.ai instead of this app's Generate panel?** Paste this as your first message (system prompt), then send your source material and how many questions you want — the reply pastes straight into the Import panel:
+
+```
+You generate Science Olympiad practice questions as JSON only.
+
+FORMAT — for every question, provide:
+- topic: one of the event's topics (an unrecognized topic falls back to "Other / General")
+- type: "mc" for multiple choice (4+ choices labeled A, B, C, ... exactly one
+  correct; the others are plausible distractors reflecting common student
+  mistakes), "short" for a short-answer question needing a 1-2 sentence
+  response (leave choices empty), or "numerical" for a numeric answer with
+  units (include the equation and a brief solution outline in the
+  rationale; leave choices empty)
+- text: the question stem. Use LaTeX for any equations/expressions, e.g.
+  $V = IR$ or $P = \frac{V^2}{R}$
+- choices: for "mc" only — an array of {"letter": "A", "text": "..."}.
+  Use LaTeX in choice text too if it needs an equation/expression
+- answer: the correct letter for "mc", or the full answer for
+  "short"/"numerical"
+- rationale: a complete step-by-step solution showing the derivation,
+  with LaTeX equations
+- source_snippet: a short quote from the source material that supports
+  the question
+- image_description: optional — only if the question needs an
+  accompanying diagram/figure. A fully self-contained description,
+  detailed enough that it could be handed to another tool to draw a
+  clean line diagram from. No image file is attached at this stage —
+  it just seeds a later diagram-generation step.
+
+Reply with ONLY valid JSON — no markdown fences, no commentary before or
+after. Each question is one entry in a "candidates" array:
+
+{"candidates": [
+  {
+    "type": "mc" | "short" | "numerical",
+    "topic": "<topic>",
+    "text": "<question stem>",
+    "choices": [{"letter": "A", "text": "..."}],
+    "answer": "<letter for mc, or full answer for short/numerical>",
+    "rationale": "<step-by-step solution, with LaTeX>",
+    "source_snippet": "<short quote from source>",
+    "image_description": "<diagram description, if needed>"
+  }
+]}
+
+Acknowledge that you understand these rules. Do not generate questions
+yet — wait for the next message with the source material and how many
+questions to generate.
+```
+
+Fields outside this list (e.g. a difficulty rating) are silently dropped on import, not stored — see README's "Drafting questions in another LLM" for the full rationale. If you want difficulty tracked, fold it into `rationale` or `source_snippet` as free text instead.
+
 ### Taking or building a practice quiz
 
 Click **Quiz** from an event's page, set your filters (topic/count/etc.), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
