@@ -21,6 +21,9 @@ scioly-02864.com {
 	handle /testbank/chs* {
 		reverse_proxy 127.0.0.1:5001
 	}
+	handle /testbank/admin* {
+		reverse_proxy 127.0.0.1:5002
+	}
 	handle {
 		respond 404
 	}

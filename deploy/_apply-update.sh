@@ -8,9 +8,14 @@
 # other than what's written here.
 #
 # Validates the fetched source in $SRC, and only if validation passes,
-# syncs the code-only allow-list into each live instance and restarts it.
-# A failure for one instance is logged and does not roll back an instance
-# that already succeeded.
+# backs up each instance's current code (for rollback via
+# qbank-rollback.sh) and syncs the code-only allow-list into each live
+# instance, then restarts it. A failure for one instance is logged and does
+# not roll back an instance that already succeeded.
+#
+# Instances are read from instances.conf (next to this script in the repo,
+# and deployed alongside it) rather than hardcoded here — see that file's
+# header comment.
 #
 # Install: sudo cp deploy/_apply-update.sh /usr/local/sbin/qbank-apply-update.sh
 #          sudo chown root:root /usr/local/sbin/qbank-apply-update.sh
@@ -23,7 +28,9 @@ set -euo pipefail
 SRC="/opt/qbank-src"
 VENV="/opt/qbank/venv"
 LOG="/var/log/qbank-deploy.log"
-INSTANCES=("/opt/qbank/app:qbank:qbank" "/opt/qbank-chs/app:qbank-chs:qbank-chs")
+BACKUP_ROOT="/opt/qbank-backups"
+KEEP_BACKUPS=10
+INSTANCES_CONF="$SRC/deploy/instances.conf"
 
 log() { echo "$(date -Is) $*" >> "$LOG"; }
 
@@ -41,10 +48,34 @@ if ! "$VENV/bin/python" -m pytest "$SRC/tests" -q; then
   log "FAILED validation at $SHA — nothing deployed"
   exit 1
 fi
-log "Validated $SHA — deploying to ${#INSTANCES[@]} instance(s)"
 
-for entry in "${INSTANCES[@]}"; do
-  IFS=: read -r dir svc user <<< "$entry"
+mapfile -t INSTANCE_LINES < <(grep -v '^\s*#' "$INSTANCES_CONF" | grep -v '^\s*$')
+log "Validated $SHA — deploying to ${#INSTANCE_LINES[@]} instance(s)"
+
+for entry in "${INSTANCE_LINES[@]}"; do
+  IFS=: read -r name label dir svc user port <<< "$entry"
+
+  # Back up the current code before overwriting it, so qbank-rollback.sh
+  # has something to restore. Same allow-list as the forward sync below —
+  # this is a code-only backup for fast rollback, not a substitute for the
+  # data backups in backup-bulk-data.sh / backup-extracted-data.sh.
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_dir="$BACKUP_ROOT/$name/$ts"
+  mkdir -p "$backup_dir"
+  for p in "${CODE_PATHS[@]}"; do
+    [ -e "$dir/$p" ] && rsync -a "$dir/$p" "$backup_dir/" 2>/dev/null || true
+  done
+  log "$name: backed up current code to $backup_dir"
+
+  # Prune backups beyond the last $KEEP_BACKUPS for this instance, oldest
+  # first — same retention idea as restic's --keep-* flags, just plain
+  # directories since this is a small, local, short-lived rollback aid.
+  mapfile -t old_backups < <(ls -1 "$BACKUP_ROOT/$name" | sort | head -n -"$KEEP_BACKUPS")
+  for old in "${old_backups[@]}"; do
+    rm -rf "$BACKUP_ROOT/$name/$old"
+    log "$name: pruned old backup $old"
+  done
+
   for p in "${CODE_PATHS[@]}"; do
     [ -e "$SRC/$p" ] && rsync -a --delete "$SRC/$p" "$dir/" 2>/dev/null || true
   done
