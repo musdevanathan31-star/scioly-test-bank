@@ -132,6 +132,15 @@ class _PrefixMiddleware:
 if APPLICATION_ROOT:
     app.wsgi_app = _PrefixMiddleware(app.wsgi_app, APPLICATION_ROOT)  # type: ignore[method-assign]
 
+# Scope cookies to the mount prefix so two independently-mounted instances
+# sharing one domain (e.g. /testbank/ncms and /testbank/chs) never receive
+# each other's session/CSRF cookies. Flask's APPLICATION_ROOT config key
+# (distinct from the plain APPLICATION_ROOT variable above, which only
+# drives _PrefixMiddleware) is what SESSION_COOKIE_PATH falls back to when
+# unset, so set both explicitly.
+app.config["APPLICATION_ROOT"] = APPLICATION_ROOT or "/"
+app.config["SESSION_COOKIE_PATH"] = APPLICATION_ROOT or "/"
+
 # Routes reachable without being logged in.
 _PUBLIC_ENDPOINTS = {"login", "favicon", "static"}
 
@@ -248,7 +257,7 @@ def login():
         # this to attach X-CSRF-Token. It's a CSRF defense, not a secret.
         resp.set_cookie("csrf_token", secrets.token_hex(32),
                          httponly=False, secure=app.config["SESSION_COOKIE_SECURE"],
-                         samesite="Lax")
+                         samesite="Lax", path=app.config["SESSION_COOKIE_PATH"])
         return resp
     return render_template("login.html", error=None)
 
