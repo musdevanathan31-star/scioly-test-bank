@@ -43,11 +43,12 @@
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Quiz</h1>
   <span style="flex:1"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+  {% include "_user_badge.html" %}
 </header>
 <div class="quiz-wrap">
 
@@ -126,7 +127,7 @@
     </div>
     <div class="quiz-actions">
       <button id="btn_retry" title="Run another quiz with the same settings">↺ Another quiz</button>
-      <a href="/event/{{ event_slug }}/browse"><button>Back to browse</button></a>
+      <a href="{{ request.script_root }}/event/{{ event_slug }}/browse"><button>Back to browse</button></a>
     </div>
   </div>
 
@@ -134,7 +135,7 @@
 
 <script>
 const EVENT_SLUG = "{{ event_slug }}";
-const API = "/event/" + EVENT_SLUG + "/api";
+const API = APP_ROOT + "/event/" + EVENT_SLUG + "/api";
 
 let POOL = [];     // candidate questions from /api/all-questions
 let CONFIG = {};   // {n, topic, bucket, type, timer, shuffle}

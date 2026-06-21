@@ -49,11 +49,12 @@
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="/event/{{ event_slug }}/" title="Back to event review" style="font-size:18px">←</a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to event review" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Sources &amp; Generation</h1>
   <span id="status" class="muted"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
+  {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
 
@@ -333,7 +334,7 @@ Thermodynamics, 58"></textarea>
 </div>
 <script>
 const EVENT_SLUG = "{{ event_slug }}";
-const API = `/event/${EVENT_SLUG}/api`;
+const API = `${APP_ROOT}/event/${EVENT_SLUG}/api`;
 let LAST_RESULT = null;
 let KEPT = new Set();   // indices into LAST_RESULT.candidates that are still accepted
 
@@ -1412,7 +1413,7 @@ document.getElementById("validate_then_accept").addEventListener("click", async 
 let TEXTBOOKS = [];
 
 async function loadTextbooks(){
-  const r = await fetch(`/api/textbooks`);
+  const r = await fetch(`${APP_ROOT}/api/textbooks`);
   const d = await r.json();
   TEXTBOOKS = d.textbooks || [];
 
@@ -1483,7 +1484,7 @@ document.getElementById("textbook_upload_form").addEventListener("submit", async
   btn.disabled = true;
   setStatusHtml(`Uploading textbook and detecting chapters... <span class='spinner'></span>`);
   try {
-    const r = await fetch(`/api/textbooks/upload`, {method: "POST", body: new FormData(form)});
+    const r = await fetch(`${APP_ROOT}/api/textbooks/upload`, {method: "POST", body: new FormData(form)});
     const j = await r.json();
     if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); return; }
     setStatus(j.needs_manual_chapters
@@ -1505,7 +1506,7 @@ document.getElementById("textbook_rows").addEventListener("click", async e => {
     e.target.disabled = true;
     setStatusHtml(`Detecting chapters... <span class='spinner'></span>`);
     try {
-      const r = await fetch(`/api/textbooks/${encodeURIComponent(detectId)}/detect`, {method: "POST"});
+      const r = await fetch(`${APP_ROOT}/api/textbooks/${encodeURIComponent(detectId)}/detect`, {method: "POST"});
       const j = await r.json();
       if(!j.ok){ setStatus("Detect failed: " + (j.error || ""), "err"); return; }
       setStatus(j.needs_manual_chapters
@@ -1545,7 +1546,7 @@ document.getElementById("textbook_manual_save").addEventListener("click", async 
   }
   if(!chapters.length){ toast('No valid chapter lines — need "Title, page" per line', "err"); return; }
   try {
-    const r = await fetch(`/api/textbooks/${encodeURIComponent(textbookId)}/chapters`, {
+    const r = await fetch(`${APP_ROOT}/api/textbooks/${encodeURIComponent(textbookId)}/chapters`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({chapters}),
     });

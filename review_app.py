@@ -22,15 +22,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import json
+import os
 import re
+import secrets
 import sys
+import threading
+import time
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 
 try:
     from flask import (
         Flask, jsonify, request, send_file, abort, Response, render_template,
+        session, redirect, url_for, g,
     )
 except ImportError:
     print("Flask not installed. Run: pip install flask", file=sys.stderr)
@@ -54,11 +61,204 @@ import qgen  # noqa: E402
 import scrape_scioly  # noqa: E402
 import download_event  # noqa: E402
 import llm_providers  # noqa: E402
+import auth  # noqa: E402
+import archive  # noqa: E402
+import pdf_safety  # noqa: E402
 
 app = Flask(__name__)
-# Cap user uploads at 50 MB. Without this Flask accepts the full body into
-# memory; a stray multi-GB file would OOM the process.
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+# Cap user uploads at 300 MB. Without this Flask accepts the full body into
+# memory; a stray multi-GB file would OOM the process. Raised from the
+# original 50 MB once real shared textbooks (e.g. a 251 MB scanned PDF)
+# started getting rejected by the upload form. If fronted by a reverse
+# proxy (Caddy/nginx), its own client-body-size limit must be raised to
+# match or it'll reject large uploads before Flask ever sees them.
+app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024
+
+# Session signing key. In production set FLASK_SECRET_KEY so sessions survive
+# a restart; falling back to a random per-process key keeps local/dev usage
+# working with zero setup (everyone just gets logged out on restart).
+_secret_key_set = bool(os.environ.get("FLASK_SECRET_KEY"))
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
+if not _secret_key_set:
+    print("WARNING: FLASK_SECRET_KEY not set — using an ephemeral key; "
+          "all sessions will be invalidated on restart.", file=sys.stderr)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+# Only mark cookies Secure once actually served over HTTPS (e.g. behind
+# Caddy) — over plain local-dev HTTP the browser would otherwise refuse to
+# send the cookie at all and login would silently never "stick".
+_session_cookie_secure = os.environ.get("SESSION_COOKIE_SECURE", "").lower() == "true"
+app.config["SESSION_COOKIE_SECURE"] = _session_cookie_secure
+
+# SESSION_COOKIE_SECURE=true is the operator's own signal that this instance
+# is being served over real HTTPS (e.g. behind Caddy) — i.e. a production
+# deploy, not a `python review_app.py` localhost dev session. Refuse to
+# start in that case without a real FLASK_SECRET_KEY: the alternative is
+# silently issuing sessions signed with a key that's regenerated (and every
+# existing session invalidated) on every restart, which is exactly the kind
+# of "ran fine until it didn't" misconfiguration this check exists to catch
+# before it reaches a real user. Local dev (SESSION_COOKIE_SECURE unset)
+# keeps working with zero config, exactly as today.
+if _session_cookie_secure and not _secret_key_set:
+    sys.exit(
+        "FATAL: SESSION_COOKIE_SECURE=true (a production/HTTPS deploy) but "
+        "FLASK_SECRET_KEY is not set. Generate one with "
+        "`python -c \"import secrets; print(secrets.token_hex(32))\"` and "
+        "set it in .env before starting.")
+
+# When the app is reverse-proxied under a path prefix (e.g. Caddy forwarding
+# https://host/testbank/ncms/* straight through to this process), set
+# APPLICATION_ROOT so Flask's url_for()/request.script_root know about it.
+# Unset (the local-dev default) makes this a no-op.
+APPLICATION_ROOT = os.environ.get("APPLICATION_ROOT", "").rstrip("/")
+
+
+class _PrefixMiddleware:
+    """Strips a mount-point prefix from PATH_INFO into SCRIPT_NAME so
+    url_for() and request.script_root produce prefixed URLs. Standard
+    Werkzeug pattern for apps sitting behind a path-based reverse proxy."""
+
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path.startswith(self.prefix):
+            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+            environ["SCRIPT_NAME"] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
+if APPLICATION_ROOT:
+    app.wsgi_app = _PrefixMiddleware(app.wsgi_app, APPLICATION_ROOT)  # type: ignore[method-assign]
+
+# Routes reachable without being logged in.
+_PUBLIC_ENDPOINTS = {"login", "favicon", "static"}
+
+
+@app.before_request
+def _require_login():
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return None
+    username = session.get("username")
+    user = auth.get_user(username) if username else None
+    if user is None or user.disabled:
+        # Treat a disabled account exactly like a deleted one — kicks any
+        # already-logged-in session on its very next request.
+        session.clear()
+        return redirect(url_for("login", next=request.script_root + request.path))
+    g.user = user
+    return None
+
+
+@app.context_processor
+def _inject_user():
+    return {"current_user": getattr(g, "user", None)}
+
+
+# Routes that mutate state via a plain HTML <form> POST (not fetch()) can't
+# attach a custom header, so they're exempt from the CSRF check below —
+# both are auth-flow routes, not data mutations, and login CSRF/logout CSRF
+# aren't meaningful threats in this app's model.
+_CSRF_EXEMPT_ENDPOINTS = {"login", "logout"}
+
+
+@app.before_request
+def _check_csrf():
+    """Double-submit-cookie CSRF check for every mutating request. The
+    matching `csrf_token` cookie is issued on login (non-HttpOnly, so the
+    frontend's `window.fetch` patch — see _COMMON_JS — can read it and
+    attach it as X-CSRF-Token on every request)."""
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    if request.endpoint in _PUBLIC_ENDPOINTS or request.endpoint in _CSRF_EXEMPT_ENDPOINTS:
+        return None
+    cookie_token = request.cookies.get("csrf_token")
+    header_token = request.headers.get("X-CSRF-Token")
+    if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
+        abort(403, "Missing or invalid CSRF token")
+    return None
+
+
+def coach_required(view):
+    """Gate a route to coaches only. Apply directly under @app.route."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = getattr(g, "user", None)
+        if user is None or user.role != "coach":
+            abort(403, "Coach access required")
+        return view(*args, **kwargs)
+    return wrapped
+
+
+# In-memory failed-login tracker, keyed by source IP. Resets on process
+# restart — a real improvement over no rate limiting at all, not a claim of
+# perfect brute-force resistance (deliberately simple given the single
+# gunicorn worker this app is deployed with — see README's Deploying
+# section). Deliberately uses request.remote_addr, NOT X-Forwarded-For: an
+# untrusted client could spoof that header to bypass a per-IP limit, and
+# this app doesn't run a ProxyFix-style trusted-proxy config in front. If
+# deployed behind Caddy, every client appears as Caddy's own address —
+# which rate-limits the whole app together rather than per real visitor,
+# but that fails safe (over-restrictive) rather than spoofable.
+_LOGIN_ATTEMPT_WINDOW_SECONDS = 15 * 60
+_LOGIN_MAX_ATTEMPTS = 5
+_login_attempts: dict[str, list[float]] = collections.defaultdict(list)
+_login_attempts_lock = threading.Lock()
+
+
+def _login_rate_limited(ip: str) -> bool:
+    now = time.time()
+    with _login_attempts_lock:
+        attempts = _login_attempts[ip]
+        attempts[:] = [t for t in attempts if now - t < _LOGIN_ATTEMPT_WINDOW_SECONDS]
+        return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(ip: str) -> None:
+    with _login_attempts_lock:
+        _login_attempts[ip].append(time.time())
+
+
+def _clear_login_failures(ip: str) -> None:
+    with _login_attempts_lock:
+        _login_attempts.pop(ip, None)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        ip = request.remote_addr or "unknown"
+        if _login_rate_limited(ip):
+            return render_template(
+                "login.html",
+                error="Too many failed attempts. Try again in a few minutes."), 429
+        username = (request.form.get("username") or "").strip().lower()
+        password = request.form.get("password") or ""
+        user = auth.verify_login(username, password)
+        if user is None:
+            _record_login_failure(ip)
+            return render_template("login.html", error="Invalid username or password")
+        _clear_login_failures(ip)
+        session.clear()
+        session["username"] = user.username
+        next_url = request.args.get("next") or url_for("index")
+        resp = redirect(next_url)
+        # Non-HttpOnly by design — the frontend's fetch patch needs to read
+        # this to attach X-CSRF-Token. It's a CSRF defense, not a secret.
+        resp.set_cookie("csrf_token", secrets.token_hex(32),
+                         httponly=False, secure=app.config["SESSION_COOKIE_SECURE"],
+                         samesite="Lax")
+        return resp
+    return render_template("login.html", error=None)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    resp = redirect(url_for("login"))
+    resp.delete_cookie("csrf_token")
+    return resp
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -134,9 +334,18 @@ def _select_event(slug: str):
     After the B#1 deep fix, `bqb.set_event` writes to a ContextVar — each
     request/thread sees its own active event. The serialising lock that used
     to live here is no longer needed; multi-threaded WSGI is safe.
+
+    Every `/event/<slug>/...` route calls this first, which makes it the one
+    place to enforce per-event access: coaches reach every event implicitly,
+    volunteers only the events a coach assigned them.
     """
     if slug not in EVENTS:
         abort(404, f"Unknown event: {slug}")
+    if EVENTS[slug].archived:
+        abort(404, f"Event archived: {slug} — a coach can unarchive it from the landing page")
+    user = getattr(g, "user", None)
+    if user is not None and not auth.user_can_access_event(user, slug):
+        abort(403, f"You don't have access to {slug}")
     current = bqb.current_event()
     if current is None or current.slug != slug:
         bqb.set_event(slug)
@@ -146,6 +355,35 @@ def _select_event(slug: str):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _safe_join(base_dir: Path, user_supplied_name: str) -> Path:
+    """Resolve `user_supplied_name` under `base_dir`, aborting 400 if it
+    would escape it. `secure_filename()` already strips path separators and
+    "..", but a bare ".." segment alone (no slash) still passes it — this
+    is the containment check that catches that case."""
+    from werkzeug.utils import secure_filename
+    name = secure_filename(user_supplied_name)
+    if not name:
+        abort(400, "bad filename")
+    resolved_base = base_dir.resolve()
+    candidate = (resolved_base / name).resolve()
+    if not candidate.is_relative_to(resolved_base):
+        abort(400, "bad filename")
+    return candidate
+
+
+def _sanitize_svg(svg_text: str) -> str:
+    """Strip the obvious script-execution vectors from an uploaded SVG
+    before it touches disk: <script> elements and on*= event-handler
+    attributes. Not a full sanitizer (e.g. doesn't touch <foreignObject> or
+    external references) — defense-in-depth on top of the app only ever
+    rendering these via <img> tags (which don't execute embedded scripts),
+    never <iframe>/<object>."""
+    svg_text = re.sub(r"(?is)<script\b.*?</script>", "", svg_text)
+    svg_text = re.sub(r'(?i)\son[a-z]+\s*=\s*"[^"]*"', "", svg_text)
+    svg_text = re.sub(r"(?i)\son[a-z]+\s*=\s*'[^']*'", "", svg_text)
+    return svg_text
+
 
 def _open_pdf(name: str) -> fitz.Document:
     key = (bqb.EVENT.slug, name)
@@ -215,9 +453,22 @@ def _pdf_status(pdf: Path, state: dict) -> dict:
 
 @app.route("/")
 def index():
-    """Event picker — landing page across all configured events."""
+    """Event picker — landing page across all configured events.
+
+    Coaches see every non-archived event; volunteers only the ones a coach
+    assigned them — so a volunteer never sees a link to an event
+    _select_event() would 403 them on anyway. Archived events are hidden
+    here but never deleted from disk; coaches see them in a separate
+    "Show archived" section with an Unarchive action."""
     rows = []
+    archived_rows = []
     for slug, ev in sorted(EVENTS.items()):
+        if g.user.role != "coach" and slug not in g.user.events:
+            continue
+        if ev.archived:
+            if g.user.role == "coach":
+                archived_rows.append({"slug": slug, "name": ev.name})
+            continue
         ev.base_dir.mkdir(exist_ok=True)
         n_pdfs = len(list(ev.base_dir.glob(f"{ev.filename_prefix}_*_test.pdf")))
         state = json.loads(ev.state_file.read_text(encoding="utf-8")) \
@@ -232,7 +483,7 @@ def index():
             "base_dir": str(ev.base_dir),
             "is_builtin": is_builtin(slug),
         })
-    return render_template("events.html", rows=rows)
+    return render_template("events.html", rows=rows, archived_rows=archived_rows)
 
 
 @app.route("/api/events/<slug>", methods=["GET"])
@@ -254,6 +505,7 @@ def api_get_event(slug: str):
 
 
 @app.route("/api/events/<slug>", methods=["PATCH"])
+@coach_required
 def api_edit_event(slug: str):
     """Edit a user-registered event's foci/topics/wiki_page in place.
     Built-ins are immutable; edit them in events.py."""
@@ -289,15 +541,89 @@ def api_edit_event(slug: str):
 
 
 @app.route("/api/events/<slug>", methods=["DELETE"])
+@coach_required
 def api_delete_event(slug: str):
+    """"Delete" an event — archives it (hides from the landing page) rather
+    than removing anything. The event's directory/PDFs/state file are never
+    touched; see events.archive_custom_event and /api/events/<slug>/unarchive."""
     if is_builtin(slug):
         return jsonify({"error": "cannot remove a built-in event"}), 400
     try:
-        from events import remove_custom_event
-        remove_custom_event(slug)
+        from events import archive_custom_event
+        archive_custom_event(slug)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "slug": slug})
+
+
+@app.route("/api/events/<slug>/unarchive", methods=["POST"])
+@coach_required
+def api_unarchive_event(slug: str):
+    try:
+        from events import unarchive_custom_event
+        unarchive_custom_event(slug)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "slug": slug})
+
+
+# ---------------------------------------------------------------------------
+# Routes — user management (coach-only)
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/users")
+@coach_required
+def admin_users_page():
+    users = sorted(auth.load_users().values(), key=lambda u: u.username)
+    return render_template("admin_users.html", users=users,
+                            all_events=sorted(EVENTS.keys()))
+
+
+@app.route("/admin/users", methods=["POST"])
+@coach_required
+def admin_create_user():
+    data = request.get_json() or {}
+    username = data.get("username") or ""
+    password = data.get("password") or ""
+    role = (data.get("role") or "volunteer").strip()
+    events = [s for s in (data.get("events") or []) if s in EVENTS]
+    try:
+        auth.create_user(username, password, role=role, events=events)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/users/<username>", methods=["PATCH"])
+@coach_required
+def admin_edit_user(username):
+    data = request.get_json() or {}
+    role = data.get("role")
+    events = data.get("events")
+    disabled = data.get("disabled")
+    if events is not None:
+        events = [s for s in events if s in EVENTS]
+    try:
+        auth.update_user(username, role=role, events=events, disabled=disabled)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/users/<username>", methods=["DELETE"])
+@coach_required
+def admin_delete_user(username):
+    """"Remove" a user — disables the account (blocks login, kicks any
+    active session) rather than deleting it. Reversible via PATCH
+    /admin/users/<username> with {"disabled": false}. The account, and all
+    event data, stay on disk; see auth.disable_user."""
+    if username == g.user.username:
+        return jsonify({"error": "cannot disable your own account while logged in"}), 400
+    try:
+        auth.disable_user(username)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
 
 
 @app.route("/event/<event_slug>/")
@@ -695,6 +1021,9 @@ def api_upload_test_pdf(event_slug):
     test_name = normalized_name(test_raw, "test")
     test_dest = base_dir / test_name
     test_f.save(str(test_dest))
+    if not pdf_safety.looks_like_pdf(test_dest):
+        test_dest.unlink(missing_ok=True)
+        return jsonify({"error": "test file isn't a valid PDF (bad header)"}), 400
 
     key_dest = None
     key_f = request.files.get("key_file")
@@ -705,6 +1034,9 @@ def api_upload_test_pdf(event_slug):
         # existing _key_path() string-replace lookup finds it automatically.
         key_dest = base_dir / test_name.replace("_test.pdf", "_key.pdf")
         key_f.save(str(key_dest))
+        if not pdf_safety.looks_like_pdf(key_dest):
+            key_dest.unlink(missing_ok=True)
+            return jsonify({"error": "answer key isn't a valid PDF (bad header)"}), 400
 
     state = bqb._load_state()
     qs = process_pair(test_dest, key_dest, state, _vision_available())
@@ -720,6 +1052,15 @@ def api_reprocess(event_slug, pdfname):
     _select_event(event_slug)
     data = request.get_json(silent=True) or {}
     state = bqb._load_state()
+    if data.get("discard_annotations") and (
+        state.get("annotations", {}).get(pdfname)
+        or state.get("manual", {}).get(pdfname)
+        or state.get("questions", {}).get(pdfname)
+    ):
+        # Snapshot before any of this destructive reprocess's data loss, so
+        # it's always recoverable via the restore-snapshot route below — the
+        # app never permanently discards a PDF's accumulated edits.
+        archive.snapshot_pdf_state(bqb.EVENT, pdfname, state)
     state.setdefault("questions", {}).pop(pdfname, None)
     state.setdefault("vision", {}).pop(pdfname, None)
     if data.get("discard_annotations"):
@@ -742,6 +1083,38 @@ def api_reprocess(event_slug, pdfname):
     bqb._save_state(state)
     return jsonify({"ok": True, "n_questions": len(qs),
                     "discarded_annotations": bool(data.get("discard_annotations"))})
+
+
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/snapshots")
+def api_list_snapshots(event_slug, pdfname):
+    _select_event(event_slug)
+    return jsonify({"snapshots": archive.list_snapshots(bqb.EVENT, pdfname)})
+
+
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/restore-snapshot", methods=["POST"])
+def api_restore_snapshot(event_slug, pdfname):
+    """Bring back a PDF's annotations/manual/questions from a pre-wipe
+    snapshot (see api_reprocess above). Same access gate as every other PDF
+    route — restoring is protective, not destructive, so no extra
+    restriction beyond normal event access."""
+    _select_event(event_slug)
+    data = request.get_json(silent=True) or {}
+    filename = data.get("snapshot") or ""
+    try:
+        snap = archive.load_snapshot(bqb.EVENT, pdfname, filename)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError:
+        return jsonify({"error": "snapshot not found"}), 404
+    state = bqb._load_state()
+    if snap.get("annotations") is not None:
+        state.setdefault("annotations", {})[pdfname] = snap["annotations"]
+    if snap.get("manual") is not None:
+        state.setdefault("manual", {})[pdfname] = snap["manual"]
+    if snap.get("questions") is not None:
+        state.setdefault("questions", {})[pdfname] = snap["questions"]
+    bqb._save_state(state)
+    return jsonify({"ok": True, "restored_from": filename})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/ocr", methods=["POST"])
@@ -963,7 +1336,7 @@ def api_regenerate(event_slug):
 @app.route("/event/<event_slug>/images/<fname>")
 def serve_image(event_slug, fname):
     _select_event(event_slug)
-    p = bqb.IMAGE_DIR / fname
+    p = _safe_join(bqb.IMAGE_DIR, fname)
     if not p.exists():
         abort(404)
     return send_file(str(p))
@@ -1044,6 +1417,9 @@ def api_all_questions(event_slug):
     })
 
 
+_VALIDATION_STATUSES = {"correct", "incorrect", "uncertain", "unavailable"}
+
+
 @app.route("/event/<event_slug>/api/q/<bucket>/<num>", methods=["PATCH"])
 def api_patch_question(event_slug, bucket, num):
     """Apply a single-field edit to one question, without going through the
@@ -1058,10 +1434,13 @@ def api_patch_question(event_slug, bucket, num):
     if not q:
         return jsonify({"error": f"question #{num} not in {bucket}"}), 404
 
+    edited_fields: list[str] = []
+
     # Apply edits
     for k in ("text", "topic", "focus", "answer"):
         if k in data:
             q[k] = (data[k] or "").strip()
+            edited_fields.append(k)
     if "choices" in data and isinstance(data["choices"], list):
         q["choices"] = [{"letter": (c.get("letter") or "").upper()[:1],
                          "text": (c.get("text") or "").strip()}
@@ -1069,16 +1448,50 @@ def api_patch_question(event_slug, bucket, num):
                         if (c.get("text") or "").strip()]
         for i, c in enumerate(q["choices"]):
             c["letter"] = chr(ord("A") + i)
+        edited_fields.append("choices")
     if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
         cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
                    if str(d or "").strip()}
         q["image_descriptions"] = cleaned
+        edited_fields.append("image_descriptions")
+    if "validation" in data:
+        v = data["validation"]
+        if v is None:
+            # "(unset)" in the manual validation dropdown — clear any
+            # existing AI or human verdict outright.
+            q.pop("validation", None)
+        elif isinstance(v, dict):
+            status = v.get("status")
+            if status is not None and status not in _VALIDATION_STATUSES:
+                return jsonify({"error": f"invalid validation status: {status!r}"}), 400
+            # Either the AI path (validated_by="ai", set right after the
+            # stateless /api/validate-question call) or a human's own
+            # verdict (validated_by="human") — whichever happens most
+            # recently simply overwrites this field, by design: a human can
+            # always override a stale AI verdict, and re-running AI
+            # Validate can override a human's.
+            q["validation"] = {
+                "status": status,
+                "rationale": v.get("rationale") or "",
+                "validated_by": v.get("validated_by") or "human",
+                **({"source": v["source"]} if v.get("source") else {}),
+                **({"correct_answer": v["correct_answer"]} if v.get("correct_answer") else {}),
+            }
+        edited_fields.append("validation")
+
+    if edited_fields:
+        # Server-stamped, never client-supplied — g.user is the authenticated
+        # session set by _require_login, so this can't be spoofed by the
+        # request body the way a "lastEditedBy" field in `data` could be.
+        q["lastEditedBy"] = g.user.username
+        q["lastEditedDateTime"] = datetime.now().isoformat(timespec="seconds")
+        edited_fields += ["lastEditedBy", "lastEditedDateTime"]
 
     # Record into the annotations payload so reprocess preserves the edit
     ann = state.setdefault("annotations", {}).setdefault(bucket, {})
     overrides = ann.setdefault("field_overrides", {})
     overrides[str(num)] = {**overrides.get(str(num), {}),
-                           **{k: q[k] for k in ("text","topic","focus","answer","choices","image_descriptions") if k in data}}
+                           **{k: q.get(k) for k in edited_fields}}
     state.setdefault("manual", {})[bucket] = {
         "edited_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -1155,7 +1568,12 @@ def api_q_upload_image(event_slug, bucket, num):
     safe_name = secure_filename(_slug_image_name(bucket, num, ext, "up"))
     bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
     dest = bqb.EVENT.image_dir / safe_name
-    f.save(str(dest))
+    if ext == "svg":
+        # Sanitize before it ever touches disk rather than save-then-rewrite.
+        dest.write_text(_sanitize_svg(f.read().decode("utf-8", errors="replace")),
+                         encoding="utf-8")
+    else:
+        f.save(str(dest))
     q.setdefault("images", []).append(safe_name)
     desc = (request.form.get("description") or "").strip()
     if desc:
@@ -1704,6 +2122,7 @@ def _export_apkg(all_qs: list[dict]) -> "Response":
 # ---------------------------------------------------------------------------
 
 @app.route("/api/events", methods=["POST"])
+@coach_required
 def api_create_event():
     data = request.get_json() or {}
     event_match = data.get("event_match") or []
@@ -1788,7 +2207,7 @@ def api_scrape_wiki(event_slug):
 @app.route("/event/<event_slug>/api/sources/<filename>/process", methods=["POST"])
 def api_process_source(event_slug, filename):
     _select_event(event_slug)
-    src = bqb.EVENT.texts_dir / filename
+    src = _safe_join(bqb.EVENT.texts_dir, filename)
     if not src.exists():
         return jsonify({"error": f"not found: {filename}"}), 404
     if src.suffix.lower() != ".pdf":
@@ -1803,7 +2222,7 @@ def api_process_source(event_slug, filename):
 @app.route("/event/<event_slug>/api/sources/<filename>/raw")
 def api_source_raw(event_slug, filename):
     _select_event(event_slug)
-    p = bqb.EVENT.texts_dir / filename
+    p = _safe_join(bqb.EVENT.texts_dir, filename)
     if not p.exists():
         abort(404)
     if filename.lower().endswith(".pdf"):
@@ -1832,6 +2251,9 @@ def api_source_upload(event_slug):
     dest = bqb.EVENT.texts_dir / name
     dest.parent.mkdir(exist_ok=True)
     f.save(str(dest))
+    if name.lower().endswith(".pdf") and not pdf_safety.looks_like_pdf(dest):
+        dest.unlink(missing_ok=True)
+        return jsonify({"error": "file isn't a valid PDF (bad header)"}), 400
     return jsonify({"ok": True, "name": name, "size": dest.stat().st_size})
 
 
@@ -1873,6 +2295,7 @@ def api_textbooks_list():
 
 
 @app.route("/api/textbooks/upload", methods=["POST"])
+@coach_required
 def api_textbooks_upload():
     """Upload a textbook PDF shared across all events. Converts it to
     markdown and attempts chapter detection immediately (see
@@ -1895,14 +2318,22 @@ def api_textbooks_upload():
         n += 1
     dest = _textbook_pdf_path(tid)
     f.save(str(dest))
+    if not pdf_safety.looks_like_pdf(dest):
+        dest.unlink(missing_ok=True)
+        return jsonify({"error": "file isn't a valid PDF (bad header)"}), 400
 
-    md_path = texts_mod.pdf_to_markdown(dest)
-    meta = texts_mod.detect_chapters(dest, md_path.read_text(encoding="utf-8"))
+    try:
+        md_path = texts_mod.pdf_to_markdown(dest)
+        meta = texts_mod.detect_chapters(dest, md_path.read_text(encoding="utf-8"))
+    except pdf_safety.UnsafePdfError as e:
+        dest.unlink(missing_ok=True)
+        return jsonify({"error": str(e)}), 400
     _textbook_chapters_path(tid).write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return jsonify({"ok": True, "id": tid, "name": dest.name, **meta})
 
 
 @app.route("/api/textbooks/<textbook_id>/detect", methods=["POST"])
+@coach_required
 def api_textbooks_detect(textbook_id):
     """(Re-)run chapter detection on a textbook PDF already sitting in
     textbooks/ — e.g. one placed there directly on disk rather than through
@@ -1917,6 +2348,7 @@ def api_textbooks_detect(textbook_id):
 
 
 @app.route("/api/textbooks/<textbook_id>/chapters", methods=["POST"])
+@coach_required
 def api_textbooks_set_chapters(textbook_id):
     """Manual chapter-boundary entry — the fallback for textbooks where
     detect_chapters() found neither an embedded TOC nor any 'Chapter N'
@@ -2800,6 +3232,36 @@ window.setLLMKeys = function(keys){
     return origFetch(input, init);
   };
 })();
+
+// Auto-attach the CSRF double-submit-cookie token (see _check_csrf in
+// review_app.py) to every mutating request, so no call site needs to
+// remember to do it. GET/HEAD requests are never checked server-side, so
+// they're skipped here too.
+(function(){
+  const origFetch = window.fetch.bind(window);
+  function getCsrfToken(){
+    const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+    return m ? m[1] : null;
+  }
+  window.fetch = function(input, init){
+    init = init || {};
+    try {
+      const method = (init.method || (input && typeof input !== "string" && input.method) || "GET").toUpperCase();
+      if(method !== "GET" && method !== "HEAD"){
+        const token = getCsrfToken();
+        if(token){
+          const baseHeaders = init.headers
+            || (input && typeof input !== "string" && input.headers)
+            || {};
+          const headers = new Headers(baseHeaders);
+          headers.set("X-CSRF-Token", token);
+          init = Object.assign({}, init, {headers});
+        }
+      }
+    } catch(e){ /* never let CSRF-attachment break a request */ }
+    return origFetch(input, init);
+  };
+})();
 """
 
 # Shared across every page template via Jinja globals — see templates/*.html
@@ -2813,6 +3275,16 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
+    # Catches the other way this could ship insecurely: someone runs the
+    # dev server bound to a real network interface (not just localhost)
+    # without ever setting FLASK_SECRET_KEY. (The production/gunicorn path
+    # is covered separately above, keyed off SESSION_COOKIE_SECURE — that
+    # check can't see --host at all since gunicorn never calls main().)
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not _secret_key_set:
+        sys.exit(
+            f"FATAL: --host {args.host} is not loopback-only, but "
+            "FLASK_SECRET_KEY is not set. Set it in .env (or the "
+            "environment) before binding to a non-local address.")
     # Drain in-flight state writes on Ctrl+C so a save that's mid-flight
     # finishes cleanly instead of being abandoned at signal-time.
     bqb.install_graceful_shutdown()

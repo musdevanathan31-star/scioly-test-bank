@@ -1,0 +1,29 @@
+# Reverse proxy + automatic HTTPS for the Sci-Oly question-bank app.
+#
+# Install Caddy, then:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Caddy's only job here is TLS termination + proxying to gunicorn — the app
+# handles its own login/roles now, so no basicauth directive is needed.
+# Caddy issues/renews the Let's Encrypt cert automatically once DNS points
+# at this machine and ports 80+443 are forwarded to it — nothing else to do.
+#
+# The app is mounted under /testbank/ncms (set via APPLICATION_ROOT in
+# .env — see review_app.py's _PrefixMiddleware), so `handle` here matches
+# and forwards that path *without* stripping it — Flask's middleware expects
+# the full path including the prefix. Don't change this to `handle_path`.
+scioly-02864.com {
+	handle /testbank/ncms* {
+		reverse_proxy 127.0.0.1:5000
+	}
+	handle {
+		respond 404
+	}
+
+	# Match review_app.py's MAX_CONTENT_LENGTH (review_app.py:66) — otherwise
+	# Caddy rejects large textbook uploads before Flask ever sees them.
+	request_body {
+		max_size 300MB
+	}
+}

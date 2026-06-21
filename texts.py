@@ -20,6 +20,7 @@ from pathlib import Path
 import fitz   # PyMuPDF
 import requests
 
+import pdf_safety
 from events import Event
 
 
@@ -159,7 +160,7 @@ def pdf_to_markdown(pdf_path: Path) -> Path:
     if pdf_path.suffix.lower() != ".pdf":
         raise ValueError("not a PDF")
 
-    doc = fitz.open(str(pdf_path))
+    doc = pdf_safety.open_pdf_safely(pdf_path)
     parts: list[str] = [f"# {pdf_path.stem}\n",
                         f"*Source: {pdf_path.name}, {doc.page_count} pages*\n", "---\n"]
     for pno, page in enumerate(doc, 1):
@@ -213,7 +214,7 @@ def detect_chapters(pdf_path: Path, md_text: str) -> dict:
     last_page = 0
 
     try:
-        doc = fitz.open(str(pdf_path))
+        doc = pdf_safety.open_pdf_safely(pdf_path)
         toc = doc.get_toc()  # [[level, title, page], ...]
         last_page = doc.page_count
         doc.close()
