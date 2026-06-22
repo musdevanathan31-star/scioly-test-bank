@@ -7,6 +7,11 @@ ssh-key-*.key.pub
 *.pem
 *.key
 
+# Security/pentest documents — never commit (could map attack surface for an attacker)
+PENTEST_PLAN.md
+*PENTEST*.md
+*pentest*.md
+
 # Python
 __pycache__/
 *.pyc
