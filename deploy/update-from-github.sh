@@ -48,6 +48,16 @@ LOG="/var/log/qbank-deploy.log"
 
 log() { echo "$(date -Is) $*" >> "$LOG"; }
 
+# Don't depend on the caller's cwd — admin_app.py invokes this via
+# `sudo -u qbank-deploy bash UPDATE_SCRIPT` with no explicit cwd=, so it
+# inherits whatever directory the admin app's own process happens to be
+# running from (its WorkingDirectory, owned by a different account
+# entirely). pytest chdir's back to its startpath (the cwd at invocation)
+# partway through a run, which fails outright if qbank-deploy can't enter
+# wherever that happened to be. $SRC is qbank-deploy's own directory, so
+# it's always safe to land here regardless of who/what invoked this script.
+cd "$SRC" 2>/dev/null || cd /opt/qbank-deploy
+
 if [ ! -d "$SRC/.git" ]; then
   git clone "$REPO_URL" "$SRC"
 else
