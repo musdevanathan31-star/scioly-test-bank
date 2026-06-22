@@ -39,6 +39,13 @@
 .quiz-mistake-meta{font-size:11px;color:var(--muted)}
 .quiz-mistake-you{color:var(--bad);font-size:12px}
 .quiz-mistake-correct{color:var(--ok);font-size:12px;font-weight:600}
+.quiz-context-banner{background:#fffbeb;border:1px solid #e8c875;border-radius:6px;
+  padding:10px 12px;margin-bottom:12px;font-size:13px;line-height:1.5;color:#5a4a1a}
+.quiz-context-banner .ctx-hdr{font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+  font-weight:700;color:#9a7a1a;margin-bottom:4px}
+.quiz-context-banner .images{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.quiz-context-banner .images img{max-width:160px;max-height:160px;border:1px solid var(--line);
+  border-radius:3px;background:#fff}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -92,6 +99,13 @@
         <option value="1" selected>shuffle</option>
         <option value="0">as-listed</option>
       </select>
+
+      <label for="qc_keep_groups">Case studies</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input id="qc_keep_groups" type="checkbox"
+               title="When a case-study question is picked, pull in every other question that shares its passage so the group is never split across included/excluded.">
+        Keep case studies together (may add a few extra questions)
+      </label>
     </div>
     <div id="qc_pool_size" class="muted" style="margin-top:10px;font-size:12px"></div>
     <div class="quiz-actions">
@@ -106,6 +120,7 @@
       <span><b id="q_score_run">0</b>/<span id="q_score_total">0</span> so far</span>
     </div>
     <div class="quiz-meta" id="q_meta"></div>
+    <div id="q_context_banner" style="display:none"></div>
     <div class="quiz-q" id="q_text"></div>
     <div class="quiz-choices" id="q_choices"></div>
     <input id="q_frq" class="quiz-frq-input" style="display:none" placeholder="Type your answer…">
@@ -136,9 +151,11 @@
 <script>
 const EVENT_SLUG = "{{ event_slug }}";
 const API = APP_ROOT + "/event/" + EVENT_SLUG + "/api";
+const IMG_BASE = APP_ROOT + "/event/" + EVENT_SLUG + "/images";
 
 let POOL = [];     // candidate questions from /api/all-questions
-let CONFIG = {};   // {n, topic, bucket, type, timer, shuffle}
+let CONTEXTS = {}; // bucket::id -> {title?, text, images, pages} shared case-study passages
+let CONFIG = {};   // {n, topic, bucket, type, timer, shuffle, keepGroups}
 let QUIZ = [];     // selected for this run
 let IDX = 0;
 let SCORE = 0;
@@ -153,6 +170,7 @@ async function loadPool(){
   const r = await fetch(`${API}/all-questions`);
   const j = await r.json();
   POOL = j.questions || [];
+  CONTEXTS = j.contexts || {};
   // Populate topic filter
   const topics = [...new Set(POOL.map(q => q.topic).filter(Boolean))].sort();
   const tsel = document.getElementById("qc_topic");
@@ -189,27 +207,81 @@ function readConfig(){
     type:    document.getElementById("qc_type").value,
     timer:   parseInt(document.getElementById("qc_timer").value) || 0,
     shuffle: document.getElementById("qc_shuffle").value === "1",
+    keepGroups: document.getElementById("qc_keep_groups").checked,
   };
+}
+
+// Cluster a question list into case-study groups (a lone question is its own
+// group of one), preserving first-occurrence order. When keepGroups is on,
+// each group is topped up with every sibling from the FULL pool (not just
+// the filtered subset passed in) that still has a usable answer — a case
+// study's FRQ member shouldn't be dropped just because the user filtered for
+// MCQ-only. Returns an array of question arrays (one per group).
+function buildGroups(pool, keepGroups){
+  const groups = new Map();
+  const order = [];
+  pool.forEach(q => {
+    const key = q._context_key || `__solo_${q._bucket}::${q.number}`;
+    if(!groups.has(key)){ groups.set(key, []); order.push(key); }
+    groups.get(key).push(q);
+  });
+  if(keepGroups){
+    order.forEach(key => {
+      if(key.startsWith("__solo_")) return;
+      const have = new Set(groups.get(key).map(q => q.number));
+      POOL.forEach(q => {
+        if(q._context_key === key && !have.has(q.number)
+           && q.answer && String(q.answer).trim()){
+          groups.get(key).push(q);
+          have.add(q.number);
+        }
+      });
+    });
+  }
+  return order.map(key => groups.get(key));
+}
+
+// Picks groups (in the given order) until at least CONFIG.n questions have
+// been collected — a group counts as one "slot" but contributes every one
+// of its members, so the result can exceed n when groups are kept whole.
+function pickGroups(groupList, n){
+  const picked = [];
+  for(const members of groupList){
+    if(picked.length >= n) break;
+    picked.push(...members);
+  }
+  return picked;
 }
 
 function updatePoolSize(){
   readConfig();
-  const n = filteredPool().length;
+  const pool = filteredPool();
+  const groupList = buildGroups(pool, CONFIG.keepGroups);
+  const picked = pickGroups(groupList, CONFIG.n);
   const el = document.getElementById("qc_pool_size");
-  el.textContent = `${n} eligible question${n===1?"":"s"} in pool` + (n < CONFIG.n
-    ? ` — you asked for ${CONFIG.n}, will use all ${n}` : ".");
-  document.getElementById("btn_start").disabled = n === 0;
+  let msg = `${pool.length} eligible question${pool.length===1?"":"s"} in pool`;
+  if(pool.length < CONFIG.n){
+    msg += ` — you asked for ${CONFIG.n}, will use all ${pool.length}`;
+  } else if(CONFIG.keepGroups && picked.length > CONFIG.n){
+    const groupsUsed = groupList.filter(m => picked.length && m.some(q => picked.includes(q))).length;
+    msg += ` — expanded to ${picked.length} to keep ${groupsUsed} group(s) whole`;
+  }
+  el.textContent = msg + ".";
+  document.getElementById("btn_start").disabled = pool.length === 0;
 }
 
-["qc_n","qc_topic","qc_bucket","qc_type"].forEach(id => {
+["qc_n","qc_topic","qc_bucket","qc_type","qc_keep_groups"].forEach(id => {
   document.getElementById(id).addEventListener("change", updatePoolSize);
 });
 
 document.getElementById("btn_start").addEventListener("click", () => {
   readConfig();
   const pool = filteredPool();
-  QUIZ = CONFIG.shuffle ? shuffle(pool.slice()) : pool.slice();
-  QUIZ = QUIZ.slice(0, CONFIG.n);
+  let groupList = buildGroups(pool, CONFIG.keepGroups);
+  // Shuffle whole groups, not flattened questions — a case study is never
+  // split apart by randomization once its group has been picked.
+  if(CONFIG.shuffle) shuffle(groupList);
+  QUIZ = pickGroups(groupList, CONFIG.n);
   if(QUIZ.length === 0){ toast("No eligible questions in pool", "err"); return; }
   IDX = 0; SCORE = 0; RESPONSES = [];
   document.getElementById("config_section").style.display = "none";
@@ -222,12 +294,32 @@ document.getElementById("btn_start").addEventListener("click", () => {
 
 function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
 
+function renderContextBanner(q){
+  const el = document.getElementById("q_context_banner");
+  const ctx = q._context_key ? CONTEXTS[q._context_key] : null;
+  if(!ctx){ el.style.display = "none"; el.innerHTML = ""; return; }
+  // "question N of M" within this case study's group, based on the run's
+  // own QUIZ order (not the source PDF's numbering) so it matches what the
+  // taker is actually seeing.
+  const members = QUIZ.filter(x => x._context_key === q._context_key);
+  const posInGroup = members.indexOf(q) + 1;
+  const imgs = (ctx.images || []).map(fn =>
+    `<img src="${IMG_BASE}/${esc(fn)}">`).join("");
+  el.style.display = "";
+  el.className = "quiz-context-banner";
+  el.innerHTML = `
+    <div class="ctx-hdr">Case study${members.length > 1 ? ` · question ${posInGroup} of ${members.length}` : ""}${ctx.title ? " · " + esc(ctx.title) : ""}</div>
+    <div>${esc(ctx.text || "")}</div>
+    ${imgs ? `<div class="images">${imgs}</div>` : ""}`;
+}
+
 function presentQuestion(){
   const q = QUIZ[IDX];
   document.getElementById("q_idx").textContent = IDX + 1;
   document.getElementById("q_score_run").textContent = SCORE;
   document.getElementById("q_meta").textContent = `${q.topic || "Other"} · ${q.source || q._bucket}`;
   document.getElementById("q_text").textContent = q.text || "";
+  renderContextBanner(q);
   document.getElementById("q_feedback").style.display = "none";
   document.getElementById("btn_submit").style.display = "";
   document.getElementById("btn_next").style.display = "none";

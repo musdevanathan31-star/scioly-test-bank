@@ -103,6 +103,7 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
   "year":     "2020",
   "division": "C",
   "page":     3,                    // for the review UI
+  "context_id": "ctx_1",            // optional: links to a shared Context block (case-study passage/table/diagram) — see Context below
   "validation": Validation,         // optional, set by either an LLM check or a human (see Validation below)
   "lastEditedBy":       "srikanth", // username of whoever last edited this question (server-stamped from the session, never client-supplied)
   "lastEditedDateTime": "2026-06-21T13:04:47"  // ISO-8601, set alongside lastEditedBy
@@ -132,9 +133,26 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
       "x": 50, "y": 80, "w": 600, "h": 120, "dpi": 120,
       "captured_at": "ISO-8601" }
   ],
-  "validations": { "<qnum>": Validation }
+  "validations": { "<qnum>": Validation },
+  "contexts": [ Context, ... ]          // shared case-study blocks captured on this PDF
 }
 ```
+
+### Context
+
+A shared passage/table/diagram that several questions on the same PDF reference (e.g. a Disease Detectives case study). Ids are only unique **within their own bucket** — every PDF restarts its own counter — so any code that needs to look one up across the whole event namespaces the key as `"<bucket>::<id>"` (done in `api_all_questions`, `build_markdown`'s `_all_contexts()`, and the CSV/JSON/PDF export routes; nothing on disk uses this composite key, it's a read-time convention only).
+
+```jsonc
+{
+  "id":     "ctx_1",
+  "title":  "Avian flu outbreak",   // optional human label; falls back to `id` for display when blank
+  "text":   "A passage, table caption, or intro the linked questions reference...",
+  "images": [ "filename.png", ... ],
+  "pages":  [ 4, 5 ]                 // page span — contexts can span pages just like questions
+}
+```
+
+A question opts in via its `context_id`; review.html then renders the context above the stem and any edit to the shared text flows through to every linked question. The review page's **"🔗 Group questions"** toolbar toggle lets a user multi-select several questions (via card checkboxes or PDF bounding-box clicks, persisting the selection across page turns) and bulk-assign them to a context in one step — either an existing one or a freshly drag-captured one — instead of linking one question at a time via the per-card dropdown.
 
 ### Validation
 
@@ -223,7 +241,7 @@ Guards (the regex finds too many false positives without these):
 
 ## 8. Markdown output
 
-`build_markdown(all_questions)` groups by topic in the order listed in §6. Each question renders as:
+`build_markdown(all_questions)` groups by topic in the order listed in §6. Within a topic, questions sharing a `context_id` are clustered together (`_cluster_by_context`, anchored at the earliest member's sort position) instead of rendering wherever each one individually sorts to — the shared Context's text/images render once as a `**Case study[: title]**` block immediately before that cluster's questions, which then render with no divider between them (one divider after the whole cluster). `build_markdown` derives the lookup itself via `_all_contexts()` (reads `state["annotations"][*].contexts`, namespaced `bucket::id`) — callers don't need to pass anything, just make sure each question dict carries `_bucket` (both call sites — the CLI's `main()` and `review_app.py`'s `api_regenerate` — tag it before calling). The PDF/CSV/JSON exports (`review_app.py`'s `_export_pdf`/`api_export`) do the same clustering for their own outputs; CSV instead adds a plain `context_id` column (no natural place for a shared passage in flat rows) and JSON wraps the question array as `{"questions": [...], "_contexts": {...}}` instead of a bare array. Each question renders as:
 
 ```
 ### Q<n>
@@ -256,6 +274,7 @@ State store and pipeline are the same. The UI is just a graphical front-end that
 - `GET /event/<slug>/review/<pdf>` — single-PDF review (PDF page + question cards). Accepts `?q=<number>` to focus a specific question on load (used by the "Open source ↗" link from the browse page).
 - `GET /event/<slug>/sources` — source-material management + LLM question generation
 - `GET /event/<slug>/browse` — event-wide question browser: every question across every bucket on one filterable/sortable page. Filters: full-text search, topic, focus, source, validation status, MCQ-vs-FRQ, has-image. Sorts: Q#, topic, focus, source, validation, length, bucket-then-Q#. Each card links back to the source PDF's review page with that Q pre-focused.
+- `GET /event/<slug>/quiz` — client-side practice quiz: configure count/topic/bucket/type/timer/shuffle, fetch the pool from `/api/all-questions`, then step through one question at a time. The **"Keep case studies together"** checkbox (default off, so existing behavior is unchanged unless opted into) clusters the filtered pool by `_context_key` before picking — a picked group's siblings are pulled in from the full pool (even ones the active filters would've excluded, as long as they still have an answer) and shuffled as a unit, so a case study is never split across included/excluded. The question screen shows the shared passage in a banner above the stem, with a "question N of M" indicator, whenever the current question carries a `_context_key`.
 
 Every API route is namespaced under `/event/<slug>/`. Each handler calls `_select_event(slug)` first, which mutates the `build_question_bank` module globals (`BASE_DIR`, `IMAGE_DIR`, `OUT_MD`, `STATE_FILE`, `TOPICS`, `EVENT`) so the rest of the request runs in the right context, and — since B#1 — checks the logged-in user's event access. `bqb.set_event` writes to a `ContextVar`, so this is correct per-request/per-thread under a multi-threaded WSGI server; the only piece that still requires a single worker *process* is the per-event state lock (`build_question_bank.py`'s `threading.RLock` dict — see Deploying in the README).
 
@@ -281,11 +300,13 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /event/<slug>/api/all-questions` | Flat list of every question in the bank with bucket provenance + computed flags (`_bucket`, `_synthetic_bucket`, `_has_image`, `_is_mcq`, `_validation_status`, `_edited_at`) and pre-aggregated stats baskets. Powers the browse page. |
+| `GET /event/<slug>/api/all-questions` | Flat list of every question in the bank with bucket provenance + computed flags (`_bucket`, `_synthetic_bucket`, `_has_image`, `_is_mcq`, `_validation_status`, `_edited_at`, and `_context_key` — `bucket::context_id`, only present when the question is linked to one) and pre-aggregated stats baskets, plus a top-level `contexts` map (`_context_key` → Context). Powers the browse and quiz pages. |
 | `PATCH /event/<slug>/api/q/<bucket>/<num>` | Single-question edit (text/topic/focus/answer/choices/image_descriptions/validation) for Browse's always-editable cards — every field autosaves independently, no page-level Save. Records the change as a `field_overrides[<num>]` annotation so reprocess respects it, and server-stamps `lastEditedBy`/`lastEditedDateTime` from the session on every call that actually changes something (see §4's Question/Validation schemas). |
 | `DELETE /event/<slug>/api/q/<bucket>/<num>` | Remove a single question from a bucket; records `<num>` in `annotations[<bucket>].deleted` so reprocess respects it. |
-| `GET /event/<slug>/api/export.csv` | Whole bank as CSV (one row per question, columns: number/topic/focus/text/answer/choices/source/year/division/bucket/validation_status/rationale). |
-| `GET /event/<slug>/api/export.json` | Whole bank as JSON (every question dict). |
+| `GET /event/<slug>/api/export.csv` | Whole bank as CSV (one row per question, columns: number/topic/focus/text/answer/choices/source/year/division/bucket/context_id/validation_status/rationale). |
+| `GET /event/<slug>/api/export.json` | Whole bank as JSON: `{"questions": [...], "_contexts": {"bucket::id": Context, ...}}`. |
+| `GET /event/<slug>/api/export.pdf` | Printable PDF (reportlab), grouped by topic with an answer key page. Case-study clusters render their shared passage once (a highlighted box) before the cluster's questions — same `_cluster_by_context` grouping as the markdown output (§8). Requires `pip install reportlab`. |
+| `GET /event/<slug>/api/export.apkg` | Anki deck (genanki), one card per question — flashcard format has no slot for a shared passage, so context grouping doesn't apply here. Requires `pip install genanki`. |
 | `GET /event/<slug>/api/pdf/<pdf>/outline` | PyMuPDF-extracted PDF outline (`doc.get_toc()`) for the review-page outline drawer. Returns `[{level, title, page}]`. |
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>/qboxes` | Per-page bounding boxes for every question whose text starts on this page. Computed on demand from PyMuPDF text blocks: each `Q_START` match anchors a box that spans down to the next anchor (or page bottom), widened to the leftmost/rightmost edges of the text blocks within that vertical slice. Returns `{boxes: [{number, x0, y0, x1, y1}], page_height_pt}` in PDF points; the frontend scales to image pixels using the same 120 DPI factor as region-extract. |
 | `POST /event/<slug>/api/generate-similar` | Seed-based question generation. Body: `{seed_text, seed_topic, n}`. Wraps `qgen.generate_questions` with the seed as both source material and "do not duplicate" anchor. |

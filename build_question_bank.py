@@ -1626,56 +1626,123 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
 # Markdown generation — clean, no HTML
 # ---------------------------------------------------------------------------
 
+def _render_question_block(lines: list[str], q: dict, i: int) -> None:
+    """Render one question's heading/meta/text/choices/images/answer/validation
+    block. Shared by clustered (case-study) and standalone rendering — does
+    NOT append a trailing divider, since a cluster of case-study questions
+    renders as one visual block with a single divider after the whole group."""
+    lines.append(f"### Q{i}")
+    meta = f"*{q['source']} · #{q['number']}"
+    if q.get("focus"):
+        meta += f" · focus: {q['focus']}"
+    meta += "*"
+    lines.append(meta)
+    lines.append("")
+    lines.append(q["text"])
+    lines.append("")
+    for c in q.get("choices", []):
+        lines.append(f"- **{c['letter']}.** {c['text']}")
+    if q.get("choices"):
+        lines.append("")
+    for img in q.get("images", []):
+        lines.append(f"![Figure](images/{img})")
+        lines.append("")
+    ans = q.get("answer", "").strip()
+    if ans:
+        lines.append(f"**Answer:** {ans}")
+        lines.append("")
+    v = q.get("validation") or {}
+    if v and v.get("status") in ("correct", "incorrect", "uncertain"):
+        icon = {"correct": "✓", "incorrect": "⚠",
+                "uncertain": "?"}[v["status"]]
+        label = v["status"].capitalize()
+        stale_suffix = " *(stale — text/answer changed since check)*" if v.get("stale") else ""
+        parts = [f"> {icon} **Verified: {label}**{stale_suffix}"]
+        if v["status"] == "incorrect" and v.get("correct_answer"):
+            parts.append(f"Likely correct answer: **{v['correct_answer']}**.")
+        if v.get("rationale"):
+            parts.append(v["rationale"])
+        if v.get("source"):
+            parts.append(f"*Source: {v['source']}*")
+        lines.append("  ".join(parts))
+        lines.append("")
+
+
+def _context_key(q: dict) -> str | None:
+    cid = q.get("context_id")
+    return f"{q.get('_bucket', '')}::{cid}" if cid else None
+
+
+def _cluster_by_context(qs: list[dict], context_lookup: dict[str, dict]) -> list[list[dict]]:
+    """Group questions sharing a (bucket, context_id) key into one cluster,
+    anchored at the sort position of its earliest member; every other
+    question is its own cluster of one. Used so a case study's shared
+    passage/table/diagram renders once, immediately before all the questions
+    that reference it, instead of being scattered across the topic listing
+    wherever each question happens to sort to."""
+    clusters: list[list[dict]] = []
+    by_key: dict[str, list[dict]] = {}
+    for q in qs:
+        key = _context_key(q)
+        if key and key in context_lookup:
+            if key not in by_key:
+                by_key[key] = []
+                clusters.append(by_key[key])
+            by_key[key].append(q)
+        else:
+            clusters.append([q])
+    return clusters
+
+
 def _render_topic_section(lines: list[str], topic: str, qs: list[dict],
-                          heading_level: int = 2, q_counter_start: int = 1) -> int:
+                          heading_level: int = 2, q_counter_start: int = 1,
+                          context_lookup: dict[str, dict] | None = None) -> int:
     """Render one topic's worth of questions. Returns the next Q-counter value."""
     qs.sort(key=lambda q: (-int(q.get("year") or 0), q.get("number", "")))
     lines += ["", "---", "", f"{'#' * heading_level} {topic}", ""]
     i = q_counter_start
-    for q in qs:
-        lines.append(f"### Q{i}")
-        meta = f"*{q['source']} · #{q['number']}"
-        if q.get("focus"):
-            meta += f" · focus: {q['focus']}"
-        meta += "*"
-        lines.append(meta)
-        lines.append("")
-        lines.append(q["text"])
-        lines.append("")
-        for c in q.get("choices", []):
-            lines.append(f"- **{c['letter']}.** {c['text']}")
-        if q.get("choices"):
+    for cluster in _cluster_by_context(qs, context_lookup or {}):
+        key = _context_key(cluster[0])
+        ctx = (context_lookup or {}).get(key) if key else None
+        if ctx:
+            heading = "**Case study"
+            if ctx.get("title"):
+                heading += f": {ctx['title']}"
+            heading += "**"
+            lines.append(heading)
             lines.append("")
-        for img in q.get("images", []):
-            lines.append(f"![Figure](images/{img})")
-            lines.append("")
-        ans = q.get("answer", "").strip()
-        if ans:
-            lines.append(f"**Answer:** {ans}")
-            lines.append("")
-        v = q.get("validation") or {}
-        if v and v.get("status") in ("correct", "incorrect", "uncertain"):
-            icon = {"correct": "✓", "incorrect": "⚠",
-                    "uncertain": "?"}[v["status"]]
-            label = v["status"].capitalize()
-            stale_suffix = " *(stale — text/answer changed since check)*" if v.get("stale") else ""
-            parts = [f"> {icon} **Verified: {label}**{stale_suffix}"]
-            if v["status"] == "incorrect" and v.get("correct_answer"):
-                parts.append(f"Likely correct answer: **{v['correct_answer']}**.")
-            if v.get("rationale"):
-                parts.append(v["rationale"])
-            if v.get("source"):
-                parts.append(f"*Source: {v['source']}*")
-            lines.append("  ".join(parts))
-            lines.append("")
+            if ctx.get("text"):
+                lines.append(ctx["text"])
+                lines.append("")
+            for img in ctx.get("images") or []:
+                lines.append(f"![Context figure](images/{img})")
+                lines.append("")
+        for q in cluster:
+            _render_question_block(lines, q, i)
+            i += 1
         lines.append("---")
         lines.append("")
-        i += 1
     return i
+
+
+def _all_contexts() -> dict[str, dict]:
+    """Shared context blocks (case-study passages/tables/diagrams) across
+    every bucket of the current event, namespaced "bucket::id" — context ids
+    are only unique within their own bucket (see review.html's nextContextId
+    counter, which restarts per PDF)."""
+    state = _load_state()
+    out: dict[str, dict] = {}
+    for bucket, ann in state.get("annotations", {}).items():
+        for c in (ann.get("contexts") or []):
+            cid = c.get("id")
+            if cid:
+                out[f"{bucket}::{cid}"] = c
+    return out
 
 
 def build_markdown(all_questions: list[dict]) -> str:
     ev = _ev()
+    context_lookup = _all_contexts()
     topics = list(ev.topics)
     by_topic: dict[str, list[dict]] = defaultdict(list)
     for q in all_questions:
@@ -1733,7 +1800,8 @@ def build_markdown(all_questions: list[dict]) -> str:
                     continue
                 counter = _render_topic_section(lines, topic, sub[topic],
                                                 heading_level=2,
-                                                q_counter_start=counter)
+                                                q_counter_start=counter,
+                                                context_lookup=context_lookup)
         return "\n".join(lines)
 
     lines += ["", "---", "", "## Table of Contents", ""]
@@ -1749,7 +1817,8 @@ def build_markdown(all_questions: list[dict]) -> str:
             continue
         counter = _render_topic_section(lines, topic, by_topic[topic],
                                         heading_level=2,
-                                        q_counter_start=counter)
+                                        q_counter_start=counter,
+                                        context_lookup=context_lookup)
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
@@ -1901,9 +1970,13 @@ def main() -> None:
 
     all_questions: list[dict] = []
 
-    # Include cached results for PDFs not in this run
+    # Include cached results for PDFs not in this run. Tag each with its
+    # source bucket so build_markdown() can look up shared context blocks
+    # (which are only unique within a bucket — see state["annotations"]).
     for ck, cqs in state["questions"].items():
         if not any(p.name == ck for p in test_pdfs):
+            for q in cqs:
+                q["_bucket"] = ck
             all_questions.extend(cqs)
 
     for test_pdf in test_pdfs:
@@ -1914,6 +1987,8 @@ def main() -> None:
             state,
             use_vision,
         )
+        for q in qs:
+            q["_bucket"] = test_pdf.name
         all_questions.extend(qs)
 
     # Deduplicate (same source + number + first 80 chars)

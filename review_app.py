@@ -1335,8 +1335,11 @@ def api_regenerate(event_slug):
     _select_event(event_slug)
     state = bqb._load_state()
     all_q: list[dict] = []
-    for qs in state.get("questions", {}).values():
-        all_q.extend(qs)
+    for bucket, qs in state.get("questions", {}).items():
+        for q in qs:
+            qcopy = dict(q)
+            qcopy["_bucket"] = bucket
+            all_q.append(qcopy)
     bqb.OUT_MD.write_text(bqb.build_markdown(all_q), encoding="utf-8")
     return jsonify({"ok": True, "path": str(bqb.OUT_MD),
                     "n_questions": len(all_q)})
@@ -1381,6 +1384,18 @@ def api_all_questions(event_slug):
     qs_by_pdf = state.get("questions", {})
     manual = state.get("manual", {})
     all_qs: list[dict] = []
+
+    # Shared context blocks (case-study passages/tables/diagrams) live per-bucket
+    # under annotations[bucket].contexts and are only unique within their own
+    # bucket — namespace the key as "bucket::id" so quiz.html/browse.html can
+    # look one up across the whole event without collisions.
+    contexts: dict[str, dict] = {}
+    for bucket, ann in state.get("annotations", {}).items():
+        for c in (ann.get("contexts") or []):
+            cid = c.get("id")
+            if cid:
+                contexts[f"{bucket}::{cid}"] = c
+
     for bucket, qs in qs_by_pdf.items():
         # "Recently edited" works off the per-bucket edited_at timestamp.
         bucket_edited_at = (manual.get(bucket) or {}).get("edited_at", "")
@@ -1393,6 +1408,9 @@ def api_all_questions(event_slug):
             qcopy["_edited_at"] = bucket_edited_at
             v = qcopy.get("validation") or {}
             qcopy["_validation_status"] = v.get("status") if v else None
+            ctx_id = qcopy.get("context_id")
+            if ctx_id:
+                qcopy["_context_key"] = f"{bucket}::{ctx_id}"
             all_qs.append(qcopy)
 
     # Stat baskets
@@ -1412,6 +1430,7 @@ def api_all_questions(event_slug):
 
     return jsonify({
         "questions":   all_qs,
+        "contexts":    contexts,
         "topics":      bqb.TOPICS,
         "foci":        list(bqb.EVENT.foci),
         "event_name":  bqb.EVENT.name,
@@ -1875,7 +1894,12 @@ def api_export(event_slug, fmt):
             row["_bucket"] = bucket
             all_qs.append(row)
     if fmt == "json":
-        return Response(json.dumps(all_qs, ensure_ascii=False, indent=2),
+        # "_contexts" carries the shared case-study passages/tables/diagrams
+        # referenced by any question's context_id (bucket::id-namespaced —
+        # see bqb._all_contexts) so a JSON consumer doesn't have to separately
+        # reconstruct them from the review-page annotations.
+        payload = {"questions": all_qs, "_contexts": bqb._all_contexts()}
+        return Response(json.dumps(payload, ensure_ascii=False, indent=2),
                         mimetype="application/json",
                         headers={"Content-Disposition":
                                  f"attachment; filename={bqb.EVENT.slug}.json"})
@@ -1884,7 +1908,8 @@ def api_export(event_slug, fmt):
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["number","topic","focus","text","answer","choices",
-                    "source","year","division","bucket","validation_status","rationale"])
+                    "source","year","division","bucket","context_id",
+                    "validation_status","rationale"])
         for q in all_qs:
             v = q.get("validation") or {}
             choices_flat = " | ".join(f"{c.get('letter','?')}. {c.get('text','')}"
@@ -1893,7 +1918,8 @@ def api_export(event_slug, fmt):
                 q.get("number",""), q.get("topic",""), q.get("focus",""),
                 q.get("text",""), q.get("answer",""), choices_flat,
                 q.get("source",""), q.get("year",""), q.get("division",""),
-                q.get("_bucket",""), v.get("status",""), v.get("rationale",""),
+                q.get("_bucket",""), q.get("context_id",""),
+                v.get("status",""), v.get("rationale",""),
             ])
         return Response(buf.getvalue(),
                         mimetype="text/csv; charset=utf-8",
@@ -1914,11 +1940,11 @@ def api_export(event_slug, fmt):
             return jsonify({
                 "error": "reportlab not installed. Run: pip install reportlab",
             }), 400
-        return _export_pdf(all_qs)
+        return _export_pdf(all_qs, bqb._all_contexts())
     return jsonify({"error": f"unsupported format: {fmt}"}), 400
 
 
-def _export_pdf(all_qs: list[dict]) -> "Response":
+def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Response":
     """Generate a printable PDF: questions front-to-back, answer key at the
     end. One question per logical block, page breaks honoured by reportlab's
     SimpleDocTemplate platypus flow."""
@@ -1964,28 +1990,43 @@ def _export_pdf(all_qs: list[dict]) -> "Response":
     for q in all_qs:
         by_topic.setdefault(q.get("topic") or "Other / General", []).append(q)
 
+    context_lookup = context_lookup or {}
+    context_style = ParagraphStyle("context", parent=body,
+                                   backColor="#fffbeb", borderColor="#e8c875",
+                                   borderWidth=1, borderPadding=8, spaceAfter=8)
+
     n = 0  # global counter for cross-referencing with the answer key
     answer_lines: list[str] = []
     for topic in sorted(by_topic.keys()):
         story.append(Paragraph(_e(topic), h2))
-        for q in by_topic[topic]:
-            n += 1
-            block = [
-                Paragraph(f"<b>Q{n}.</b> {_e(q.get('text',''))}", body),
-            ]
-            for c in q.get("choices") or []:
-                block.append(Paragraph(
-                    f"<b>{_e(c.get('letter','?'))}.</b> {_e(c.get('text',''))}",
-                    choice_style,
-                ))
-            meta_bits = []
-            if q.get("source"):  meta_bits.append(_e(q["source"]))
-            if q.get("focus"):   meta_bits.append(f"focus: {_e(q['focus'])}")
-            if meta_bits:
-                block.append(Paragraph(" · ".join(meta_bits), meta_style))
-            block.append(Spacer(1, 6))
-            story.append(KeepTogether(block))
-            answer_lines.append(f"Q{n}: {_e(q.get('answer') or '—')}")
+        # Cluster case-study questions so the shared passage prints once,
+        # immediately before all the questions that reference it, instead of
+        # being scattered across the topic wherever each question sorts to.
+        for cluster in bqb._cluster_by_context(by_topic[topic], context_lookup):
+            key = bqb._context_key(cluster[0])
+            ctx = context_lookup.get(key) if key else None
+            if ctx:
+                heading = "Case study" + (f": {ctx['title']}" if ctx.get("title") else "")
+                story.append(Paragraph(f"<b>{_e(heading)}</b><br/>{_e(ctx.get('text', ''))}",
+                                       context_style))
+            for q in cluster:
+                n += 1
+                block = [
+                    Paragraph(f"<b>Q{n}.</b> {_e(q.get('text',''))}", body),
+                ]
+                for c in q.get("choices") or []:
+                    block.append(Paragraph(
+                        f"<b>{_e(c.get('letter','?'))}.</b> {_e(c.get('text',''))}",
+                        choice_style,
+                    ))
+                meta_bits = []
+                if q.get("source"):  meta_bits.append(_e(q["source"]))
+                if q.get("focus"):   meta_bits.append(f"focus: {_e(q['focus'])}")
+                if meta_bits:
+                    block.append(Paragraph(" · ".join(meta_bits), meta_style))
+                block.append(Spacer(1, 6))
+                story.append(KeepTogether(block))
+                answer_lines.append(f"Q{n}: {_e(q.get('answer') or '—')}")
 
     # Answer key page
     story.append(PageBreak())

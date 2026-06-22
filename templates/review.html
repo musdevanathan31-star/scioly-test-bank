@@ -222,6 +222,40 @@
 .q-bbox.pickable:hover{background:rgba(0,102,204,.20);
   box-shadow:0 0 0 3px rgba(0,102,204,.3)}
 .q-bbox.pickable .bb-label{background:var(--accent)}
+/* Selection mode (grouping questions into a context) */
+.q-bbox.selectable{border-color:rgba(155,28,179,.75);border-width:2px}
+.q-bbox.selectable:hover{background:rgba(155,28,179,.18)}
+.q-bbox.selectable.sel-picked{background:rgba(155,28,179,.28);
+  border-color:rgba(155,28,179,.95);box-shadow:0 0 0 3px rgba(155,28,179,.25)}
+.q-bbox.selectable .bb-label{background:#9b1cb3}
+.q-card.sel-mode{cursor:pointer}
+.q-card.sel-picked{outline:2px solid #9b1cb3;background:#faf2fc}
+.sel-check{flex:0 0 auto;width:16px;height:16px;cursor:pointer}
+.selection-pill{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+  z-index:155;display:flex;gap:8px;align-items:center;
+  background:#2c1233;color:#fff;border-radius:8px;padding:8px 12px;
+  box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px}
+.selection-pill .muted{color:#d8b9e0}
+.selection-pill button{font-size:12px}
+.selection-pill #selPillMenu button{display:block;width:100%;text-align:left;
+  padding:7px 12px;color:var(--fg);font-size:12px;background:transparent;border:none}
+.selection-pill #selPillMenu button:hover{background:var(--hover)}
+.selection-pill #selPillMenu .div{border-top:1px solid var(--line);margin:4px 0}
+/* "Case studies in this PDF" always-visible roster panel */
+.cases-panel{margin-bottom:14px;border:1px solid #d8b75c;border-radius:6px;
+  background:#fffdf5}
+.cases-panel summary{cursor:pointer;padding:7px 10px;font-size:12px;font-weight:600;
+  color:#7a5a00;list-style:none;display:flex;align-items:center;gap:6px}
+.cases-panel summary::-webkit-details-marker{display:none}
+.cases-panel summary::before{content:"▸";font-size:11px}
+.cases-panel[open] summary::before{content:"▾"}
+.cases-panel .row-item{display:flex;align-items:center;gap:8px;padding:5px 10px;
+  border-top:1px dashed #e8c875;font-size:12px;flex-wrap:wrap}
+.cases-panel .row-item input[type=text]{flex:0 1 220px;padding:2px 6px;font-size:12px;
+  border:1px solid var(--line);border-radius:3px}
+.cases-panel .jump-q{color:var(--accent);cursor:pointer;text-decoration:underline;
+  font-size:11px}
+#groupQuestions.on{background:#9b1cb3;color:#fff;border-color:#9b1cb3}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -288,6 +322,7 @@
   <button id="ocr" title="Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing">OCR this page (vision)</button>
   <button id="addRegion" class="primary" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">+ Add question from region</button>
   <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">+ Add context from region</button>
+  <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for case studies — capture the passage, then group its questions.">🔗 Group questions</button>
   <button id="addQ" title="Insert an empty question card you can fill out manually">+ Add blank</button>
   <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
   <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
@@ -354,6 +389,18 @@
   <button onclick="doUndo()" title="Undo the last destructive action (Ctrl+Z) — covers delete, OCR-replace, image assign, add-question">↶ Undo</button>
   <button onclick="document.getElementById('save').click()" id="float_save"
           class="primary" disabled title="Save (Ctrl+S)">💾 Save</button>
+</div>
+<div class="selection-pill" id="selectionPill" style="display:none">
+  <span id="selPillCount"></span>
+  <span class="muted" id="selPillNums" style="font-size:11px"></span>
+  <div style="position:relative;display:inline-block">
+    <button class="primary btn-tiny" id="selPillAssign">Assign to context ▾</button>
+    <div id="selPillMenu" style="display:none;position:absolute;bottom:100%;left:0;margin-bottom:6px;
+         background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+         box-shadow:0 6px 16px rgba(0,0,0,.25);min-width:260px;z-index:160;padding:4px 0"></div>
+  </div>
+  <button class="ghost btn-tiny" id="selPillClear">Clear</button>
+  <button class="ghost btn-tiny" id="selPillExit">✕ Exit</button>
 </div>
 <div class="outline-drawer" id="outlineDrawer">
   <h4>PDF outline</h4>
@@ -433,6 +480,105 @@ let ANN = {
   contexts: [],               // shared context blocks: [{id, text, images:[], pages:[]}]
 };
 let nextContextId = 1;
+
+// ---- multi-select "group questions" mode -------------------------------
+// Lets the user select several questions (cards or PDF bboxes, across page
+// turns — case studies routinely span pages) then bulk-assign them all to
+// one shared context in a single step, instead of linking one at a time via
+// each card's Context dropdown.
+let SELECTION_MODE = false;
+let SELECTED_QNUMS = new Set();  // question numbers, persists across page turns
+
+function setSelectionMode(on){
+  SELECTION_MODE = on;
+  if(!on) SELECTED_QNUMS.clear();
+  document.getElementById("groupQuestions").classList.toggle("on", on);
+  renderSelectionPill();
+  renderCards();
+  drawQuestionBoxes();
+}
+function toggleQSelection(num){
+  if(!num) return;
+  if(SELECTED_QNUMS.has(num)) SELECTED_QNUMS.delete(num);
+  else SELECTED_QNUMS.add(num);
+  renderSelectionPill();
+  renderCards();
+  drawQuestionBoxes();
+}
+function renderSelectionPill(){
+  const pill = document.getElementById("selectionPill");
+  if(!pill) return;
+  if(!SELECTION_MODE || SELECTED_QNUMS.size === 0){
+    pill.style.display = "none";
+    document.getElementById("selPillMenu").style.display = "none";
+    return;
+  }
+  pill.style.display = "flex";
+  const n = SELECTED_QNUMS.size;
+  document.getElementById("selPillCount").textContent =
+    `🔗 ${n} question${n === 1 ? "" : "s"} selected`;
+  const labels = [...SELECTED_QNUMS].map(num => {
+    const q = STATE.questions.find(x => String(x.number) === String(num));
+    return q ? `Q${q.number}${(q.page || 1) !== curPage ? ` · p${q.page || 1}` : ""}` : `Q${num}`;
+  });
+  document.getElementById("selPillNums").textContent = `(${labels.join(", ")})`;
+}
+function contextLinkedCount(id){
+  return STATE.questions.filter(q => q.context_id === id).length;
+}
+function assignSelectionToContext(ctxId){
+  if(!ctxId || SELECTED_QNUMS.size === 0) return;
+  _undoSnapshot(`assign ${SELECTED_QNUMS.size} question(s) to context ${ctxId}`);
+  let n = 0;
+  SELECTED_QNUMS.forEach(num => {
+    const q = STATE.questions.find(x => String(x.number) === String(num));
+    if(!q) return;
+    q.context_id = ctxId;
+    annOverride(q.number, "context_id", ctxId);
+    annUpdateAdded(q.number, q);
+    n++;
+  });
+  setDirty(true);
+  toast(`Linked ${n} question(s) to context ${ctxId}.`, "ok");
+  setSelectionMode(false);
+}
+document.getElementById("groupQuestions").addEventListener("click", () => {
+  setSelectionMode(!SELECTION_MODE);
+  if(SELECTION_MODE) cancelCapture();
+});
+document.getElementById("selPillClear").addEventListener("click", () => {
+  SELECTED_QNUMS.clear();
+  renderSelectionPill(); renderCards(); drawQuestionBoxes();
+});
+document.getElementById("selPillExit").addEventListener("click", () => setSelectionMode(false));
+document.getElementById("selPillAssign").addEventListener("click", e => {
+  e.stopPropagation();
+  const menu = document.getElementById("selPillMenu");
+  const opts = (ANN.contexts || []).map(c => {
+    const label = c.title || c.id;
+    return `<button data-ctx="${esc(c.id)}">${esc(label)} <span class="muted">(${contextLinkedCount(c.id)} linked)</span></button>`;
+  }).join("");
+  menu.innerHTML = opts + (opts ? `<div class="div"></div>` : "") +
+    `<button data-ctx="__NEW__">+ New context from region…</button>`;
+  menu.querySelectorAll("button").forEach(b => {
+    b.addEventListener("click", () => {
+      menu.style.display = "none";
+      if(b.dataset.ctx === "__NEW__"){
+        toast("Drag a rectangle on the PDF to capture the shared passage — it will auto-link to your selection.", "ok");
+        startCapture("newContext");
+      } else {
+        assignSelectionToContext(b.dataset.ctx);
+      }
+    });
+  });
+  menu.style.display = menu.style.display === "none" ? "block" : "none";
+});
+document.addEventListener("click", e => {
+  const menu = document.getElementById("selPillMenu");
+  if(menu && menu.style.display !== "none" && !e.target.closest("#selPillAssign,#selPillMenu")){
+    menu.style.display = "none";
+  }
+});
 
 function annAddContext(ctx){
   ANN.contexts = ANN.contexts || [];
@@ -792,6 +938,10 @@ async function drawQuestionBoxes(){
   // region" on a page whose structural detector found a box but extraction
   // failed to produce a usable question there.
   const picking = !!captureMode;
+  // Group-questions mode: boxes become toggle targets for bulk context
+  // assignment (only when not mid-capture — capture's own "reuse this
+  // region" behavior takes priority while a drag is pending).
+  const selecting = SELECTION_MODE && !picking;
 
   root.innerHTML = (payload.boxes || []).map(b => {
     const left = Math.round(b.x0 * ppx * sx);
@@ -812,8 +962,12 @@ async function drawQuestionBoxes(){
     const isFocused = focusedQ && String(focusedQ.number) === String(b.number);
     const unmatched = !knownNums.has(String(b.number))
                    && !STATE.questions.some(q => String(q.number).startsWith(b.number + "_") || String(q.number) === b.number + "b");
-    const cls = (isFocused ? "focused" : (unmatched ? "unmatched" : "")) + (picking ? " pickable" : "");
-    const pickHint = picking ? " — click to capture this exact region" : "";
+    const isSelected = selecting && SELECTED_QNUMS.has(b.number);
+    const cls = (isFocused ? "focused" : (unmatched ? "unmatched" : ""))
+              + (picking ? " pickable" : "")
+              + (selecting ? " selectable" : "") + (isSelected ? " sel-picked" : "");
+    const pickHint = picking ? " — click to capture this exact region"
+                    : selecting ? " — click to select for context assignment" : "";
     return `<div class="q-bbox ${cls}" data-qnum="${b.number}"
        data-natx="${natx}" data-naty="${naty}" data-natw="${natw}" data-nath="${nath}"
        style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"
@@ -823,14 +977,19 @@ async function drawQuestionBoxes(){
   }).join("");
 
   // Click a box to focus that question (and scroll the matching card into
-  // view) — or, while a capture is in progress, use the box's own region
-  // directly instead of requiring a fresh drag.
+  // view) — while a capture is in progress, use the box's own region
+  // directly instead of requiring a fresh drag — or, in selection mode,
+  // toggle that question in/out of the bulk-assign selection.
   root.querySelectorAll(".q-bbox").forEach(el => {
     el.addEventListener("click", async () => {
       if(captureMode){
         await performCapture(captureMode,
           Number(el.dataset.natx), Number(el.dataset.naty),
           Number(el.dataset.natw), Number(el.dataset.nath));
+        return;
+      }
+      if(selecting){
+        toggleQSelection(el.dataset.qnum);
         return;
       }
       const num = el.dataset.qnum;
@@ -978,6 +1137,8 @@ function renderImage(){
   });
 }
 
+let casesPanelOpen = false;
+
 function renderCards(){
   const list = questionsOnPage(curPage);
   const root = document.getElementById("cards");
@@ -995,15 +1156,84 @@ function renderCards(){
          </div>
          ${ctxOnPage.map(contextCardHTML).join("")}
        </div>` : "";
+  const casesHTML = casesPanelHTML();
   if(list.length === 0){
-    root.innerHTML = ctxHTML +
+    root.innerHTML = casesHTML + ctxHTML +
       `<div class="muted">No questions on this page. Use "+ Add question" to create one.</div>`;
+    bindCasesPanelEvents();
     bindContextEvents();
     return;
   }
-  root.innerHTML = ctxHTML + list.map(q => cardHTML(q)).join("");
+  root.innerHTML = casesHTML + ctxHTML + list.map(q => cardHTML(q)).join("");
   bindCardEvents();
   bindContextEvents();
+  bindCasesPanelEvents();
+}
+
+// Always-visible roster of every context captured in this PDF, regardless of
+// which page is currently shown — a case study can span many pages, and the
+// per-page section above only surfaces a context once you're on a page it
+// touches, which makes auditing a multi-page group impossible without
+// flipping through every page.
+function casesPanelHTML(){
+  const ctxs = ANN.contexts || [];
+  if(!ctxs.length) return "";
+  const rows = ctxs.map(c => {
+    const linked = STATE.questions.filter(q => q.context_id === c.id);
+    const jumpLinks = linked.length
+      ? linked.map(q => `<span class="jump-q" data-jump-q="${q._id}">Q${esc(q.number)}</span>`).join(", ")
+      : `<span class="muted">not linked yet</span>`;
+    const pages = (c.pages || []).slice().sort((a,b)=>a-b);
+    return `
+      <div class="row-item" data-ctx-id="${esc(c.id)}">
+        <input type="text" data-cases-edit="title" data-ctx="${esc(c.id)}"
+               value="${esc(c.title || "")}" placeholder="${esc(c.id)} — add a label…"
+               title="Optional human label for this context, shown wherever it's picked from a list">
+        <span class="muted">p${pages.length ? pages.join(", p") : "?"}</span>
+        <span style="flex:1">${jumpLinks}</span>
+        <button class="ghost btn-tiny" data-cases-act="del" data-ctx="${esc(c.id)}"
+                title="Delete this context (unlinks from every question that referenced it)">🗑</button>
+      </div>`;
+  }).join("");
+  return `
+    <details class="cases-panel" id="casesPanel" ${casesPanelOpen ? "open" : ""}>
+      <summary>📎 Case studies in this PDF (${ctxs.length})</summary>
+      ${rows}
+    </details>`;
+}
+
+function bindCasesPanelEvents(){
+  const panel = document.getElementById("casesPanel");
+  if(!panel) return;
+  panel.addEventListener("toggle", () => { casesPanelOpen = panel.open; });
+  panel.querySelectorAll("[data-cases-edit=title]").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const c = findContext(inp.dataset.ctx);
+      if(c){ c.title = inp.value; setDirty(true); }
+    });
+  });
+  panel.querySelectorAll("[data-cases-act=del]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.ctx;
+      if(!confirm(`Delete context "${id}" and unlink it from every question that referenced it?`)) return;
+      _undoSnapshot(`delete context ${id}`);
+      annDeleteContext(id);
+      setDirty(true); renderCards();
+    });
+  });
+  panel.querySelectorAll("[data-jump-q]").forEach(el => {
+    el.addEventListener("click", () => {
+      const q = STATE.questions.find(x => x._id === Number(el.dataset.jumpQ));
+      if(!q) return;
+      focusedId = q._id;
+      curPage = q.page || curPage;
+      renderCards();
+      setTimeout(() => {
+        const card = document.querySelector(".q-card.focused");
+        if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
+      }, 30);
+    });
+  });
 }
 
 function contextCardHTML(c){
@@ -1034,8 +1264,11 @@ function contextCardHTML(c){
               title="Shared context block. Pages: ${pages.join(", ")}.">
           📎 ${esc(c.id)} · p${pages.join(", p")}
         </span>
+        <input type="text" data-ctx-edit="title" data-ctx="${c.id}"
+               value="${esc(c.title || "")}" placeholder="add a label…"
+               style="flex:0 1 200px;padding:2px 6px;font-size:11px">
         <span class="muted" style="font-size:11px;margin-left:6px">
-          ${usedBy ? `used by ${usedBy}` : "not linked yet — pick from a question's Context dropdown"}
+          ${usedBy ? `used by ${usedBy}` : "not linked yet — select questions and use \"Group questions\" to assign several at once"}
         </span>
         <span style="flex:1"></span>
         ${spanPrev}
@@ -1078,11 +1311,11 @@ function bindContextEvents(){
         }
       }
     });
-    // Text edit
-    card.querySelectorAll("[data-ctx-edit=text]").forEach(ta => {
-      ta.addEventListener("input", () => {
+    // Text / title edit
+    card.querySelectorAll("[data-ctx-edit]").forEach(el => {
+      el.addEventListener("input", () => {
         const c = findContext(id);
-        if(c){ c.text = ta.value; setDirty(true); }
+        if(c){ c[el.dataset.ctxEdit] = el.value; setDirty(true); }
       });
     });
     // Action buttons
@@ -1239,14 +1472,14 @@ function cardHTML(q){
   // Context selector + preview (for shared passages/diagrams across many Qs)
   const ctxOpts = [`<option value="" ${!q.context_id ? "selected" : ""}>(no shared context)</option>`]
     .concat((ANN.contexts || []).map(c =>
-      `<option value="${esc(c.id)}" ${q.context_id === c.id ? "selected" : ""}>${esc(c.id)} — ${esc((c.text||"").slice(0, 50))}…</option>`))
+      `<option value="${esc(c.id)}" ${q.context_id === c.id ? "selected" : ""}>${esc(c.title || c.id)} — ${esc((c.text||"").slice(0, 50))}…</option>`))
     .join("");
   const linkedCtx = q.context_id ? findContext(q.context_id) : null;
   const ctxPreview = linkedCtx ? `
     <div class="ctx-preview" data-ctx-id="${linkedCtx.id}"
          title="Shared context — edit it in the panel at the top of this page.">
       <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">
-        Context · ${esc(linkedCtx.id)} · p${(linkedCtx.pages||[]).join(", p")}
+        Context · ${esc(linkedCtx.title || linkedCtx.id)} · p${(linkedCtx.pages||[]).join(", p")}
       </div>
       <div style="font-size:13px;line-height:1.45">${esc((linkedCtx.text || "").slice(0, 400))}${(linkedCtx.text||"").length > 400 ? "…" : ""}</div>
       ${(linkedCtx.images || []).length ? `
@@ -1254,9 +1487,14 @@ function cardHTML(q){
           ${linkedCtx.images.map(fn => `<div class="imgbox"><img src="${IMG_BASE}/${esc(fn)}" title="${esc(fn)}"></div>`).join("")}
         </div>` : ""}
     </div>` : "";
+  const isSelected = SELECTED_QNUMS.has(q.number);
+  const selCheck = SELECTION_MODE
+    ? `<input type="checkbox" class="sel-check" data-act="toggleSelect" ${isSelected ? "checked" : ""}
+              title="Select this question for bulk context assignment">` : "";
   return `
-  <div class="q-card ${isFocused ? "focused":""}" data-id="${q._id}">
+  <div class="q-card ${isFocused ? "focused":""} ${SELECTION_MODE ? "sel-mode":""} ${isSelected ? "sel-picked":""}" data-id="${q._id}">
     <div class="row tight">
+      ${selCheck}
       <button data-act="toggleCollapse" title="Collapse this card to a single-line summary" class="ghost btn-tiny"
               style="background:transparent;border:none;font-size:14px;padding:0 6px;cursor:pointer">▼</button>
       <input type="text" class="q-num" data-edit="number" value="${esc(q.number)}" placeholder="#">
@@ -1315,7 +1553,15 @@ function bindCardEvents(){
   document.querySelectorAll(".q-card").forEach(card => {
     const id = card.dataset.id;
     card.addEventListener("click", e => {
-      // Image assignment first (highest priority)
+      // Selection mode (grouping questions into a context) takes priority
+      // over normal focus — clicking anywhere on the card (outside an
+      // input/button) toggles its checkbox.
+      if(SELECTION_MODE && !e.target.closest("input,textarea,button,select,.x")){
+        const q = findQ(id);
+        if(q) toggleQSelection(q.number);
+        return;
+      }
+      // Image assignment next (highest priority among the rest)
       if(selectedImage && !e.target.closest("input,textarea,button,select,.x")){
         const q = findQ(id);
         if(q && !(q.images||[]).includes(selectedImage)){
@@ -1419,7 +1665,9 @@ function bindCardEvents(){
         ev.stopPropagation();
         const q = findQ(id);
         const act = el.dataset.act;
-        if(act === "delQ"){
+        if(act === "toggleSelect"){
+          toggleQSelection(q.number);
+        } else if(act === "delQ"){
           if(!confirm(`Delete question #${q.number}?`)) return;
           _undoSnapshot(`delete Q#${q.number}`);
           annDeleteQuestion(q.number);
@@ -2048,8 +2296,16 @@ function applyCapture(mode, j, text){
     const id = `ctx_${nextContextId++}`;
     const ctx = { id, text, images: [], pages: [curPage] };
     annAddContext(ctx);
-    setDirty(true); renderCards();
-    setStatus(`Created context ${id} from this region. Pick it from a question's "Context" dropdown to link.`, "ok");
+    setDirty(true);
+    // If questions were already selected via "Group questions" mode, this
+    // capture is the second half of the questions-first workflow — auto-link
+    // immediately instead of making the user revisit the dropdown.
+    if(SELECTED_QNUMS.size > 0){
+      assignSelectionToContext(id);
+    } else {
+      renderCards();
+      setStatus(`Created context ${id} from this region. Pick it from a question's "Context" dropdown to link, or select questions first and use "Group questions" to assign several at once.`, "ok");
+    }
     return;
   }
   if(mode.field === "newQ"){
