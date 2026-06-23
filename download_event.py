@@ -24,9 +24,11 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import requests
 
+import jobs
 from events import get_event, EVENTS
 
 TESTS_JSON   = Path(__file__).parent / "scioly_tests.json"
@@ -176,7 +178,12 @@ def _make_session() -> requests.Session:
 
 def download_all(event_slug: str, skip_existing: bool = True,
                  bypass_bot: bool = True,
-                 bypass_headless: bool = False) -> bool:
+                 bypass_headless: bool = False,
+                 should_cancel: Callable[[], bool] = lambda: False,
+                 on_progress: Callable[..., None] = lambda **kw: None) -> bool:
+    """`should_cancel`/`on_progress` are optional job-queue hooks (see
+    jobs.py), checked/called once per target PDF — the CLI entry point
+    (main(), below) doesn't pass them, so direct/CLI use is unaffected."""
     event = get_event(event_slug)
     out_dir = event.base_dir
     out_dir.mkdir(exist_ok=True)
@@ -193,6 +200,9 @@ def download_all(event_slug: str, skip_existing: bool = True,
     ok, skipped, failed = 0, 0, []
     i = 0
     while i < len(targets):
+        if should_cancel():
+            raise jobs.JobCancelled()
+        on_progress(phase=f"downloading {i+1}/{len(targets)}", done=i, total=len(targets))
         t = targets[i]
         dest = out_dir / t["filename"]
         if skip_existing and dest.exists() and dest.stat().st_size > 1000:

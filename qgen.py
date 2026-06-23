@@ -15,7 +15,10 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from typing import Callable
+
 import build_question_bank as bqb
+import jobs
 import llm_providers
 
 
@@ -147,6 +150,8 @@ def generate_questions(
     existing_questions: list[dict] | None = None,
     max_chunks: int = 1,
     keys: dict | None = None,
+    should_cancel: Callable[[], bool] = lambda: False,
+    on_progress: Callable[..., None] = lambda **kw: None,
 ) -> dict:
     """
     Returns:
@@ -161,6 +166,11 @@ def generate_questions(
     `keys`: optional per-provider API keys (browser-supplied, see
     review_app._request_llm_keys); defaults to the server's own
     ANTHROPIC_API_KEY when omitted, so CLI/batch callers are unaffected.
+
+    `should_cancel`/`on_progress`: optional job-queue hooks (see jobs.py),
+    checked/called once per chunk — each chunk is one LLM call, the only
+    unit of work here slow enough to need them. Both default to no-ops so
+    direct/CLI callers are unaffected.
     """
     types = types or ["mc", "short", "numerical"]
     types = [t for t in types if t in _TYPE_HINTS]
@@ -188,6 +198,9 @@ def generate_questions(
     out_max_tokens = min(16000, 600 + 550 * n * max(1, len(chunks)))
 
     for ci, chunk in enumerate(chunks):
+        if should_cancel():
+            raise jobs.JobCancelled()
+        on_progress(phase=f"generating chunk {ci+1}/{len(chunks)}", done=ci, total=len(chunks))
         prompt = _build_prompt(chunk, n, types, list(bqb.EVENT.topics), avoid_samples)
         try:
             result = llm_providers.chat(

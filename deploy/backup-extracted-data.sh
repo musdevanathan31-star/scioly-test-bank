@@ -56,6 +56,17 @@ for slug in "${EVENTS[@]}"; do
     mkdir -p "$DATABANK_DIR/$slug/images"
     rsync -a --delete "$APP_DIR/$slug/images/" "$DATABANK_DIR/$slug/images/"
   fi
+  # Job history/logs (jobs.py) — same backup tier as .qbank_state.json.
+  # Small JSON + per-job text logs; useful for post-mortems ("why did last
+  # week's reprocess fail") even though it's not user content like
+  # questions/annotations. --delete matches the images/ rationale above —
+  # a job that's aged out of the live index (see jobs.py's retention cap)
+  # shouldn't linger forever in the backup either.
+  [ -f "$APP_DIR/$slug/.qbank_jobs.json" ] && cp "$APP_DIR/$slug/.qbank_jobs.json" "$DATABANK_DIR/$slug/"
+  if [ -d "$APP_DIR/$slug/.qbank_jobs" ]; then
+    mkdir -p "$DATABANK_DIR/$slug/.qbank_jobs"
+    rsync -a --delete "$APP_DIR/$slug/.qbank_jobs/" "$DATABANK_DIR/$slug/.qbank_jobs/"
+  fi
 done
 [ -f "$APP_DIR/events_custom.json" ] && cp "$APP_DIR/events_custom.json" "$DATABANK_DIR/"
 

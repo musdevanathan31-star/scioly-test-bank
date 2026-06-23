@@ -187,7 +187,8 @@ python download_event.py --event <slug> --reauth
 | `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
 | `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape |
 | `review_app.py` | Flask review UI — single server, multi-event, with a Generate page (sources + LLM generation) per event |
-| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`) |
+| `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
+| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`) |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
 | `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
 | `.env.example` | Template for the Anthropic API key |
@@ -349,6 +350,19 @@ The review page's **Reprocess ▾** menu offers three modes:
 | Re-extract · wipe annotations | Start from scratch — discards every field edit / delete / image move for this PDF. |
 | Manual · region-by-region | Wipes all questions; you then drag a region on each page to build new questions. Multi-page (Shift+drag) supported. A "Try Haiku" fallback appears after each capture so you can re-extract via vision when pure-Python struggles. |
 
+(Manual mode itself is instant — it just empties the question list — but the other two re-run extraction, which is where the background-job system below kicks in.)
+
+## Background jobs
+
+The server this app runs on is intentionally underpowered, and several operations — PDF extraction with vision OCR, scio.ly scraping/downloading, LLM question generation, wiki scraping — can take anywhere from seconds to several minutes. Those run as **background jobs** (`jobs.py`) instead of blocking your browser:
+
+- **Reprocess** (single PDF and bulk), **upload a test PDF**, **download PDFs from scioly.org**, **scrape scio.ly candidates**, **generate questions** (the full-document/textbook-chapter flow), and **scrape the wiki** all enqueue a job and immediately return — you get a job id, and a progress window opens showing live phase/progress-bar/console output (the same `print()` lines you'd see running the CLI directly) without you having to stay on that page.
+- **Exactly one job runs at a time, globally**, across every event — this machine can't do two PDF extractions or vision-OCR loads concurrently. Anything else queues (FIFO) until the running job finishes; queueing more than ~8 jobs on one event gets refused (HTTP 429) rather than piling up unboundedly.
+- **Cancellation** is cooperative (checked between PDF pages, between LLM chunks/candidates, etc. — not a hard kill) and available to the job's own starter or **any coach**, matching the same trust model as user management elsewhere in the app.
+- **Jobs survive a server restart's bookkeeping, but not the work itself**: job status/progress/console output is written to disk (`<event>/.qbank_jobs.json` + `<event>/.qbank_jobs/<job_id>.log`), so a `systemctl restart qbank` (every code deploy does this) doesn't erase job history — but a job that was actually running when the process died comes back as **"interrupted"**, not silently resumed. Just re-trigger the same action; PDF vision-OCR results are checkpointed page-by-page as they're produced, so re-running after an interruption only re-does the page that was in flight, not the whole PDF.
+- **Visibility**: anyone with access to an event sees that event's job history and full console output via its **Jobs** page (linked from the PDF list) — same access rule as everything else (`_select_event`), no extra restriction. Coaches additionally get a cross-event **All jobs** dashboard (`/admin/jobs`). A small badge in the header shows how many jobs are currently running/queued across whatever you can see, so a job that outlives you logging out and back in is easy to find again.
+- Short, single-LLM-call actions (validate one question, capture one region, one diagram-chat message, OCR a single page) are deliberately **not** jobs — they finish within one request and just show a normal spinner.
+
 ## Cost notes
 
 Vision calls go to `claude-haiku-4-5-20251001` (cheapest with vision). Rough per-PDF cost when vision is enabled:
@@ -444,7 +458,7 @@ Running behind a residential router instead of a cloud VM needs a few extra piec
 
 See ["Production deployment (current state)"](#production-deployment-current-state) for the actual repo/bucket names currently in use. Per instance, two complementary mechanisms, neither touching `.env`/`auth_users.json` (handle those separately — see below):
 
-- **[`deploy/backup-extracted-data.sh`](deploy/backup-extracted-data.sh)** copies each event's `.qbank_state.json`/`question_bank.md` + `events_custom.json` into a private GitHub repo clone and commits — git gives line-level diffs and full history for free, which matters for text/JSON the way it doesn't for binaries. Commit messages are generated by [`deploy/qbank-commit-message.py`](deploy/qbank-commit-message.py), which diffs each question's `lastEditedBy`/`lastEditedDateTime` between the previous commit and the fresh copy, so `git log --oneline` reads like a changelog (`circuit_lab: Q5 edited by srikanth`) without ever opening a diff. Safe to run often (cron every 1-2 hours) — backing up more frequently is strictly safer.
+- **[`deploy/backup-extracted-data.sh`](deploy/backup-extracted-data.sh)** copies each event's `.qbank_state.json`/`question_bank.md` + `events_custom.json` + job history (`.qbank_jobs.json`/`.qbank_jobs/`, see "Background jobs" above) into a private GitHub repo clone and commits — git gives line-level diffs and full history for free, which matters for text/JSON the way it doesn't for binaries. Commit messages are generated by [`deploy/qbank-commit-message.py`](deploy/qbank-commit-message.py), which diffs each question's `lastEditedBy`/`lastEditedDateTime` between the previous commit and the fresh copy, so `git log --oneline` reads like a changelog (`circuit_lab: Q5 edited by srikanth`) without ever opening a diff. Safe to run often (cron every 1-2 hours) — backing up more frequently is strictly safer.
 - **[`deploy/backup-bulk-data.sh`](deploy/backup-bulk-data.sh)** backs up everything else (PDFs, `images/`, `texts/`, `textbooks/`) to S3 via [`restic`](https://restic.net/) — client-side encrypted (S3 itself never sees plaintext), deduplicated, with `--keep-daily/weekly/monthly` retention pruning. Discovers event directories dynamically (anything with a `.qbank_state.json`, for the git script; anything that isn't a known code directory, for this one) rather than a hardcoded list, so new events need no script changes.
 - Both scripts read their destination credentials (GitHub PAT, AWS keys, restic password) from `/opt/qbank/backup/.env` — a separate file from the app's own `.env`, never read by `review_app.py`/gunicorn, so a future app-level bug can't also leak backup-destination access.
 - **The restic repository password is the single most critical secret in this design** — losing it makes the entire S3 backup permanently undecryptable even though the encrypted data is still sitting there. Keep it in a password manager, never only on the server.

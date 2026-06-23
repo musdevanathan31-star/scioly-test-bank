@@ -1,0 +1,124 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Jobs · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.list-wrap{padding:18px}
+table{width:100%;border-collapse:collapse;background:#fff;
+  border:1px solid var(--line);border-radius:6px;overflow:hidden}
+th,td{padding:9px 14px;border-bottom:1px solid var(--line);text-align:left;
+  font-size:13px;vertical-align:middle}
+th{background:#fafafa;font-weight:600;color:#444}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafbfc}
+.numcell{text-align:right;font-variant-numeric:tabular-nums}
+.job-label{font-weight:500}
+.job-kind{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
+  <h1>{{ event_name }} — Jobs</h1>
+  <span id="status" class="muted"></span>
+  {% include "_user_badge.html" %}
+</header>
+<div class="list-wrap">
+  <p class="muted">Long-running operations (PDF reprocess, scio.ly download/scrape, LLM generation, wiki scrape)
+    run here in the background instead of blocking your browser. Only one runs at a time on this server —
+    everything else waits its turn in "queued". Anyone with access to this event can see a job's full
+    console output below; the job's starter or any coach can cancel it.</p>
+  <table id="tbl">
+    <thead><tr>
+      <th>Job</th><th>Status</th><th>Progress</th><th>Started by</th>
+      <th>Started</th><th class="numcell">Duration</th><th></th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+  </table>
+</div>
+<script>
+const EVENT_SLUG = "{{ event_slug }}";
+
+function escHtml(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+const STATUS_BADGE = {
+  queued:      ["muted", ""],
+  running:     ["badge edited", "⏳ "],
+  succeeded:   ["badge processed", "✓ "],
+  failed:      ["badge fresh", "⚠ "],
+  cancelled:   ["badge edited", "✕ "],
+  interrupted: ["badge fresh", "⚠ "],
+};
+
+function fmtDuration(job){
+  if(!job.started_at) return "";
+  const end = job.finished_at ? new Date(job.finished_at) : new Date();
+  const secs = Math.max(0, Math.round((end - new Date(job.started_at)) / 1000));
+  if(secs < 60) return secs + "s";
+  return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
+}
+
+function fmtWhen(iso){
+  if(!iso) return "";
+  try { return new Date(iso).toLocaleString(); } catch(e){ return iso; }
+}
+
+async function load(){
+  let j;
+  try {
+    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/jobs`);
+    j = await r.json();
+  } catch(e){
+    document.getElementById("rows").innerHTML =
+      `<tr><td colspan="7" class="muted">Failed to load jobs: ${escHtml(e.message)}</td></tr>`;
+    return;
+  }
+  const jobsList = j.jobs || [];
+  document.getElementById("rows").innerHTML = jobsList.length ? jobsList.map(job => {
+    const [cls, icon] = STATUS_BADGE[job.status] || ["muted", ""];
+    const progress = job.total
+      ? `${job.done_count} / ${job.total}`
+      : (job.status === "running" ? (job.phase || "working…") : "");
+    const active = job.status === "queued" || job.status === "running";
+    return `
+      <tr>
+        <td><div class="job-label">${escHtml(job.label)}</div>
+            <div class="job-kind">${escHtml(job.kind)}</div></td>
+        <td><span class="${cls}">${icon}${escHtml(job.status)}</span>
+            ${job.phase && job.status !== "running" ? "" : ""}</td>
+        <td>${escHtml(progress)}</td>
+        <td>${escHtml(job.started_by)}</td>
+        <td class="muted">${escHtml(fmtWhen(job.started_at || job.created_at))}</td>
+        <td class="numcell muted">${fmtDuration(job)}</td>
+        <td style="white-space:nowrap">
+          <button class="ghost" data-view="${job.id}">Console</button>
+          ${job.can_cancel && active
+            ? `<button class="danger" data-cancel="${job.id}">Cancel</button>` : ""}
+        </td>
+      </tr>`;
+  }).join("") : `<tr><td colspan="7" class="muted">No jobs yet for this event.</td></tr>`;
+
+  const anyActive = jobsList.some(job => job.status === "queued" || job.status === "running");
+  setTimeout(load, anyActive ? 2000 : 12000);
+}
+
+document.addEventListener("click", async e => {
+  const v = e.target.dataset.view;
+  if(v){
+    const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: v, title: "Job console"});
+    handle.onDone(() => load());
+    return;
+  }
+  const c = e.target.dataset.cancel;
+  if(c){
+    if(!confirm("Cancel this job?")) return;
+    try {
+      await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/jobs/${c}/cancel`, {method: "POST"});
+    } catch(err){ toast("Cancel failed: " + err.message, "err"); }
+    load();
+  }
+});
+
+load();
+</script>
+</body></html>

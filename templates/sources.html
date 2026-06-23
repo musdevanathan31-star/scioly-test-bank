@@ -172,44 +172,8 @@ Thermodynamics, 58"></textarea>
         <label><input type="checkbox" id="sc_frq" checked> FRQ</label>
       </div>
       <label class="types"><input type="checkbox" id="sc_validate" checked> Validate with Haiku</label>
-      <button id="btn_sc_scrape" class="primary" title="Fetch questions from scio.ly/practice for this event">Scrape</button>
-      <button id="btn_sc_scrape_cancel" class="danger" style="display:none" title="Abort the current scio.ly scrape">Cancel</button>
+      <button id="btn_sc_scrape" class="primary" title="Fetch questions from scio.ly/practice for this event — runs as a background job; a progress window opens">Scrape</button>
       <span class="muted" id="sc_cost" style="font-size:11px">est. cost: $0.00</span>
-    </div>
-  </div>
-
-  <div class="panel" id="scrape_progress" style="display:none">
-    <h2>Scraping <span class="spinner"></span></h2>
-    <p class="muted">
-      <span id="sc_phase">Hitting scio.ly API…</span>
-      Elapsed: <b id="sc_elapsed">0s</b>.
-    </p>
-  </div>
-
-  <!-- Full-screen blocking overlay shown while a scio.ly/practice scrape is
-       running. Prevents accidental input on a page that otherwise looks idle
-       (the scrape can take 30-120s for a 200-question batch with validation). -->
-  <div id="scrape_overlay" style="display:none;position:fixed;inset:0;
-       background:rgba(0,0,0,.55);z-index:400;align-items:center;
-       justify-content:center;padding:32px">
-    <div style="background:var(--bg-card);border:1px solid var(--line);
-         border-radius:10px;padding:24px 30px;min-width:380px;max-width:560px;
-         box-shadow:0 10px 40px rgba(0,0,0,.4);color:var(--fg)">
-      <h3 style="margin:0 0 6px 0">
-        Scraping scio.ly <span class="spinner"></span>
-      </h3>
-      <p class="muted" style="margin:0 0 14px 0;font-size:13px">
-        Pulling questions and validating with Haiku. Please don't navigate away.
-      </p>
-      <div style="font-size:13px;line-height:1.6">
-        <div><b>Phase:</b> <span id="sc_phase_modal">Hitting scio.ly API…</span></div>
-        <div><b>Elapsed:</b> <span id="sc_elapsed_modal">0s</span></div>
-        <div id="sc_progress_modal" class="muted" style="font-size:12px;margin-top:4px"></div>
-      </div>
-      <div style="text-align:right;margin-top:18px">
-        <button id="btn_sc_scrape_cancel_modal" class="danger"
-                title="Abort the current scio.ly scrape">Cancel scrape</button>
-      </div>
     </div>
   </div>
 
@@ -251,8 +215,7 @@ Thermodynamics, 58"></textarea>
         <label><input type="checkbox" id="t_short" checked> Short answer</label>
         <label><input type="checkbox" id="t_num" checked> Numerical</label>
       </div>
-      <button id="btn_generate" class="primary" title="Ask Haiku to draft N new questions from the picked source material">Generate</button>
-      <button id="btn_cancel" class="danger" style="display:none" title="Abort the in-progress generation">Cancel</button>
+      <button id="btn_generate" class="primary" title="Ask Haiku to draft N new questions from the picked source material — runs as a background job; a progress window opens">Generate</button>
       <span class="muted" id="gen_cost" style="font-size:11px">est. cost: $0.00</span>
     </div>
   </div>
@@ -262,15 +225,6 @@ Thermodynamics, 58"></textarea>
     <pre id="gen_preview_text" style="white-space:pre-wrap;font-size:12px;
         background:var(--bg-alt);padding:14px;border-radius:4px;
         max-height:400px;overflow:auto;line-height:1.4"></pre>
-  </div>
-
-  <div class="panel" id="gen_progress" style="display:none">
-    <h2>Generating <span class="spinner"></span></h2>
-    <p class="muted">
-      Calling <code id="prog_model">Haiku</code> with <span id="prog_n"></span> question(s) requested.
-      Elapsed: <b id="prog_elapsed">0s</b>.
-    </p>
-    <p class="muted" id="prog_phase">Sending request…</p>
   </div>
 
   <div class="panel" id="gen_results" style="display:none">
@@ -341,10 +295,14 @@ let KEPT = new Set();   // indices into LAST_RESULT.candidates that are still ac
 // ---------- Global busy-lock ----------
 // Disables every action button on this page while any async operation is
 // in flight, so two actions (e.g. Generate + Import) can't race against
-// each other or against a page reload mid-write. The 3 dedicated Cancel
-// buttons stay clickable so a long-running call can still be aborted.
+// each other or against a page reload mid-write. Only covers the brief
+// enqueue round-trip for job-backed actions (wiki scrape, scio.ly scrape,
+// generate) — the actual slow work happens server-side after that and is
+// tracked (with its own Cancel button) in the openJobProgress modal, not
+// here, so this lock no longer needs to stay held for a job's full
+// duration the way it used to for the old in-browser-await versions.
 let PAGE_BUSY = 0;
-const BUSY_EXEMPT_IDS = new Set(["btn_cancel", "btn_sc_scrape_cancel", "btn_sc_scrape_cancel_modal"]);
+const BUSY_EXEMPT_IDS = new Set();
 function pushBusy(){
   PAGE_BUSY++;
   if(PAGE_BUSY === 1) applyPageBusy(true);
@@ -453,12 +411,19 @@ async function loadSources(){
 
 document.getElementById("btn_scrape").addEventListener("click", async ()=>{
   pushBusy();
-  setStatusHtml(`Scraping wiki... <span class='spinner'></span>`);
+  setStatus("Queueing wiki scrape…");
   try {
     const r = await fetch(`${API}/sources/scrape-wiki`, {method:"POST"});
     const j = await r.json();
-    if(j.ok){ setStatus(`Wiki saved (${(j.size/1024).toFixed(1)} KB)`); loadSources(); }
-    else { setStatus("Error: " + (j.error || "scrape failed"), "err"); }
+    if(!j.ok){ setStatus("Error: " + (j.error || "scrape failed"), "err"); return; }
+    const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id, title: "Scraping wiki"});
+    handle.onDone(job => {
+      const r2 = job.result || {};
+      setStatus(job.status === "succeeded" ? `Wiki saved (${(r2.size/1024).toFixed(1)} KB)`
+                : `Scrape ${job.status}: ${job.error || ""}`,
+                job.status === "succeeded" ? "ok" : "err");
+      loadSources();
+    });
   } finally { popBusy(); }
 });
 
@@ -493,68 +458,8 @@ document.addEventListener("click", async e => {
 // ============================================================
 // scio.ly scraping
 // ============================================================
-let SC_BUSY = false;
-let SC_ABORT = null;
-let SC_TIMER = null;
 let SC_RESULT = null;
 let SC_KEEP = new Set();   // indices of kept candidates in SC_RESULT.candidates
-
-function setScBusy(busy){
-  SC_BUSY = busy;
-  const btnS = document.getElementById("btn_sc_scrape");
-  const btnC = document.getElementById("btn_sc_scrape_cancel");
-  const prog = document.getElementById("scrape_progress");
-  const ovr  = document.getElementById("scrape_overlay");
-  btnS.disabled = busy;
-  btnS.textContent = busy ? "Scraping…" : "Scrape";
-  btnC.style.display = busy ? "" : "none";
-  prog.style.display = busy ? "" : "none";
-  if(ovr) ovr.style.display = busy ? "flex" : "none";
-  const reqCount = parseInt(document.getElementById("sc_n")?.value || "0") || 0;
-  const validateOn = !!document.getElementById("sc_validate")?.checked;
-  const progLine = document.getElementById("sc_progress_modal");
-  if(progLine){
-    progLine.textContent = reqCount
-      ? `Requested: ${reqCount} questions${validateOn ? " · Haiku validation ON (slower)" : ""}`
-      : "";
-  }
-  if(busy){
-    const t0 = Date.now();
-    const phaseEl = document.getElementById("sc_phase");
-    const elapsedEl = document.getElementById("sc_elapsed");
-    const phaseElModal = document.getElementById("sc_phase_modal");
-    const elapsedElModal = document.getElementById("sc_elapsed_modal");
-    if(phaseEl) phaseEl.textContent = "Hitting scio.ly API…";
-    if(elapsedEl) elapsedEl.textContent = "0s";
-    if(phaseElModal) phaseElModal.textContent = "Hitting scio.ly API…";
-    if(elapsedElModal) elapsedElModal.textContent = "0s";
-    clearInterval(SC_TIMER);
-    SC_TIMER = setInterval(() => {
-      const s = Math.round((Date.now() - t0)/1000);
-      const phaseTxt =
-        (s < 3)              ? "Hitting scio.ly API…" :
-        (s < 10)             ? "Fetching question batches…" :
-        (s < 30 && validateOn) ? "Validating answers with Haiku (this is the slow part)…" :
-        (s < 30)             ? "Processing candidates…" :
-        (validateOn)         ? "Still working — large batches with validation can take a minute or two." :
-                               "Still working…";
-      const elapsedTxt = s + "s";
-      if(elapsedEl) elapsedEl.textContent = elapsedTxt;
-      if(phaseEl)   phaseEl.textContent = phaseTxt;
-      if(elapsedElModal) elapsedElModal.textContent = elapsedTxt;
-      if(phaseElModal)   phaseElModal.textContent = phaseTxt;
-    }, 1000);
-  } else {
-    clearInterval(SC_TIMER); SC_TIMER = null;
-  }
-}
-
-document.getElementById("btn_sc_scrape_cancel").addEventListener("click", () => {
-  if(SC_ABORT) SC_ABORT.abort();
-});
-document.getElementById("btn_sc_scrape_cancel_modal").addEventListener("click", () => {
-  if(SC_ABORT) SC_ABORT.abort();
-});
 
 // --- sortable sources table ---
 window._srcSort = null;
@@ -706,7 +611,6 @@ window.addEventListener("drop", async e => {
 });
 
 document.getElementById("btn_sc_scrape").addEventListener("click", async () => {
-  if(SC_BUSY) return;
   let event_name = document.getElementById("sc_event").value.trim();
   const count = parseInt(document.getElementById("sc_n").value) || 20;
   const division = document.getElementById("sc_div").value;
@@ -729,63 +633,64 @@ document.getElementById("btn_sc_scrape").addEventListener("click", async () => {
   if(types.length === 0){ setStatus("Pick MCQ, FRQ, or both", "err"); return; }
 
   pushBusy();
+  document.getElementById("scrape_results").style.display = "none";
+  setStatus(`Queueing scrape of ${count} candidate(s) from scio.ly…`);
+  let j;
   try {
-    setScBusy(true);
-    document.getElementById("scrape_results").style.display = "none";
-    setStatus(`Scraping ${count} candidate(s) from scio.ly…`);
-    SC_ABORT = new AbortController();
-    let r, j;
-    try {
-      r = await fetch(`${API}/scioly/scrape`, {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({event_name, count, types, division, validate, focus}),
-        signal: SC_ABORT.signal,
-      });
-      j = await r.json();
-    } catch (err) {
-      setScBusy(false);
-      if(err.name === "AbortError") setStatus("Scrape cancelled.", "err");
-      else setStatus("Scrape failed: " + (err.message || err), "err");
-      return;
-    } finally {
-      SC_ABORT = null;
-    }
-    setScBusy(false);
+    const r = await fetch(`${API}/scioly/scrape`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({event_name, count, types, division, validate, focus}),
+    });
+    j = await r.json();
+  } catch (err) {
+    popBusy();
+    setStatus("Scrape failed: " + (err.message || err), "err");
+    return;
+  }
+  popBusy();
+  if(j.error){
+    setStatus("scio.ly error: " + esc(j.error), "err");
+    return;
+  }
 
-    if(j.error){
-      setStatus("scio.ly error: " + esc(j.error), "err");
+  const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id,
+                                  title: `Scraping ${count} candidate(s) from scio.ly`});
+  handle.onDone(job => {
+    if(job.status !== "succeeded"){
+      setStatus(`Scrape ${job.status}: ${job.error || ""}`, "err");
       return;
     }
-    if(!j.candidates || j.candidates.length === 0){
-      if(j.rejected_text_dups && j.rejected_text_dups.length){
+    const r = job.result || {};
+    if(!r.candidates || r.candidates.length === 0){
+      if(r.rejected_text_dups && r.rejected_text_dups.length){
         // We did get results, but they all looked like questions already in the bank.
         // Show the rejected list so the user can inspect what matched.
-        SC_RESULT = j;
+        SC_RESULT = r;
         SC_KEEP = new Set();
         renderScrapeResults();
-        setStatus(`scio.ly returned ${j.raw_count || 0} question(s), but all were duplicates of existing bank entries (see rejected list).`, "err");
-      } else if(j.skipped_id_dups){
+        setStatus(`scio.ly returned ${r.raw_count || 0} question(s), but all were duplicates of existing bank entries (see rejected list).`, "err");
+      } else if(r.skipped_id_dups){
         setStatus(`scio.ly returned only questions already scraped before. Try again to walk deeper into the archive.`, "err");
       } else {
-        setStatus(`scio.ly returned 0 questions for "${esc(j.event_name)}". Check the event name (e.g. "Anatomy - Endocrine") or division.`, "err");
+        setStatus(`scio.ly returned 0 questions for "${esc(r.event_name)}". Check the event name (e.g. "Anatomy - Endocrine") or division.`, "err");
       }
       return;
     }
 
-    SC_RESULT = j;
-    SC_KEEP = new Set(j.candidates.map((_, i) => i));
+    SC_RESULT = r;
+    SC_KEEP = new Set(r.candidates.map((_, i) => i));
     renderScrapeResults();
-    let parts = [`<b>${j.candidates.length}</b> scraped from scio.ly`];
-    if(j.skipped_id_dups){
-      parts.push(`${j.skipped_id_dups} skipped (already scraped before)`);
+    let parts = [`<b>${r.candidates.length}</b> scraped from scio.ly`];
+    if(r.skipped_id_dups){
+      parts.push(`${r.skipped_id_dups} skipped (already scraped before)`);
     }
-    if(j.rejected_text_dups && j.rejected_text_dups.length){
-      parts.push(`${j.rejected_text_dups.length} rejected as duplicates of existing bank`);
+    if(r.rejected_text_dups && r.rejected_text_dups.length){
+      parts.push(`${r.rejected_text_dups.length} rejected as duplicates of existing bank`);
     }
-    if(j.validated) parts.push(`validated with Haiku`);
+    if(r.validated) parts.push(`validated with Haiku`);
     setStatus(parts.join(" · "));
-  } finally { popBusy(); }
+  });
 });
 
 function wordDiff(a, b){
@@ -1023,43 +928,6 @@ document.getElementById("sc_accept").addEventListener("click", async () => {
 // ============================================================
 // LLM question generation
 // ============================================================
-let GEN_BUSY = false;
-let GEN_ABORT = null;
-let GEN_TIMER = null;
-
-function setGenBusy(busy, n){
-  GEN_BUSY = busy;
-  const btnG = document.getElementById("btn_generate");
-  const btnC = document.getElementById("btn_cancel");
-  const prog = document.getElementById("gen_progress");
-  btnG.disabled = busy;
-  btnG.textContent = busy ? "Generating…" : "Generate";
-  btnC.style.display = busy ? "" : "none";
-  prog.style.display = busy ? "" : "none";
-  if(busy){
-    document.getElementById("prog_n").textContent = n;
-    document.getElementById("prog_phase").textContent = "Sending request to Haiku…";
-    const t0 = Date.now();
-    document.getElementById("prog_elapsed").textContent = "0s";
-    clearInterval(GEN_TIMER);
-    GEN_TIMER = setInterval(() => {
-      const s = Math.round((Date.now() - t0) / 1000);
-      document.getElementById("prog_elapsed").textContent = s + "s";
-      const phase = document.getElementById("prog_phase");
-      if(s >= 3 && s < 20) phase.textContent = "Waiting for Haiku to draft questions…";
-      else if(s >= 20 && s < 45) phase.textContent = "Still drafting (long prompts can take a while)…";
-      else if(s >= 45) phase.textContent = "Taking longer than usual — you can Cancel if needed.";
-    }, 1000);
-  } else {
-    clearInterval(GEN_TIMER);
-    GEN_TIMER = null;
-  }
-}
-
-document.getElementById("btn_cancel").addEventListener("click", () => {
-  if(GEN_ABORT) GEN_ABORT.abort();
-});
-
 // --- Import generated questions from JSON ---
 document.getElementById("imp_file").addEventListener("change", async (e) => {
   const f = e.target.files && e.target.files[0];
@@ -1192,7 +1060,6 @@ function renderImportedQuestions(questions){
 }
 
 document.getElementById("btn_generate").addEventListener("click", async () => {
-  if(GEN_BUSY) return;
   const source = document.getElementById("gen_source").value;
   const n = parseInt(document.getElementById("gen_n").value) || 5;
   const types = [];
@@ -1215,82 +1082,81 @@ document.getElementById("btn_generate").addEventListener("click", async () => {
   }
 
   pushBusy();
+  document.getElementById("gen_results").style.display = "none";
+  setStatus(`Queueing generation of ${n} candidate(s)…`);
+  let j;
   try {
-    setGenBusy(true, n);
-    document.getElementById("gen_results").style.display = "none";
-    setStatus(`Generating ${n} candidate(s)…`);
+    const r = await fetch(`${API}/generate`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(genBody),
+    });
+    j = await r.json();
+  } catch(err){
+    popBusy();
+    setStatus("Generation failed: " + esc(err.message), "err");
+    return;
+  }
+  popBusy();
+  if(j.error){
+    setStatus("Error: " + esc(j.error), "err");
+    return;
+  }
 
-    GEN_ABORT = new AbortController();
-    let r, j, raw;
-    try{
-      r = await fetch(`${API}/generate`, {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify(genBody),
-        signal: GEN_ABORT.signal,
-      });
-      raw = await r.text();
-      try { j = JSON.parse(raw); }
-      catch(e){
-        throw new Error(`Server returned non-JSON (HTTP ${r.status}): ${raw.slice(0, 200)}`);
-      }
-    } catch(err){
-      setGenBusy(false);
-      if(err.name === "AbortError"){
-        setStatus("Generation cancelled.", "err");
-      } else {
-        setStatus("Generation failed: " + esc(err.message), "err");
-      }
+  const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id,
+                                  title: `Generating ${n} candidate(s)`});
+  handle.onDone(job => {
+    if(job.status !== "succeeded"){
+      setStatus(`Generation ${job.status}: ${job.error || ""}`, "err");
       return;
-    } finally {
-      GEN_ABORT = null;
     }
-    setGenBusy(false);
-
-    // Server-reported error (e.g. LLM parse failed, max_tokens hit)
-    if(j.error){
-      let msg = `<b>Error:</b> ${esc(j.error)}`;
-      if(j.stop_reason) msg += ` <span class="muted">(stop_reason=${esc(j.stop_reason)})</span>`;
-      if(j.out_max_tokens) msg += ` <span class="muted">[max_tokens=${j.out_max_tokens}]</span>`;
-      setStatus(msg, "err");
-      if(j.raw_response){
+    const r = job.result || {};
+    // qgen never raises on an LLM-level problem (parse failure, max_tokens
+    // hit, no key) — it returns {error: ...} instead, so the job itself
+    // still shows "succeeded" and the real outcome is in here.
+    if(r.error){
+      let msg = `<b>Error:</b> ${esc(r.error)}`;
+      if(r.stop_reason) msg += ` <span class="muted">(stop_reason=${esc(r.stop_reason)})</span>`;
+      if(r.out_max_tokens) msg += ` <span class="muted">[max_tokens=${r.out_max_tokens}]</span>`;
+      setStatusHtml(msg, "err");
+      if(r.raw_response){
         const root = document.getElementById("candidates");
         document.getElementById("gen_results").style.display = "block";
         document.getElementById("gen_meta").textContent = "· generation failed — raw LLM response below";
         root.innerHTML = `<div class="cand rejected">
           <div class="row"><span class="muted">No candidates parsed from this response</span></div>
-          <pre style="white-space:pre-wrap;font-size:11px;background:#f7f0f0;padding:10px;border-radius:4px;max-height:300px;overflow:auto">${esc(j.raw_response)}</pre>
+          <pre style="white-space:pre-wrap;font-size:11px;background:#f7f0f0;padding:10px;border-radius:4px;max-height:300px;overflow:auto">${esc(r.raw_response)}</pre>
         </div>`;
         document.getElementById("rejected").innerHTML = "";
       }
       return;
     }
 
-    LAST_RESULT = j;
-    KEPT = new Set(j.candidates.map((_, i) => i));
+    LAST_RESULT = r;
+    KEPT = new Set(r.candidates.map((_, i) => i));
     renderCandidates();
 
-    const parts = [`Got <b>${j.candidates.length}</b> candidate(s)`];
-    if(j.rejected && j.rejected.length){
-      parts.push(`${j.rejected.length} auto-rejected`);
+    const parts = [`Got <b>${r.candidates.length}</b> candidate(s)`];
+    if(r.rejected && r.rejected.length){
+      parts.push(`${r.rejected.length} auto-rejected`);
     }
-    if(j.warnings && j.warnings.length){
-      parts.push(`<span style="color:var(--warn)">${j.warnings.length} warning(s)</span>`);
+    if(r.warnings && r.warnings.length){
+      parts.push(`<span style="color:var(--warn)">${r.warnings.length} warning(s)</span>`);
     }
-    if(j.candidates.length === 0){
+    if(r.candidates.length === 0){
       let hint = "No candidates. ";
-      if(j.warnings && j.warnings.length){
-        hint += j.warnings[0];
-      } else if(j.raw_count === 0){
+      if(r.warnings && r.warnings.length){
+        hint += r.warnings[0];
+      } else if(r.raw_count === 0){
         hint += "Haiku returned 0 questions. Try a different source or fewer types.";
-      } else if(j.rejected && j.rejected.length === j.raw_count){
-        hint += `All ${j.raw_count} candidates rejected (mostly duplicates). Try a fresh source or smaller n.`;
+      } else if(r.rejected && r.rejected.length === r.raw_count){
+        hint += `All ${r.raw_count} candidates rejected (mostly duplicates). Try a fresh source or smaller n.`;
       }
       setStatus(hint, "err");
     } else {
-      setStatus(parts.join(" · "));
+      setStatusHtml(parts.join(" · "));
     }
-  } finally { popBusy(); }
+  });
 });
 
 function renderCandidates(){

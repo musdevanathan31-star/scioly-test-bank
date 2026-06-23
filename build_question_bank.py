@@ -34,10 +34,12 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import Callable
 
 import fitz  # PyMuPDF
 import pdf_safety
 
+import jobs
 import llm_providers
 
 # ---------------------------------------------------------------------------
@@ -1369,7 +1371,19 @@ def _pdf_name_meta(pdf: Path) -> tuple[str, str, str]:
 
 
 def process_pair(test_pdf: Path, key_pdf: Path | None,
-                 state: dict, use_vision: bool) -> list[dict]:
+                 state: dict, use_vision: bool,
+                 should_cancel: Callable[[], bool] = lambda: False,
+                 on_progress: Callable[..., None] = lambda **kw: None) -> list[dict]:
+    """`should_cancel`/`on_progress` are optional job-queue hooks (see
+    jobs.py) — checked/called only inside the vision-OCR loops below, the
+    only parts of this function slow enough to need them. Both default to
+    no-ops so the CLI (main(), which calls this directly) is unaffected.
+
+    Each vision-OCR'd page is checkpoint-saved into `state` immediately
+    (instead of only once at the very end, as before) — interrupting a long
+    extraction now only loses the in-flight page, not every page completed
+    so far, since vision_cache already persisted is what makes re-running
+    after an interruption cheap rather than starting over."""
     cache_key = test_pdf.name
 
     # Synthetic buckets ("_generated_<slug>.pdf", "_scioly_<slug>.pdf") aren't
@@ -1416,14 +1430,27 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
     elif use_vision:
         # Image-based PDF — OCR each page via vision
         print("    [OCR] image-based PDF, using vision...")
+        n_pages = doc.page_count
         for pno, page in enumerate(doc, 1):
+            if should_cancel():
+                state["vision"][cache_key] = vision_cache
+                _save_state(state)
+                doc.close()
+                raise jobs.JobCancelled()
             pkey = f"ocr_p{pno}"
             if pkey in vision_cache:
                 items = vision_cache[pkey]
             else:
                 items = vision_extract_text_page(page)
                 vision_cache[pkey] = items
+                # Checkpoint-save immediately — interrupting mid-loop only
+                # ever loses the in-flight page, not every page OCR'd so far
+                # (previously nothing was durable until the whole function
+                # returned; see the docstring above).
+                state["vision"][cache_key] = vision_cache
+                _save_state(state)
                 time.sleep(0.1)
+            on_progress(phase=f"OCR test PDF page {pno}/{n_pages}", done=pno, total=n_pages)
             for item in items:
                 if isinstance(item, dict) and item.get("number"):
                     text = item.get("text", "").strip()
@@ -1468,18 +1495,29 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
                     print("    [OCR] running supplemental vision pass on key (VISION_KEY_OCR=1)…")
                 else:
                     print("    [OCR] image-based key, using vision...")
+                n_kpages = kdoc.page_count
                 for pno, page in enumerate(kdoc, 1):
+                    if should_cancel():
+                        state["vision"][cache_key] = vision_cache
+                        _save_state(state)
+                        kdoc.close()
+                        raise jobs.JobCancelled()
                     pkey = f"key_ocr_p{pno}"
                     if pkey in vision_cache:
                         page_ans = vision_cache[pkey]
                     else:
                         page_ans = vision_extract_key_page(page)
                         vision_cache[pkey] = page_ans
+                        state["vision"][cache_key] = vision_cache
+                        _save_state(state)
                         time.sleep(0.1)
+                    on_progress(phase=f"OCR key PDF page {pno}/{n_kpages}", done=pno, total=n_kpages)
                     # Don't clobber what text extraction already got right.
                     for qnum, ans in page_ans.items():
                         answers.setdefault(qnum, ans)
             kdoc.close()
+        except jobs.JobCancelled:
+            raise
         except Exception as e:
             log.warning("answer-key extraction error: %s", e)
             print(f"    [WARN] key error: {e}")

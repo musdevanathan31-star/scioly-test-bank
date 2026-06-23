@@ -1,10 +1,47 @@
 {% if current_user %}
 <script>const APP_ROOT = {{ request.script_root|tojson }};</script>
+<a id="jobs_badge" href="{{ url_for('admin_jobs_page') if current_user.role == 'coach' else '#' }}"
+   class="badge edited" style="display:none;text-decoration:none"
+   title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
 <span class="muted" style="font-size:12px;margin-left:auto;display:flex;align-items:center;gap:8px">
   Signed in as <b>{{ current_user.username }}</b> ({{ current_user.role }})
-  {% if current_user.role == "coach" %}<a href="{{ url_for('admin_users_page') }}">Manage users</a>{% endif %}
+  {% if current_user.role == "coach" %}
+    <a href="{{ url_for('admin_users_page') }}">Manage users</a>
+    <a href="{{ url_for('admin_jobs_page') }}">All jobs</a>
+  {% endif %}
   <form action="{{ url_for('logout') }}" method="post" style="display:inline;margin:0">
     <button type="submit" class="ghost" style="font-size:12px">Logout</button>
   </form>
 </span>
+<script>
+(function(){
+  // Polls every ~20s — frequent enough that a job finishing while you're on
+  // another page (or logged out and back in) gets noticed, infrequent
+  // enough not to matter on an already-underpowered server.
+  async function refreshJobsBadge(){
+    const el = document.getElementById("jobs_badge");
+    if(!el) return;
+    try {
+      const r = await fetch(`${APP_ROOT}/api/jobs/active-count`);
+      const j = await r.json();
+      if(!j.count){ el.style.display = "none"; return; }
+      el.textContent = `⏳ ${j.count} job${j.count === 1 ? "" : "s"} running`;
+      el.style.display = "";
+      const isCoach = {{ "true" if current_user.role == "coach" else "false" }};
+      if(!isCoach){
+        if(j.slugs && j.slugs.length === 1){
+          el.href = `${APP_ROOT}/event/${j.slugs[0]}/jobs`;
+          el.style.pointerEvents = "";
+        } else {
+          el.removeAttribute("href");
+          el.style.pointerEvents = "none";
+          el.title = "Active on: " + (j.slugs || []).join(", ");
+        }
+      }
+    } catch(e){ /* badge just stays at its last known state */ }
+  }
+  refreshJobsBadge();
+  setInterval(refreshJobsBadge, 20000);
+})();
+</script>
 {% endif %}

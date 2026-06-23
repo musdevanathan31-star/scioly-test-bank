@@ -30,6 +30,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   <a href="{{ request.script_root }}/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/jobs"><button title="View running/queued/recent background jobs for this event (reprocess, scio.ly, generation, …)">Jobs</button></a>
   {% include "_user_badge.html" %}
 </header>
 <div class="list-wrap">
@@ -105,20 +106,28 @@ document.getElementById("upload_test_form").addEventListener("submit", async e =
   const form = e.target;
   const btn = form.querySelector("button[type=submit]");
   btn.disabled = true;
-  setStatusHtml(`Uploading and extracting... <span class='spinner'></span>`);
+  setStatus("Uploading…");
   try {
     const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/upload-test-pdf`, {
       method: "POST", body: new FormData(form),
     });
     const j = await r.json();
-    if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); return; }
-    setStatus(`Uploaded ${j.pdf_name}: ${j.n_questions} question(s) extracted`
-              + (j.has_key ? " (with key)" : ""), "ok");
+    if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); btn.disabled = false; return; }
     form.reset();
-    load();
+    const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id,
+                                    title: `Extracting ${j.pdf_name}`});
+    handle.onDone(job => {
+      btn.disabled = false;
+      const r2 = job.result || {};
+      setStatus(job.status === "succeeded"
+        ? `Uploaded ${j.pdf_name}: ${r2.n_questions || 0} question(s) extracted`
+          + (j.has_key ? " (with key)" : "")
+        : `Extraction ${job.status}: ${job.error || ""}`,
+        job.status === "succeeded" ? "ok" : "err");
+      load();
+    });
   } catch(err){
     setStatus("Upload error: " + err.message, "err");
-  } finally {
     btn.disabled = false;
   }
 });
@@ -192,21 +201,7 @@ async function load(){
     <div style="padding:18px 14px">
       <p style="margin:0 0 8px 0"><b>No PDFs found yet.</b></p>
       <p style="margin:0 0 12px 0">Either download them from scioly.org now, or copy your own PDFs into <code>{{ event_slug }}/</code>, or use the Sources page to upload.</p>
-      <button id="btn_dl_event" class="primary" title="Run download_event.py for this event in the background. Progress shows below.">⬇ Download PDFs from scioly.org</button>
-      <div id="dl_progress" style="margin-top:14px;display:none;
-           background:var(--bg-card);border:1px solid var(--line);
-           border-radius:6px;padding:12px;max-width:720px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <div><b id="dl_phase">Starting…</b> <span class="muted" id="dl_elapsed" style="margin-left:8px">0s</span></div>
-          <div><span id="dl_count" class="muted"></span></div>
-        </div>
-        <div style="height:8px;background:var(--bg-alt);border-radius:4px;overflow:hidden">
-          <div id="dl_bar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
-        </div>
-        <pre id="dl_log" style="margin:8px 0 0 0;max-height:240px;overflow:auto;
-             font-size:11px;line-height:1.45;color:var(--fg-soft);background:var(--bg-alt);
-             padding:6px 8px;border-radius:4px;white-space:pre-wrap"></pre>
-      </div>
+      <button id="btn_dl_event" class="primary" title="Run download_event.py for this event in the background — a job-progress window opens to show its console output.">⬇ Download PDFs from scioly.org</button>
     </div>
   </td></tr>`;
   const dlBtn = document.getElementById("btn_dl_event");
@@ -234,30 +229,37 @@ document.getElementById("select_all").addEventListener("change", e => {
   updateBulkCount();
 });
 
-// Bulk reprocess
+// Bulk reprocess — each PDF becomes its own job (so each can be watched/
+// cancelled individually from the Jobs page); they queue and run one at a
+// time, this server can't do two extractions at once.
 document.getElementById("bulk_reprocess").addEventListener("click", async () => {
   const picked = [...document.querySelectorAll(".row-check:checked")].map(cb => cb.dataset.pdf);
   if(!picked.length) return;
   if(!confirm(`Reprocess ${picked.length} PDF(s)?
 
 `
-              + `Annotations are replayed automatically. Hold Shift while clicking Reprocess on `
+              + `Annotations are replayed automatically. Each PDF becomes its own background job; `
+              + `they run one at a time (this server can't do two extractions at once), watch/cancel `
+              + `them individually from the Jobs page. Hold Shift while clicking Reprocess on `
               + `a single PDF if you need to wipe annotations too — bulk mode always preserves them.`)) return;
   document.getElementById("bulk_reprocess").disabled = true;
-  let done = 0;
+  let queued = 0;
   for(const name of picked){
-    setStatusHtml(`Reprocessing ${done+1}/${picked.length}: ${escHtml(name)}... <span class='spinner'></span>`);
     try {
       const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${encodeURIComponent(name)}/reprocess`, {method:"POST"});
       const j = await r.json();
-      done++;
-      toast(`(${done}/${picked.length}) Reprocessed ${name}: ${j.n_questions || 0} questions`, "ok");
+      if(j.job_id){ queued++; }
+      else { toast(`Error queueing ${name}: ${j.error || "unknown"}`, "err"); }
     } catch(err){
-      toast(`Error on ${name}: ${err.message}`, "err");
+      toast(`Error queueing ${name}: ${err.message}`, "err");
     }
   }
-  setStatus(`Bulk reprocess done: ${done}/${picked.length} succeeded.`);
-  load();
+  setStatus(`Queued ${queued}/${picked.length} reprocess job(s) — see the Jobs page for progress.`, "ok");
+  if(queued){
+    window.location.href = `${APP_ROOT}/event/${EVENT_SLUG}/jobs`;
+  } else {
+    document.getElementById("bulk_reprocess").disabled = false;
+  }
 });
 
 document.querySelectorAll("th[data-sort]").forEach(th=>{
@@ -278,9 +280,24 @@ document.addEventListener("click", async e=>{
     try{
       const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${n}/reprocess`, {method:"POST"});
       const j = await r.json();
-      setStatus(`Reprocessed: ${j.n_questions} questions`);
-    } catch(err){ setStatus("Error: " + err.message); }
-    load();
+      if(j.error){
+        setStatus("Error: " + j.error, "err");
+        e.target.disabled = false; e.target.textContent = "Reprocess";
+        return;
+      }
+      const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id, title: `Reprocessing ${n}`});
+      handle.onDone(job => {
+        e.target.disabled = false; e.target.textContent = "Reprocess";
+        const r2 = job.result || {};
+        setStatus(job.status === "succeeded" ? `Reprocessed: ${r2.n_questions} questions`
+                  : `Reprocess ${job.status}: ${job.error || ""}`,
+                  job.status === "succeeded" ? "ok" : "err");
+        load();
+      });
+    } catch(err){
+      setStatus("Error: " + err.message, "err");
+      e.target.disabled = false; e.target.textContent = "Reprocess";
+    }
     return;
   }
   const d = e.target.dataset.delall;
@@ -310,55 +327,29 @@ function setStatus(s){
   if(s) setTimeout(()=>{ if(el.textContent === s) el.textContent = ""; }, 4000);
 }
 
-// --- Run download_event.py for this event with progress ---
-let DL_POLL = null;
-let DL_JOB = null;
+// --- Run download_event.py for this event as a background job ---
 async function startEventDownload(){
   const btn = document.getElementById("btn_dl_event");
-  const prog = document.getElementById("dl_progress");
   btn.disabled = true; btn.textContent = "Starting…";
-  prog.style.display = "block";
-  document.getElementById("dl_phase").textContent = "Launching download_event.py…";
-  document.getElementById("dl_log").textContent = "";
-  document.getElementById("dl_bar").style.width = "0%";
-  document.getElementById("dl_count").textContent = "";
   try {
     const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/download/start`, {method: "POST"});
     const j = await r.json();
-    if(j.error){ setStatus("Error: " + j.error); btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org"; return; }
-    DL_JOB = j.job_id;
-    pollDownload();
-  } catch(err){
-    setStatus("Error: " + err.message);
-    btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org";
-  }
-}
-async function pollDownload(){
-  if(!DL_JOB){ return; }
-  try {
-    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/download/${DL_JOB}`);
-    const j = await r.json();
-    if(j.error){ setStatus("Error: " + j.error); return; }
-    document.getElementById("dl_phase").textContent = j.phase || "Working…";
-    document.getElementById("dl_elapsed").textContent = (j.elapsed_s || 0) + "s";
-    document.getElementById("dl_log").textContent = (j.log || []).join("\n");
-    document.getElementById("dl_log").scrollTop = 1e9;
-    if(j.total){
-      const pct = Math.round(100 * (j.done_count || 0) / j.total);
-      document.getElementById("dl_bar").style.width = pct + "%";
-      document.getElementById("dl_count").textContent = `${j.done_count}/${j.total}`;
-    }
-    if(j.finished){
-      DL_JOB = null;
-      document.getElementById("dl_bar").style.width = "100%";
-      setStatus(j.success ? "Download finished — reloading PDF list." : "Download finished with errors.");
-      setTimeout(() => load(), 800);
+    if(j.error){
+      setStatus("Error: " + j.error, "err");
+      btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org";
       return;
     }
-    setTimeout(pollDownload, 1000);
+    const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id,
+                                    title: "Downloading PDFs from scioly.org"});
+    handle.onDone(job => {
+      btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org";
+      setStatus(job.status === "succeeded" ? "Download finished — reloading PDF list."
+                : `Download ${job.status}.`, job.status === "succeeded" ? "ok" : "err");
+      load();
+    });
   } catch(err){
-    setStatus("Poll error: " + err.message);
-    setTimeout(pollDownload, 2000);
+    setStatus("Error: " + err.message, "err");
+    btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org";
   }
 }
 

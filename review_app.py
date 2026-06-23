@@ -64,6 +64,7 @@ import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import archive  # noqa: E402
 import pdf_safety  # noqa: E402
+import jobs  # noqa: E402
 
 app = Flask(__name__)
 # Cap user uploads at 300 MB. Without this Flask accepts the full body into
@@ -302,11 +303,6 @@ def _request_llm_keys() -> dict:
     }
     return keys or llm_providers.default_keys()
 
-
-# In-memory background-job tracking for download_event runs. Keyed by job_id;
-# each entry carries phase/log/done_count/finished. Survives only the current
-# process lifetime — that's intentional (downloads are short).
-_DOWNLOAD_JOBS: dict = {}
 
 # Bounded LRU for opened fitz.Document handles. Unbounded growth was a leak
 # (60+ Anatomy PDFs ≈ tens of MB sticking around forever) AND a correctness
@@ -871,96 +867,149 @@ def api_usage():
     return jsonify(bqb.get_usage_stats())
 
 
+def _validate_job_id(job_id: str) -> str:
+    """Every route below takes job_id from the URL — validate its shape
+    before it's ever used to build a filesystem path (jobs.py's log file
+    lookup), the same containment principle as _safe_join, just simpler
+    since job ids have one fixed, known shape (uuid4().hex[:12])."""
+    if not jobs.JOB_ID_RE.match(job_id or ""):
+        abort(400, "bad job id")
+    return job_id
+
+
+def _job_target_setup(event_slug: str):
+    """Every job target closure runs on jobs.py's dedicated worker thread,
+    NOT the Flask request thread that enqueued it — build_question_bank's
+    "current event" is a ContextVar (see _select_event's docstring), which
+    does NOT carry over to a different thread. Job targets must re-bind it
+    themselves before touching bqb.EVENT/_save_state/etc."""
+    bqb.set_event(event_slug)
+
+
 @app.route("/event/<event_slug>/api/download/start", methods=["POST"])
 def api_download_start(event_slug):
-    """Kick off a background download_event run for this event. Returns a
-    job_id the client polls via /api/download/<job_id>."""
-    import threading
-    import time
-    import uuid
-    if event_slug not in EVENTS:
-        return jsonify({"error": f"unknown event: {event_slug}"}), 404
-    # Reject if a job is already running for this event
-    for jid, job in _DOWNLOAD_JOBS.items():
-        if job.get("event") == event_slug and not job.get("finished"):
-            return jsonify({"error": "a download is already in progress for this event",
-                            "job_id": jid}), 409
-    job_id = uuid.uuid4().hex[:12]
-    job = {
-        "event":      event_slug,
-        "phase":      "Starting…",
-        "log":        [],
-        "done_count": 0,
-        "total":      0,
-        "started_at": time.time(),
-        "elapsed_s":  0,
-        "finished":   False,
-        "success":    False,
-    }
-    _DOWNLOAD_JOBS[job_id] = job
+    """Kick off a background download_event run for this event, via the
+    unified job queue (jobs.py) — gains cancellation and disk persistence
+    the old bespoke _DOWNLOAD_JOBS dict never had."""
+    _select_event(event_slug)
 
-    def _capture_print(line: str):
-        # Capture each printed line into the job log
-        line = (line or "").rstrip()
-        if not line:
-            return
-        job["log"].append(line)
-        if len(job["log"]) > 500:
-            job["log"] = job["log"][-500:]
-        # Cheap heuristics to update phase + counts
-        if line.startswith("Total targets:"):
-            try:
-                job["total"] = int(line.split(":", 1)[1].strip())
-                job["phase"] = "Downloading PDFs…"
-            except Exception:
-                pass
-        elif "OK  " in line or "SKIP" in line or "FAIL" in line or "BOT" in line or "ERR" in line:
-            job["done_count"] = min(job["done_count"] + 1, job["total"] or job["done_count"] + 1)
-        elif line.startswith("[bot-bypass]"):
-            job["phase"] = "Solving Anubis bot challenge (browser window will open)…"
-        elif line.startswith("Done:"):
-            job["phase"] = "Finished"
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        ok = download_event.download_all(
+            event_slug, skip_existing=True, bypass_bot=True,
+            should_cancel=should_cancel, on_progress=on_progress,
+        )
+        return {"success": bool(ok)}
 
-    def _run():
-        try:
-            # Patch print to also append to the job log
-            import builtins
-            real_print = builtins.print
-
-            def captured_print(*args, **kwargs):
-                msg = " ".join(str(a) for a in args)
-                _capture_print(msg)
-                real_print(*args, **kwargs)
-            try:
-                builtins.print = captured_print
-                ok = download_event.download_all(event_slug, skip_existing=True, bypass_bot=True)
-                job["success"] = bool(ok)
-            finally:
-                builtins.print = real_print
-        except Exception as e:
-            job["log"].append(f"FATAL: {e}")
-            job["success"] = False
-        finally:
-            job["finished"] = True
-            job["elapsed_s"] = int(time.time() - job["started_at"])
-
-    # Stamp elapsed periodically via a tiny watcher thread
-    def _watch():
-        while not job["finished"]:
-            job["elapsed_s"] = int(time.time() - job["started_at"])
-            time.sleep(0.5)
-
-    threading.Thread(target=_run, daemon=True).start()
-    threading.Thread(target=_watch, daemon=True).start()
+    try:
+        job_id = jobs.submit_job(event_slug, "scioly_download",
+                                 f"Download PDFs for {event_slug}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
     return jsonify({"ok": True, "job_id": job_id})
 
 
-@app.route("/event/<event_slug>/api/download/<job_id>")
-def api_download_status(event_slug, job_id):
-    job = _DOWNLOAD_JOBS.get(job_id)
-    if not job or job.get("event") != event_slug:
-        return jsonify({"error": "unknown job_id"}), 404
-    return jsonify(job)
+@app.route("/event/<event_slug>/api/jobs")
+def api_jobs_list(event_slug):
+    """Most-recent-first job history for this event — backs the per-event
+    Jobs page. Visibility matches every other event route: anyone with
+    access to the event (coach implicitly, assigned volunteer) sees every
+    job's full status, progress, and (via /log) console output — no
+    additional restriction, by design (see spec.md)."""
+    _select_event(event_slug)
+    is_coach = g.user.role == "coach"
+    records = jobs.list_jobs(event_slug)
+    return jsonify({"jobs": [jobs.job_to_public_dict(r, g.user.username, is_coach)
+                             for r in records]})
+
+
+@app.route("/event/<event_slug>/api/jobs/<job_id>")
+def api_job_detail(event_slug, job_id):
+    _select_event(event_slug)
+    _validate_job_id(job_id)
+    is_coach = g.user.role == "coach"
+    try:
+        record = jobs.get_job(event_slug, job_id)
+    except jobs.JobNotFound:
+        abort(404)
+    return jsonify(jobs.job_to_public_dict(record, g.user.username, is_coach))
+
+
+@app.route("/event/<event_slug>/api/jobs/<job_id>/log")
+def api_job_log(event_slug, job_id):
+    """`?after=<line_count>` returns only lines appended since the caller's
+    last poll, instead of resending the whole (potentially long) console
+    output every ~1.5s."""
+    _select_event(event_slug)
+    _validate_job_id(job_id)
+    after = max(0, int(request.args.get("after", 0) or 0))
+    lines, total = jobs.read_log_tail(event_slug, job_id, after=after)
+    return jsonify({"lines": lines, "total": total})
+
+
+@app.route("/event/<event_slug>/api/jobs/<job_id>/cancel", methods=["POST"])
+def api_job_cancel(event_slug, job_id):
+    _select_event(event_slug)
+    _validate_job_id(job_id)
+    is_coach = g.user.role == "coach"
+    try:
+        record = jobs.request_cancel(event_slug, job_id, g.user.username, is_coach)
+    except jobs.JobNotFound:
+        abort(404)
+    except jobs.JobNotAuthorized:
+        abort(403, "Only the job's starter or a coach can cancel it")
+    return jsonify(jobs.job_to_public_dict(record, g.user.username, is_coach))
+
+
+@app.route("/event/<event_slug>/jobs")
+def event_jobs_page(event_slug):
+    _select_event(event_slug)
+    return render_template("event_jobs.html", event_slug=event_slug,
+                           event_name=bqb.EVENT.name)
+
+
+@app.route("/api/jobs/active-count")
+def api_jobs_active_count():
+    """Backs the small header badge — counts queued+running jobs across
+    every event the current user can see (coach: all; volunteer: assigned).
+    No per-event access check needed beyond that filter, since this only
+    returns a number, never job content."""
+    user = g.user
+    if user.role == "coach":
+        slugs = list(EVENTS.keys())
+    else:
+        slugs = list(user.events)
+    return jsonify(jobs.active_job_summary(slugs))
+
+
+@app.route("/admin/jobs")
+@coach_required
+def admin_jobs_page():
+    return render_template("admin_jobs.html")
+
+
+@app.route("/admin/jobs/api/list")
+@coach_required
+def admin_jobs_list():
+    records = jobs.list_all_jobs()
+    return jsonify({"jobs": [jobs.job_to_public_dict(r, g.user.username, True)
+                             for r in records]})
+
+
+@app.route("/admin/jobs/api/<event_slug>/<job_id>/cancel", methods=["POST"])
+@coach_required
+def admin_job_cancel(event_slug, job_id):
+    if event_slug not in EVENTS:
+        abort(404)
+    _validate_job_id(job_id)
+    try:
+        record = jobs.request_cancel(event_slug, job_id, g.user.username, True)
+    except jobs.JobNotFound:
+        abort(404)
+    except jobs.JobNotAuthorized:
+        abort(403)  # unreachable — is_coach=True always authorizes, kept for symmetry
+    return jsonify(jobs.job_to_public_dict(record, g.user.username, True))
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/delete-all-questions", methods=["POST"])
@@ -1047,17 +1096,33 @@ def api_upload_test_pdf(event_slug):
             key_dest.unlink(missing_ok=True)
             return jsonify({"error": "answer key isn't a valid PDF (bad header)"}), 400
 
-    state = bqb._load_state()
-    qs = process_pair(test_dest, key_dest, state, _vision_available())
-    _compute_pages(test_name, qs)
-    state.setdefault("questions", {})[test_name] = qs
-    bqb._save_state(state)
-    return jsonify({"ok": True, "pdf_name": test_name, "n_questions": len(qs),
-                    "has_key": key_dest is not None})
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        job_state = bqb._load_state()
+        qs = process_pair(test_dest, key_dest, job_state, _vision_available(),
+                          should_cancel=should_cancel, on_progress=on_progress)
+        _compute_pages(test_name, qs)
+        job_state.setdefault("questions", {})[test_name] = qs
+        bqb._save_state(job_state)
+        return {"pdf_name": test_name, "n_questions": len(qs),
+                "has_key": key_dest is not None}
+
+    try:
+        job_id = jobs.submit_job(event_slug, "upload_extract", f"Extract {test_name}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "pdf_name": test_name, "has_key": key_dest is not None,
+                    "job_id": job_id})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/reprocess", methods=["POST"])
 def api_reprocess(event_slug, pdfname):
+    """The snapshot-before-wipe step and the destructive state pops below
+    are fast (no PDF parsing, no LLM calls) and stay synchronous — only the
+    slow part (process_pair's text/vision extraction) becomes a queued job.
+    manual_mode short-circuits before ever touching the job queue, exactly
+    as it short-circuited before any extraction call previously."""
     _select_event(event_slug)
     data = request.get_json(silent=True) or {}
     state = bqb._load_state()
@@ -1086,12 +1151,25 @@ def api_reprocess(event_slug, pdfname):
         return jsonify({"ok": True, "n_questions": 0,
                         "discarded_annotations": True,
                         "manual_mode": True})
-    qs = process_pair(test_pdf, _key_path(test_pdf), state, _vision_available())
-    _compute_pages(pdfname, qs)
-    state.setdefault("questions", {})[pdfname] = qs
-    bqb._save_state(state)
-    return jsonify({"ok": True, "n_questions": len(qs),
-                    "discarded_annotations": bool(data.get("discard_annotations"))})
+    bqb._save_state(state)  # persist the pre-job wipe before the job re-reads state
+
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        job_state = bqb._load_state()
+        qs = process_pair(test_pdf, _key_path(test_pdf), job_state, _vision_available(),
+                          should_cancel=should_cancel, on_progress=on_progress)
+        _compute_pages(pdfname, qs)
+        job_state.setdefault("questions", {})[pdfname] = qs
+        bqb._save_state(job_state)
+        return {"n_questions": len(qs),
+                "discarded_annotations": bool(data.get("discard_annotations"))}
+
+    try:
+        job_id = jobs.submit_job(event_slug, "reprocess", f"Reprocess {pdfname}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "job_id": job_id})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/snapshots")
@@ -2235,6 +2313,7 @@ def api_sources(event_slug):
 @app.route("/event/<event_slug>/api/sources/scrape-wiki", methods=["POST"])
 def api_scrape_wiki(event_slug):
     _select_event(event_slug)
+    ev = bqb.EVENT
     # Reuse the saved scioly.org cookies if we have them
     cookies = None
     try:
@@ -2242,16 +2321,22 @@ def api_scrape_wiki(event_slug):
         cookies = _load_cookies()
     except Exception:
         pass
+
+    def _target(should_cancel, on_progress):
+        # No internal loop to checkpoint — a single bounded HTTP fetch +
+        # local HTML→markdown conversion, so no should_cancel/on_progress
+        # threading needed here beyond what the job wrapper already gives
+        # (queued jobs can still be cancelled before they start running).
+        _job_target_setup(event_slug)
+        out = texts_mod.scrape_wiki(ev, cookies=cookies)
+        return {"path": out.name, "size": out.stat().st_size, "url": ev.wiki_url}
+
     try:
-        out = texts_mod.scrape_wiki(bqb.EVENT, cookies=cookies)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    return jsonify({
-        "ok": True,
-        "path": out.name,
-        "size": out.stat().st_size,
-        "url":  bqb.EVENT.wiki_url,
-    })
+        job_id = jobs.submit_job(event_slug, "wiki_scrape", f"Scrape wiki for {event_slug}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "job_id": job_id})
 
 
 @app.route("/event/<event_slug>/api/sources/<filename>/process", methods=["POST"])
@@ -2508,17 +2593,29 @@ def api_generate(event_slug):
 
     # When chunking, n is per-chunk so the total is n * max_chunks
     per_chunk_n = max(1, -(-n // max_chunks)) if max_chunks > 1 else n
-    result = qgen.generate_questions(
-        source_text=source_text,
-        n=per_chunk_n,
-        types=types,
-        existing_questions=existing,
-        max_chunks=max_chunks,
-        keys=keys,
-    )
-    result["source"] = source_label
-    result["existing_count"] = len(existing)
-    return jsonify(result)
+
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        result = qgen.generate_questions(
+            source_text=source_text,
+            n=per_chunk_n,
+            types=types,
+            existing_questions=existing,
+            max_chunks=max_chunks,
+            keys=keys,
+            should_cancel=should_cancel,
+            on_progress=on_progress,
+        )
+        result["source"] = source_label
+        result["existing_count"] = len(existing)
+        return result
+
+    try:
+        job_id = jobs.submit_job(event_slug, "generate", f"Generate questions from {source_label}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "job_id": job_id})
 
 
 @app.route("/event/<event_slug>/api/generate-similar", methods=["POST"])
@@ -2787,22 +2884,25 @@ def api_scioly_scrape(event_slug):
     division = (data.get("division") or "").strip().upper()[:1]
     validate = bool(data.get("validate", True))
     focus = (data.get("focus") or "").strip()
-
-    # Layer 1 (exact): dedup by scio.ly UUID against prior scio.ly scrapes
-    state = bqb._load_state()
+    keys = _request_llm_keys()
     bucket_key = _scioly_bucket_key()
-    existing_ids = {
-        q.get("_scioly_id")
-        for q in state.get("questions", {}).get(bucket_key, [])
-        if q.get("_scioly_id")
-    }
-    # Layer 2 (fuzzy): dedup by text similarity against the WHOLE bank
-    # (PDF-extracted, LLM-generated, and prior scio.ly scrapes combined)
-    all_existing: list = []
-    for qs in state.get("questions", {}).values():
-        all_existing.extend(qs)
 
-    try:
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        on_progress(phase="fetching candidates from scio.ly")
+        # Re-resolved inside the job (not captured from the enqueueing
+        # request) so dedup runs against whatever's actually in the bank by
+        # the time this job runs, not a stale snapshot from enqueue time.
+        state = bqb._load_state()
+        existing_ids = {
+            q.get("_scioly_id")
+            for q in state.get("questions", {}).get(bucket_key, [])
+            if q.get("_scioly_id")
+        }
+        all_existing: list = []
+        for qs in state.get("questions", {}).values():
+            all_existing.extend(qs)
+
         result = scrape_scioly.scrape_questions(
             event_name=event_name,
             count=count,
@@ -2812,44 +2912,49 @@ def api_scioly_scrape(event_slug):
             existing_questions=all_existing,
             focus=focus,
         )
-    except Exception as e:
-        return jsonify({"error": f"scrape failed: {e}",
-                        "candidates": []}), 500
+        questions = result["questions"]
+        can_validate = validate and bool(llm_providers.available_providers(keys))
 
-    questions = result["questions"]
-    keys = _request_llm_keys()
-    can_validate = validate and bool(llm_providers.available_providers(keys))
+        # Optionally run each through the validator so the user can drop the
+        # obviously-broken ones (missing context, wrong answer in the data).
+        if can_validate:
+            for i, q in enumerate(questions):
+                if should_cancel():
+                    raise jobs.JobCancelled()
+                on_progress(phase=f"validating {i+1}/{len(questions)}",
+                           done=i, total=len(questions))
+                try:
+                    q["validation"] = validate_answer({
+                        "text":    q["text"],
+                        "answer":  q["answer"],
+                        "choices": q["choices"],
+                        "number":  q["number"],
+                    }, keys=keys)
+                except Exception as e:
+                    q["validation"] = {"status": "unavailable",
+                                       "rationale": f"validator error: {e}"}
+                time.sleep(0.05)
 
-    # Optionally run each through the validator so the user can drop the
-    # obviously-broken ones (missing context, wrong answer in the data).
-    if can_validate:
-        import time as _time
-        for q in questions:
-            try:
-                q["validation"] = validate_answer({
-                    "text":    q["text"],
-                    "answer":  q["answer"],
-                    "choices": q["choices"],
-                    "number":  q["number"],
-                }, keys=keys)
-            except Exception as e:
-                q["validation"] = {"status": "unavailable",
-                                   "rationale": f"validator error: {e}"}
-            _time.sleep(0.05)
+        return {
+            "candidates":          questions,
+            "raw_count":           result["raw_count"],
+            "fetched_per_type":    result["fetched_per_type"],
+            "skipped_id_dups":     result["skipped_id_dups"],
+            "rejected_text_dups":  result["rejected_text_dups"],
+            "errors":              result["errors"],
+            "validated":           can_validate,
+            "event_name":          event_name,
+            "scioly_in_bank":      len(existing_ids),
+            "bank_total":          len(all_existing),
+        }
 
-    return jsonify({
-        "ok":                  True,
-        "candidates":          questions,
-        "raw_count":           result["raw_count"],
-        "fetched_per_type":    result["fetched_per_type"],
-        "skipped_id_dups":     result["skipped_id_dups"],
-        "rejected_text_dups":  result["rejected_text_dups"],
-        "errors":              result["errors"],
-        "validated":           can_validate,
-        "event_name":          event_name,
-        "scioly_in_bank":      len(existing_ids),
-        "bank_total":          len(all_existing),
-    })
+    try:
+        job_id = jobs.submit_job(event_slug, "scioly_scrape",
+                                 f"Scrape scio.ly candidates for {event_name}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "job_id": job_id})
 
 
 @app.route("/event/<event_slug>/api/scioly/accept", methods=["POST"])
@@ -3014,6 +3119,33 @@ a{color:var(--accent);text-decoration:none}
 #llm_settings_modal input{display:block;width:100%;margin-top:4px;padding:7px 9px;
   border:1px solid var(--line);border-radius:4px;font:inherit;
   background:var(--bg-input);color:var(--fg)}
+
+/* Job progress modal (jobs.py) — shared by every Tier-1 long-running action:
+   PDF reprocess/upload-extract, scio.ly download/scrape, LLM generation,
+   wiki scrape. See openJobProgress() in _COMMON_JS. */
+.job-progress-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
+  z-index:500;align-items:center;justify-content:center;padding:24px}
+.job-progress-modal .box{background:var(--bg-card);color:var(--fg);border-radius:8px;
+  padding:18px 22px;width:620px;max-width:95vw;max-height:85vh;
+  display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+.job-progress-modal .hdr{display:flex;justify-content:space-between;
+  align-items:center;margin-bottom:8px}
+.job-progress-modal .hdr h3{margin:0;font-size:15px}
+.jp-phase{font-size:13px;color:var(--fg-soft);margin-bottom:8px;
+  text-transform:capitalize}
+.jp-bar-wrap{height:8px;background:var(--line-soft);border-radius:4px;
+  overflow:hidden;margin-bottom:6px}
+.jp-bar{height:100%;background:var(--accent);width:0%;
+  transition:width .3s ease}
+.jp-bar.failed{background:var(--bad)}
+.jp-bar.cancelled{background:var(--warn)}
+.jp-meta{font-size:11px;color:var(--muted);margin-bottom:10px;
+  font-variant-numeric:tabular-nums}
+.jp-console{background:#1b1b1f;color:#d8d8e0;font-family:ui-monospace,Consolas,monospace;
+  font-size:12px;line-height:1.5;padding:10px 12px;border-radius:6px;
+  flex:1;overflow-y:auto;min-height:160px;max-height:40vh;white-space:pre-wrap;
+  word-break:break-word;margin:0 0 10px 0}
+.jp-actions{display:flex;justify-content:flex-end;gap:8px}
 """
 
 # Common JS helpers injected into every page. Provides:
@@ -3312,12 +3444,142 @@ window.setLLMKeys = function(keys){
     return origFetch(input, init);
   };
 })();
+
+// ---- job progress modal (jobs.py) -------------------------------------
+// Shared by every Tier-1 long-running action. Usage:
+//   const handle = openJobProgress({eventSlug, jobId, title});
+//   handle.onDone(job => { ...job.result or job.error... });
+// Polls status (~1.5s) + log tail (only new lines, via ?after=) until the
+// job reaches a terminal status, then calls the caller's onDone callback
+// once. The Cancel button is shown only when the job payload's `can_cancel`
+// flag is true — computed server-side (jobs.can_cancel), never re-derived
+// client-side.
+window.openJobProgress = function({eventSlug, jobId, title}){
+  let modal = document.getElementById("job_progress_modal");
+  if(!modal){
+    modal = document.createElement("div");
+    modal.id = "job_progress_modal";
+    modal.className = "job-progress-modal";
+    modal.innerHTML = `
+      <div class="box">
+        <div class="hdr">
+          <h3 id="jp_title"></h3>
+          <button id="jp_close">✕ Close</button>
+        </div>
+        <div class="jp-phase" id="jp_phase"></div>
+        <div class="jp-bar-wrap"><div class="jp-bar" id="jp_bar"></div></div>
+        <div class="jp-meta" id="jp_meta"></div>
+        <pre class="jp-console" id="jp_console"></pre>
+        <div class="jp-actions">
+          <button class="danger" id="jp_cancel" style="display:none">Cancel job</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    document.getElementById("jp_close").addEventListener("click", () => {
+      modal.style.display = "none";
+      if(modal._jpStop) modal._jpStop();
+    });
+  }
+  if(modal._jpStop) modal._jpStop();  // stop any previous job's polling first
+
+  modal.style.display = "flex";
+  const titleEl   = document.getElementById("jp_title");
+  const phaseEl   = document.getElementById("jp_phase");
+  const barEl     = document.getElementById("jp_bar");
+  const metaEl    = document.getElementById("jp_meta");
+  const consoleEl = document.getElementById("jp_console");
+  const cancelBtn = document.getElementById("jp_cancel");
+  titleEl.textContent = title || "Job progress";
+  phaseEl.textContent = "queued";
+  barEl.style.width = "0%";
+  barEl.className = "jp-bar";
+  metaEl.textContent = "";
+  consoleEl.textContent = "";
+  cancelBtn.style.display = "none";
+
+  const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted"];
+  let logAfter = 0;
+  let doneCallback = null;
+  let stopped = false;
+  let timer = null;
+
+  cancelBtn.onclick = async () => {
+    if(!confirm("Cancel this job?")) return;
+    try {
+      await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}/cancel`, {method: "POST"});
+    } catch(e){ /* next poll will reflect whatever actually happened */ }
+  };
+
+  async function pollOnce(){
+    if(stopped) return;
+    let job;
+    try {
+      const r = await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}`);
+      job = await r.json();
+    } catch(e){
+      if(!stopped) timer = setTimeout(pollOnce, 2000);
+      return;
+    }
+    phaseEl.textContent = job.status + (job.phase ? " — " + job.phase : "");
+    barEl.className = "jp-bar" + (job.status === "failed" ? " failed"
+                      : job.status === "cancelled" ? " cancelled" : "");
+    if(job.total){
+      const pct = Math.min(100, Math.round(100 * job.done_count / job.total));
+      barEl.style.width = pct + "%";
+      metaEl.textContent = `${job.done_count} / ${job.total}`;
+    } else {
+      barEl.style.width = (job.status === "running") ? "100%" : "0%";
+      metaEl.textContent = "";
+    }
+    cancelBtn.style.display = (job.can_cancel && !TERMINAL.includes(job.status)) ? "" : "none";
+
+    try {
+      const r2 = await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}/log?after=${logAfter}`);
+      const lg = await r2.json();
+      if(lg.lines && lg.lines.length){
+        consoleEl.textContent += lg.lines.join("\n") + "\n";
+        consoleEl.scrollTop = consoleEl.scrollHeight;
+      }
+      logAfter = lg.total || logAfter;
+    } catch(e){ /* a missed log line isn't worth aborting the modal over */ }
+
+    if(stopped) return;
+    if(TERMINAL.includes(job.status)){
+      cancelBtn.style.display = "none";
+      if(doneCallback) doneCallback(job);
+      return;
+    }
+    timer = setTimeout(pollOnce, 1500);
+  }
+  modal._jpStop = function(){
+    stopped = true;
+    if(timer) clearTimeout(timer);
+  };
+  stopped = false;
+  pollOnce();
+
+  return {
+    onDone(cb){ doneCallback = cb; },
+    close(){ modal._jpStop(); modal.style.display = "none"; },
+  };
+};
 """
 
 # Shared across every page template via Jinja globals — see templates/*.html
 # `{{ common_css|safe }}` / `{{ common_js|safe }}`.
 app.jinja_env.globals["common_css"] = _COMMON_CSS
 app.jinja_env.globals["common_js"] = _COMMON_JS
+
+# Runs at import time, NOT inside main() — gunicorn imports this module's
+# `app` object directly and never calls main() (see main()'s own comment
+# below), so anything that must run in production has to live at module
+# level like this, not inside the `if __name__ == "__main__"` dev-server path.
+# Any job record still "running" here is leftover from the previous
+# process's crash/restart; mark it "interrupted" before any request can see
+# a job that's actually dead.
+_n_recovered = jobs.recover_interrupted_jobs()
+if _n_recovered:
+    print(f"[startup] marked {_n_recovered} leftover 'running' job(s) as interrupted")
 
 
 def main() -> None:

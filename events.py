@@ -88,6 +88,14 @@ class Event:
         return self.base_dir / "question_bank.md"
 
     @property
+    def jobs_file(self) -> Path:
+        return self.base_dir / ".qbank_jobs.json"
+
+    @property
+    def jobs_dir(self) -> Path:
+        return self.base_dir / ".qbank_jobs"
+
+    @property
     def wiki_url(self) -> str:
         page = self.wiki_page or self.name.replace(" ", "_")
         return f"https://scioly.org/wiki/index.php/{page}"

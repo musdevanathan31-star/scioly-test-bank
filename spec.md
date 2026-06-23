@@ -270,6 +270,8 @@ State store and pipeline are the same. The UI is just a graphical front-end that
 - `GET /` — event landing page. Coaches see every registered event; volunteers only the ones a coach assigned them (filtered in `index()`, `review_app.py`).
 - `GET/POST /login`, `POST /logout` — session login/logout (see Authentication & roles below).
 - `GET /admin/users` — coach-only user management page.
+- `GET /admin/jobs` — coach-only cross-event background-job dashboard (see §16b).
+- `GET /event/<slug>/jobs` — per-event background-job history/console (see §16b). Linked from the PDF list and from the header's job-count badge.
 - `GET /event/<slug>/` — sortable PDF list for one event. Includes an upload-test-PDF form (test + optional key).
 - `GET /event/<slug>/review/<pdf>` — single-PDF review (PDF page + question cards). Accepts `?q=<number>` to focus a specific question on load (used by the "Open source ↗" link from the browse page).
 - `GET /event/<slug>/sources` — source-material management + LLM question generation
@@ -311,7 +313,7 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>/qboxes` | Per-page bounding boxes for every question whose text starts on this page. Computed on demand from PyMuPDF text blocks: each `Q_START` match anchors a box that spans down to the next anchor (or page bottom), widened to the leftmost/rightmost edges of the text blocks within that vertical slice. Returns `{boxes: [{number, x0, y0, x1, y1}], page_height_pt}` in PDF points; the frontend scales to image pixels using the same 120 DPI factor as region-extract. |
 | `POST /event/<slug>/api/generate-similar` | Seed-based question generation. Body: `{seed_text, seed_topic, n}`. Wraps `qgen.generate_questions` with the seed as both source material and "do not duplicate" anchor. |
 | `PATCH /api/events/<slug>` | Edit a user-registered event's name/topics/foci/wiki_page in place. Refuses built-ins. |
-| `POST /event/<slug>/api/upload-test-pdf` | Multipart upload of a test PDF (`test_file`, required) + answer key (`key_file`, optional). Normalizes the filename to the `{filename_prefix}_*_test.pdf` glob `_list_test_pdfs` expects (de-duped with a numeric suffix), saves a sibling `_key.pdf` if provided, then immediately runs `process_pair` and persists state so the upload shows extracted questions right away. |
+| `POST /event/<slug>/api/upload-test-pdf` | Multipart upload of a test PDF (`test_file`, required) + answer key (`key_file`, optional). Normalizes the filename to the `{filename_prefix}_*_test.pdf` glob `_list_test_pdfs` expects (de-duped with a numeric suffix), saves a sibling `_key.pdf` if provided, then enqueues `process_pair` as a background job (§16b) and returns `{ok, pdf_name, has_key, job_id}` — the file save itself is synchronous, only extraction is queued. |
 | `GET /event/<slug>/api/pdfs?sort=…&order=…` | List PDFs with status |
 | `GET /event/<slug>/api/pdf/<pdf>` | All questions + annotations + page count for one PDF |
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>.png?dpi=…&target=test\|key` | Page render |
@@ -321,20 +323,28 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `POST /event/<slug>/api/pdf/<pdf>/page/<n>/ocr` | Full-page OCR (Haiku vision) — refresh image-based PDFs |
 | `POST /event/<slug>/api/validate-question` | LLM check of one question's answer |
 | `POST /event/<slug>/api/pdf/<pdf>/save` | Persist questions + annotations to the state file |
-| `POST /event/<slug>/api/pdf/<pdf>/reprocess` | Re-run pipeline; replays annotations unless `{"discard_annotations": true}` |
+| `POST /event/<slug>/api/pdf/<pdf>/reprocess` | Snapshots + wipes state synchronously, then enqueues `process_pair` as a background job (§16b) and returns `{ok, job_id}` — replays annotations unless `{"discard_annotations": true}`. `{"manual_mode": true}` short-circuits before ever touching the job queue (just empties the question list) and returns `{ok, n_questions: 0, manual_mode: true}` directly, no `job_id`. |
 | `POST /event/<slug>/api/regenerate` | Rebuild `question_bank.md` from the state file (no UI button — call via CLI/curl if you need the md export) |
 | `GET /event/<slug>/images/<fname>` | Serve an extracted image |
+| `GET /event/<slug>/api/jobs` | List this event's jobs, most-recent-first, each with a server-computed `can_cancel` flag (§16b). |
+| `GET /event/<slug>/api/jobs/<job_id>` | Single job's current status/progress/result — polled by `openJobProgress()` (`_COMMON_JS`). |
+| `GET /event/<slug>/api/jobs/<job_id>/log?after=<n>` | Console-output lines appended since line `n` (incremental polling, not the whole log every tick). |
+| `POST /event/<slug>/api/jobs/<job_id>/cancel` | Cooperative cancel — 403 unless caller is the job's starter or a coach. |
+| `POST /event/<slug>/api/download/start` | Kick off `download_event.download_all` as a background job (`kind="scioly_download"`) — same job system as every other Tier-1 action (§16b); this used to be a bespoke, non-cancellable, in-memory-only mechanism (`_DOWNLOAD_JOBS`), now folded into `jobs.py`. |
+| `GET /api/jobs/active-count` | `{count, slugs}` — queued+running jobs across every event the caller can see; backs the header badge. |
+| `GET /admin/jobs/api/list` | Coach-only. Every job across every event, newest first. |
+| `POST /admin/jobs/api/<slug>/<job_id>/cancel` | Coach-only equivalent of the per-event cancel route above. |
 
 ### API — sources & generation
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /event/<slug>/api/sources` | List files in `<event>/texts/`. PDFs and their sibling `.md` are merged into one entry. |
-| `POST /event/<slug>/api/sources/scrape-wiki` | Scrape the event's scioly.org wiki page, save as `texts/wiki.md`. Uses cached Anubis cookies. |
-| `POST /event/<slug>/api/sources/<file>/process` | Convert a PDF source to markdown (PyMuPDF text extract, page-by-page). |
+| `POST /event/<slug>/api/sources/scrape-wiki` | Enqueues a background job (`kind="wiki_scrape"`, §16b) that scrapes the event's scioly.org wiki page and saves it as `texts/wiki.md`. Uses cached Anubis cookies. Returns `{ok, job_id}`; the job's `result` is `{path, size, url}`. |
+| `POST /event/<slug>/api/sources/<file>/process` | Convert a PDF source to markdown (PyMuPDF text extract, page-by-page). Stays synchronous — text-only extraction, no vision/LLM calls, bounded by the source PDF's page count. |
 | `GET /event/<slug>/api/sources/<file>/raw` | Serve a source file (raw PDF or plain-text markdown). |
 | `POST /event/<slug>/api/sources/upload` | Multipart file upload of a `.pdf`/`.md`/`.txt` into `texts/`. |
-| `POST /event/<slug>/api/generate` | Generate N candidate questions via Haiku. Body: either `{source, n, types, max_chunks}` (per-event source) or `{textbook, chapter_index, n, types, max_chunks}` (shared textbook — extracts just that chapter's page range from the textbook PDF and feeds it in place of `source`). Returns candidates + auto-rejected duplicates. |
+| `POST /event/<slug>/api/generate` | Validates/resolves the source (or textbook chapter) synchronously, then enqueues `qgen.generate_questions` as a background job (`kind="generate"`, §16b) and returns `{ok, job_id}`. Body: either `{source, n, types, max_chunks}` (per-event source) or `{textbook, chapter_index, n, types, max_chunks}` (shared textbook — extracts just that chapter's page range from the textbook PDF and feeds it in place of `source`). The job's `result` is candidates + auto-rejected duplicates — note `qgen.generate_questions` never raises on an LLM-level problem (parse failure, `max_tokens` hit, no key configured); it returns `{error: ...}` instead, so the job itself still reports `status="succeeded"` and the frontend has to check `result.error` separately from `job.error`/`job.status`. |
 | `POST /event/<slug>/api/generate/accept` | Persist accepted candidates into `state.questions["_generated_<slug>.pdf"]` with their LLM rationale stored on the `validation` field. |
 
 ### API — shared textbooks
@@ -352,7 +362,7 @@ Textbooks are stored once at the top level (`textbooks/`, sibling to event direc
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /event/<slug>/api/scioly/scrape` | Hit scio.ly's public `/api/questions` endpoint, normalize results into Question shape, optionally validate each via Haiku. Body: `{event_name, count, types: ["mcq","frq"], division: "B"|"C"|"", validate: bool}`. **Two-layer dedup**: (1) exact UUID match against the scio.ly bucket; (2) Jaccard text similarity (`qgen.is_duplicate`, threshold 0.4) against **every question in the bank** regardless of bucket. Returns kept candidates + `rejected_text_dups[]` with the matched bank question's number/source/text for inspection. |
+| `POST /event/<slug>/api/scioly/scrape` | Enqueues a background job (`kind="scioly_scrape"`, §16b) that hits scio.ly's public `/api/questions` endpoint, normalizes results into Question shape, then optionally validates each via Haiku (the slow part — one LLM call per candidate, checkpointed/cancellable per-candidate). Returns `{ok, job_id}` immediately. Body: `{event_name, count, types: ["mcq","frq"], division: "B"|"C"|"", validate: bool}`. **Two-layer dedup**: (1) exact UUID match against the scio.ly bucket; (2) Jaccard text similarity (`qgen.is_duplicate`, threshold 0.4) against **every question in the bank** regardless of bucket — both re-resolved fresh inside the job (not captured at enqueue time) so dedup runs against whatever's actually in the bank by the time the job runs. The job's `result` holds kept candidates + `rejected_text_dups[]` with the matched bank question's number/source/text for inspection. |
 | `POST /event/<slug>/api/scioly/accept` | Persist accepted scio.ly candidates into `state.questions["_scioly_<slug>.pdf"]` with their `_scioly_id`, source-tournament label, and validation verdict intact. |
 
 ### Region-coordinate convention
@@ -690,3 +700,33 @@ README.md's "Backups" section covers *what* runs (`deploy/backup-extracted-data.
 **Why the GitHub-fetch step runs as `qbank-deploy`, not `qbank-admin`**: `admin_app.py`'s Update button invokes `sudo -u qbank-deploy bash /opt/qbank-deploy/update-from-github.sh` rather than being granted its own fetch logic. This preserves the existing fetch/apply split exactly — `qbank-admin` never gets root, and never gets `qbank-deploy`'s filesystem access either, only the ability to *run* qbank-deploy's already-narrow script. The nested `sudo` inside that script (to reach the root-only apply step) still resolves against `qbank-deploy`'s own existing grant, unchanged by any of this.
 
 **Why console viewing needs no sudo at all**: `qbank-admin` is a member of the `systemd-journal` group, which grants read-only journal access by default on systemd systems — a strictly lower-privilege mechanism than sudo for a read-only action, kept separate from the write actions (stop/start/restart/update/rollback) that do need the sudoers grants above.
+
+## 16b. Background jobs (`jobs.py`)
+
+**Why this exists**: the server is intentionally underpowered, and several operations — PDF extraction with vision OCR, scio.ly scrape/download, LLM question generation, wiki scrape — run for seconds to several minutes. Running them synchronously inside a Flask request blocks the browser for that whole span; `jobs.py` turns them into cancellable, persisted background jobs with a progress/console UI instead.
+
+**Why no Celery/RQ/Redis**: `deploy/qbank.service` runs `gunicorn --workers 1 --threads 8` — `--workers 1` is load-bearing today (see §2 and `build_question_bank.py`'s `_state_lock()`, an in-process `threading.RLock` that only serialises correctly within one process). A dedicated task-queue service would add a new dependency, a new thing to run/monitor, and more memory pressure on a machine this constrained, for no benefit a single in-process worker thread doesn't already provide given there's only ever one process to coordinate within.
+
+**`JobRecord`** (dataclass): `id` (12 hex chars, same shape `_DOWNLOAD_JOBS` used to mint), `event`, `kind` (`reprocess` | `upload_extract` | `scioly_download` | `scioly_scrape` | `generate` | `wiki_scrape`), `label`, `started_by` (username — stable across logout/login, unlike anything session-derived), `status` (`queued`|`running`|`succeeded`|`failed`|`cancelled`|`interrupted`), `phase`, `done_count`/`total`, `created_at`/`started_at`/`finished_at`, `cancel_requested`, `error` (truncated to 500 chars — the full traceback goes to the log file, not this record), `result` (whatever dict the job's target function returned).
+
+**On-disk layout**, per event, alongside `.qbank_state.json`:
+- `<event>/.qbank_jobs.json` — `{"jobs": [JobRecord, ...]}`, newest first, capped at the last 200 (older entries simply drop off the index — this is metadata about *runs*, not user content, so the no-permanent-deletion policy in §14 doesn't extend to it the way it does to questions/annotations).
+- `<event>/.qbank_jobs/<job_id>.log` — append-only console output for that job, capped at 2000 lines (oldest truncated, with a `...[truncated]...` marker).
+
+**Execution model**: exactly one job runs at a time, globally, across every event — a single dedicated worker thread (`jobs._worker_loop`, started lazily on first `submit_job()` call) pulls the next entry off an in-process FIFO `collections.deque`. `submit_job(event, kind, label, started_by, target, max_queued_per_event=8)` refuses to enqueue (raises `JobQueueFull`, routes turn this into HTTP 429) once an event already has that many queued+running jobs — a per-event cap, not global, so one event's backlog can't starve every other event's queue.
+
+**Cancellation** is cooperative — Python threads can't be safely force-killed mid–API-call. Each running job gets an in-memory `threading.Event`; `target` functions accept a `should_cancel: Callable[[], bool]` and check it at natural checkpoints (once per PDF page in `process_pair`'s vision loops, once per chunk in `qgen.generate_questions`, once per candidate in the scio.ly-scrape validation loop, once per PDF in `download_event.download_all`), raising `jobs.JobCancelled` when true — the worker loop catches that specifically and persists `status="cancelled"`, distinct from an unhandled exception (`"failed"`). Authorization for `request_cancel(event, job_id, username, is_coach)`: the job's own `started_by`, or any coach — same precedent as `@coach_required` elsewhere, no new role concept.
+
+**Print-capture, and the bug it fixes**: `jobs.py` installs ONE idempotent monkey-patch of `builtins.print` at first use, backed by a `contextvars.ContextVar` holding "the current job's log sink" (default `None`). The worker thread sets that var once per job before running it. This replaces the old `_DOWNLOAD_JOBS` pattern's approach (globally swapping `builtins.print` for the duration of one job's thread, restoring it in a `finally`) — which was never safe for more than one concurrent job thread: whichever job finished first would restore the *global* print out from under any other still-running job, and lines could leak between jobs' logs. A `ContextVar`'s value is local to whichever thread set it, so this is correct regardless of how many jobs ever run (today capped at 1 anyway, but the fix doesn't depend on that cap).
+
+**The `bqb.set_event` ContextVar trap**: `build_question_bank.py`'s "current event" (`bqb.EVENT`/`bqb.BASE_DIR`/etc., §2) is *also* a `ContextVar`, resolved per-thread via module `__getattr__`. A job's target function runs on `jobs.py`'s dedicated worker thread, **not** the Flask request thread that called `_select_event()` — so without an explicit re-bind, `bqb.EVENT` inside a job raises `LookupError` (unset in that thread's context) rather than resolving to the right event. Every job target closure in `review_app.py` calls a small helper, `_job_target_setup(event_slug)` → `bqb.set_event(event_slug)`, as its very first line to fix this. This is the same class of bug as the print-capture one above — state that looks global/ambient but is actually thread/context-scoped — and is exactly why this was worth writing down here rather than leaving it as a fact only the test suite knows.
+
+**Resumability**: `process_pair()` (§3) used to call `_save_state()` only once, at the very end — interrupting it mid-vision-loop lost every page already OCR'd, not just the in-flight one, since nothing was durable until the whole function returned. It now checkpoint-saves `state["vision"][cache_key]` after every page (both the test-PDF loop and the key-PDF loop), so a job that gets cancelled or interrupted by a crash leaves real progress behind — re-running the same reprocess only re-OCRs pages that weren't cached yet, which is the mechanism that makes "just re-trigger it" a cheap response to an interruption rather than starting over.
+
+**Startup recovery**: `jobs.recover_interrupted_jobs()` runs at **module import time** in `review_app.py` — not inside `main()`. This matters because gunicorn imports `review_app:app` directly and never calls `main()` (`main()` is the `python review_app.py` dev-server path only); anything that must run under the actual production deployment has to live at module level. Any `JobRecord` still `"running"` at that point is leftover from the previous process's crash/restart (its OS thread is gone) and gets flipped to `"interrupted"`.
+
+**Routes** — see §9's API table for the exact list (`/event/<slug>/api/jobs*`, `/admin/jobs*`). Every `job_id` path segment is validated against `jobs.JOB_ID_RE` (`^[a-f0-9]{12}$`) before use, the same containment principle as `_safe_join` (§9), just a fixed-shape regex instead of a resolve-and-check since job ids have one known shape, unlike arbitrary filenames.
+
+**Log/console visibility is deliberately unrestricted beyond normal event access** — anyone who can reach `/event/<slug>/...` at all sees that job's full console output and error detail, same as `_select_event`'s existing gate. No coach-only redaction: a volunteer already trusted to edit an event's PDFs/questions isn't getting new exposure by also seeing that event's extraction log.
+
+**Scope — Tier 1 vs Tier 2**: only genuinely long, multi-call operations became jobs (reprocess, bulk reprocess, upload-extract, scio.ly download/scrape, generate, wiki scrape). Short single-LLM-call actions (validate one question, one region/math capture, one diagram-chat turn, single-page OCR, image upload, generate-similar, textbook chapter detection) stay synchronous fetches — converting those to persisted jobs would add plumbing disproportionate to their ~2-15s runtime, since they already complete within one request lifecycle.

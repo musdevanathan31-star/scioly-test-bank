@@ -2685,7 +2685,7 @@ async function runReprocess(mode){
 
 Your saved annotations will be replayed on top of the fresh extraction.`)) return;
   }
-  setStatusHtml("Reprocessing... <span class='spinner'></span>");
+  setStatus("Queueing reprocess…");
   const r = await fetch(`${API}/pdf/${PDF}/reprocess`, {
     method:"POST",
     headers:{"Content-Type":"application/json"},
@@ -2695,17 +2695,35 @@ Your saved annotations will be replayed on top of the fresh extraction.`)) retur
     }),
   });
   const j = await r.json();
-  if(mode === "manual"){
-    setStatus(`Manual mode: ${j.n_questions} questions remain (should be 0). Use "+ Add question from region" to build new ones.`);
-  } else {
-    setStatus(`Reprocessed: ${j.n_questions} questions`
-              + (j.discarded_annotations ? " (annotations wiped)" : " (annotations replayed)"));
+
+  async function _afterReprocess(){
+    curPage = 1; selectedImage = null; focusedId = null; setDirty(false);
+    ANN = { field_overrides:{}, added:[], deleted:[],
+            image_overrides:{assignments:{}, detached:[]}, regions:[],
+            validations:{}, contexts:[] };
+    await load();
   }
-  curPage = 1; selectedImage = null; focusedId = null; setDirty(false);
-  ANN = { field_overrides:{}, added:[], deleted:[],
-          image_overrides:{assignments:{}, detached:[]}, regions:[],
-          validations:{}, contexts:[] };
-  await load();
+
+  if(mode === "manual"){
+    // manual mode short-circuits server-side before ever touching the job
+    // queue (it just wipes to an empty question list) — no job to wait on.
+    setStatus(`Manual mode: ${j.n_questions} questions remain (should be 0). Use "+ Add question from region" to build new ones.`);
+    await _afterReprocess();
+    return;
+  }
+  if(j.error){ setStatus("Error: " + j.error, "err"); return; }
+
+  const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id, title: `Reprocessing ${PDF}`});
+  handle.onDone(async job => {
+    if(job.status !== "succeeded"){
+      setStatus(`Reprocess ${job.status}: ${job.error || ""}`, "err");
+      return;
+    }
+    const r2 = job.result || {};
+    setStatus(`Reprocessed: ${r2.n_questions} questions`
+              + (r2.discarded_annotations ? " (annotations wiped)" : " (annotations replayed)"));
+    await _afterReprocess();
+  });
 }
 
 window.addEventListener("beforeunload", e=>{
