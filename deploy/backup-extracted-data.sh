@@ -7,25 +7,34 @@
 # qbank-commit-message.py. Safe to run often (every 1-4 hours via cron) —
 # unlike deploying code, backing up data more frequently is strictly safer.
 #
-#   deploy/backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file>
+#   deploy/backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file> [<instance-env-file>]
 #
-# Example: deploy/backup-extracted-data.sh /opt/qbank/app /opt/qbank/databank /opt/qbank/backup/.env
+# Example: deploy/backup-extracted-data.sh /opt/qbank/app /opt/qbank/databank /opt/qbank/backup/.env /opt/qbank/.env
+#
+# <instance-env-file> is the instance's own .env -- never the
+# backup-destination one above -- read only to pick up DATA_ROOT if the
+# instance has migrated its data off the app directory (see README's
+# "Separating app code from data"). Omit it and this backs up
+# <instance-app-dir> exactly as before.
 
 set -euo pipefail
 
-APP_DIR="${1:?usage: backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file>}"
-DATABANK_DIR="${2:?usage: backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file>}"
-ENV_FILE="${3:?usage: backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file>}"
+APP_DIR="${1:?usage: backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file> [<instance-env-file>]}"
+DATABANK_DIR="${2:?usage: backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file> [<instance-env-file>]}"
+ENV_FILE="${3:?usage: backup-extracted-data.sh <instance-app-dir> <databank-clone-dir> <backup-env-file> [<instance-env-file>]}"
+INSTANCE_ENV_FILE="${4:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 set -a
 source "$ENV_FILE"
+[ -n "$INSTANCE_ENV_FILE" ] && source "$INSTANCE_ENV_FILE"
 set +a
+DATA_ROOT="${DATA_ROOT:-$APP_DIR}"
 
 # Discover events dynamically — any top-level directory with a
 # .qbank_state.json is an event, no hardcoded list to maintain.
 EVENTS=()
-for f in "$APP_DIR"/*/.qbank_state.json; do
+for f in "$DATA_ROOT"/*/.qbank_state.json; do
   [ -e "$f" ] || continue
   EVENTS+=("$(basename "$(dirname "$f")")")
 done
@@ -48,13 +57,13 @@ done
 
 for slug in "${EVENTS[@]}"; do
   mkdir -p "$DATABANK_DIR/$slug"
-  cp "$APP_DIR/$slug/.qbank_state.json" "$DATABANK_DIR/$slug/"
-  [ -f "$APP_DIR/$slug/question_bank.md" ] && cp "$APP_DIR/$slug/question_bank.md" "$DATABANK_DIR/$slug/"
+  cp "$DATA_ROOT/$slug/.qbank_state.json" "$DATABANK_DIR/$slug/"
+  [ -f "$DATA_ROOT/$slug/question_bank.md" ] && cp "$DATA_ROOT/$slug/question_bank.md" "$DATABANK_DIR/$slug/"
   # --delete keeps the databank's image set in sync with the live one (a
   # detached/reassigned-away image shouldn't linger in the backup forever).
-  if [ -d "$APP_DIR/$slug/images" ]; then
+  if [ -d "$DATA_ROOT/$slug/images" ]; then
     mkdir -p "$DATABANK_DIR/$slug/images"
-    rsync -a --delete "$APP_DIR/$slug/images/" "$DATABANK_DIR/$slug/images/"
+    rsync -a --delete "$DATA_ROOT/$slug/images/" "$DATABANK_DIR/$slug/images/"
   fi
   # Job history/logs (jobs.py) — same backup tier as .qbank_state.json.
   # Small JSON + per-job text logs; useful for post-mortems ("why did last
@@ -62,13 +71,13 @@ for slug in "${EVENTS[@]}"; do
   # questions/annotations. --delete matches the images/ rationale above —
   # a job that's aged out of the live index (see jobs.py's retention cap)
   # shouldn't linger forever in the backup either.
-  [ -f "$APP_DIR/$slug/.qbank_jobs.json" ] && cp "$APP_DIR/$slug/.qbank_jobs.json" "$DATABANK_DIR/$slug/"
-  if [ -d "$APP_DIR/$slug/.qbank_jobs" ]; then
+  [ -f "$DATA_ROOT/$slug/.qbank_jobs.json" ] && cp "$DATA_ROOT/$slug/.qbank_jobs.json" "$DATABANK_DIR/$slug/"
+  if [ -d "$DATA_ROOT/$slug/.qbank_jobs" ]; then
     mkdir -p "$DATABANK_DIR/$slug/.qbank_jobs"
-    rsync -a --delete "$APP_DIR/$slug/.qbank_jobs/" "$DATABANK_DIR/$slug/.qbank_jobs/"
+    rsync -a --delete "$DATA_ROOT/$slug/.qbank_jobs/" "$DATABANK_DIR/$slug/.qbank_jobs/"
   fi
 done
-[ -f "$APP_DIR/events_custom.json" ] && cp "$APP_DIR/events_custom.json" "$DATABANK_DIR/"
+[ -f "$DATA_ROOT/events_custom.json" ] && cp "$DATA_ROOT/events_custom.json" "$DATABANK_DIR/"
 
 cd "$DATABANK_DIR"
 git add -A
