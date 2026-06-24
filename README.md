@@ -529,6 +529,8 @@ Everything above this point describes the *general* deployment patterns. This se
 
 Both qbank/qbank-chs units' `ExecStart` point at the same shared venv, `/opt/qbank/venv` — see ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) above for why the venv can be shared even though the code+data trees can't. The admin app reuses the same venv too (Flask/Werkzeug/gunicorn are already there — no extra dependencies).
 
+**Data location**: both schools' event data has been migrated off the 70GB root disk onto the 932GB `/data` mount via [`DATA_ROOT`](#separating-app-code-from-data-data_root) — NCMS at `/data/qbank/ncms` (`DATA_ROOT` set in `/opt/qbank/.env`), CHS at `/data/qbank/chs` (`/opt/qbank-chs/.env`). Each instance's app directory now holds only code.
+
 **Code-update account**: `qbank-deploy` owns `/opt/qbank-src` (the canonical `git clone` of the public repo that [`deploy/update-from-github.sh`](deploy/update-from-github.sh) fetches into). The one step that needs root — [`deploy/_apply-update.sh`](deploy/_apply-update.sh), installed on the server as `/usr/local/sbin/qbank-apply-update.sh` — is reachable via a `NOPASSWD` sudoers rule scoped to that *exact* path (`/etc/sudoers.d/qbank-deploy`), nothing broader. Both `qbank.service`/`qbank-chs.service` and `instances.conf` (the registry both the apply script and the admin app read) live alongside this in [`deploy/`](deploy/).
 
 ### Admin app
@@ -553,7 +555,7 @@ Every action is appended to `/var/log/qbank-admin-actions.log` (who/when/what/ou
 - Credentials for both backup scripts live in `/opt/qbank/backup/.env` (mode 600, `qbank`-owned, never read by the app itself).
 - Extracted data (JSON/markdown/images) → private GitHub repo [`scioly-ncms-test-bank-data`](https://github.com/musdevanathan31-star/scioly-ncms-test-bank-data).
 - Bulk data (PDFs/texts/textbooks, and — by choice — images too) → S3 bucket `ncms-files-texts-and-practice-tests` (region `us-east-2`), via `restic`.
-- Cron, running as `qbank`: extracted-data backup every 2 hours, bulk backup nightly at 02:00, both logging to `/var/log/qbank-backup.log`.
+- Cron, running as `qbank`: extracted-data backup every 2 hours, bulk backup nightly at 02:00, both logging to `/var/log/qbank-backup.log` — both lines now pass `/opt/qbank/.env` as the trailing argument so they resolve `DATA_ROOT` (see above) instead of looking in the now-empty app directory.
 
 **Known loose ends, kept visible on purpose so they don't get lost**:
 - `/etc/sudoers.d/ncms-deploy` (`ncms ALL=(ALL) NOPASSWD: ALL`) — set up for initial interactive bring-up, broader than anything routine needs now that `qbank-deploy` exists. Candidate for removal or narrowing.
