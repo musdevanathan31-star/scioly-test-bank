@@ -205,8 +205,9 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
 | `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape |
 | `review_app.py` | Flask review UI — single server, multi-event, with a Generate page (sources + LLM generation) per event |
+| `common_ui.py` | Shared CSS/JS (design tokens, modal/badge/toolbar components, `confirmModal()`, job-progress modal) — imported by both `review_app.py` and `admin_app.py` so the two Flask processes render an identical look without duplicating the stylesheet |
 | `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
-| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`, `event_scan`) |
+| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`, `event_scan`, `settings`) |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
 | `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
 | `.env.example` | Template for the Anthropic API key |
@@ -218,7 +219,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 
 ## Workflow
 
-1. **Download** — `download_event.py --event <slug>` pulls every test and key PDF for the chosen event from scioly.org. It uses a Chrome User-Agent and auto-bypasses Anubis bot protection via Playwright on the first challenge (saving cookies to `.scioly_cookies.json` for subsequent runs — see [running on a headless server](#running-on-a-headless-server-no-x11-no-playwright) if Playwright can't be installed where this runs). Already have a test on disk? The event index page (`/event/<slug>/`) has an **upload test PDF + key** form — drop in a test (and optionally its key) as a **PDF, `.docx`, or `.doc`**, and it's saved with the correct `_test.pdf`/`_key.pdf` naming, converted to PDF via headless LibreOffice if it wasn't one already, and run through the extraction pipeline immediately, no separate Reprocess step needed.
+1. **Download** — `download_event.py --event <slug>` pulls every test and key PDF for the chosen event from scioly.org. It uses a Chrome User-Agent and auto-bypasses Anubis bot protection via Playwright on the first challenge (saving cookies to `.scioly_cookies.json` for subsequent runs — see [running on a headless server](#running-on-a-headless-server-no-x11-no-playwright) if Playwright can't be installed where this runs). Already have a test on disk? The event index page (`/event/<slug>/`) has a **+ Upload test** button that opens a small form with three file slots — drop in a test (required), its answer key (optional), and a figures/supplementary document (optional, e.g. a separate `_sheet`/`_notes` file referenced by the test) — each accepting a **PDF, `.docx`, or `.doc`**. It's saved with the correct `_test.pdf`/`_key.pdf`/`_figures.pdf` naming, converted to PDF via headless LibreOffice if it wasn't one already, and the test+key are run through the extraction pipeline immediately (the figures file is never extracted — it's pure browsing material for the review page's target toggle, see below). No separate Reprocess step needed.
 
    **Files copied directly onto the server** (e.g. `scp`'d in from another machine where you're assembling question banks) aren't picked up by any of the above on their own unless they already match the `{prefix}_{year}_{division}_{submitter}_test.pdf` naming convention. The event's **Scan files** page (`/event/<slug>/scan`) finds them: a **Ready to process** bucket for already-conforming files never run through extraction (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files awaiting LibreOffice conversion, and an **Unrecognized** bucket for anything else — each gets a small inline form (best-effort year/division guessed from the filename, editable) to rename it as a Test, Key, or supplementary document, after which it's indistinguishable from anything scioly.org-sourced. This is an on-demand page, not a background scan — reload it (or click Refresh) after dropping in new files.
 
@@ -248,6 +249,14 @@ so the next `scp` happens before a download run starts failing mid-batch.
 
 5. **Generate** (per-event `/event/<slug>/sources` page) — pull in third-party questions and feed the LLM new material so it can write fresh questions:
 
+   ### Sources & LLM generation
+   - **Scrape Sci-Oly wiki** — one button. Uses the saved scioly.org cookies, converts the wiki HTML into clean markdown at `<event>/texts/wiki.md`
+   - **Upload PDFs** — drop your own textbook chapters, study guides, or notes into `<event>/texts/` (via the UI or by hand). A *Process → MD* button converts each PDF to markdown.
+   - **Generate** — pick a source, pick count + types (multiple choice / short answer / numerical), click Generate. Haiku drafts candidates with rationale and a quoted source snippet. The button is disabled and a progress panel with an elapsed-time counter is shown while the LLM is working; a **Cancel** button aborts in-flight. Output token budget scales with `n` (~550 tokens per question) so larger requests don't get silently truncated.
+   - **Dedup** — every candidate is compared (Jaccard on word-3-grams, threshold 0.4) against every question already in the bank; near-duplicates are auto-rejected and listed separately.
+   - **Keep / Drop** — review each candidate, accept individually or *Accept all kept*. Accepted questions go into a synthetic PDF bucket `_generated_<event>.pdf` so they're easy to identify, and they carry the LLM's rationale + source snippet in their `validation` field.
+   - **Failure surfacing** — if Haiku returns malformed JSON or hits `stop_reason: max_tokens`, the UI shows the raw response inline instead of failing silently. Network/HTTP errors and parse errors get a status-bar message; warnings (e.g. truncation) are rendered as a banner above the candidates.
+
    ### Pull from scio.ly/practice
    - One-click scrape of public practice questions from [scio.ly/practice](https://scio.ly/practice)'s public JSON API. No auth required.
    - Form fields: scio.ly event name (defaults to the current event's display name, editable for events scio.ly names differently like "Anatomy - Endocrine"), count, division, MCQ/FRQ toggles.
@@ -258,14 +267,6 @@ so the next `scp` happens before a download run starts failing mid-batch.
      2. *Fuzzy* — every candidate's stem is compared (Jaccard on word-3-grams, threshold 0.4) against every question already in the bank, regardless of which bucket they came from (PDF-extracted, LLM-generated, prior scio.ly scrapes). Matches are auto-rejected and shown in a collapsible "rejected as duplicates" section with the matched bank question's text and source for visual verification.
    - Accepted questions land in a synthetic PDF bucket `_scioly_<event>.pdf` with `source: "scio.ly · <tournament name>"` and their full validation verdict.
    - Polite rate-limit: ~2 req/s, and you can only scrape one event at a time per session.
-
-   ### Sources & LLM generation
-   - **Scrape Sci-Oly wiki** — one button. Uses the saved scioly.org cookies, converts the wiki HTML into clean markdown at `<event>/texts/wiki.md`
-   - **Upload PDFs** — drop your own textbook chapters, study guides, or notes into `<event>/texts/` (via the UI or by hand). A *Process → MD* button converts each PDF to markdown.
-   - **Generate** — pick a source, pick count + types (multiple choice / short answer / numerical), click Generate. Haiku drafts candidates with rationale and a quoted source snippet. The button is disabled and a progress panel with an elapsed-time counter is shown while the LLM is working; a **Cancel** button aborts in-flight. Output token budget scales with `n` (~550 tokens per question) so larger requests don't get silently truncated.
-   - **Dedup** — every candidate is compared (Jaccard on word-3-grams, threshold 0.4) against every question already in the bank; near-duplicates are auto-rejected and listed separately.
-   - **Keep / Drop** — review each candidate, accept individually or *Accept all kept*. Accepted questions go into a synthetic PDF bucket `_generated_<event>.pdf` so they're easy to identify, and they carry the LLM's rationale + source snippet in their `validation` field.
-   - **Failure surfacing** — if Haiku returns malformed JSON or hits `stop_reason: max_tokens`, the UI shows the raw response inline instead of failing silently. Network/HTTP errors and parse errors get a status-bar message; warnings (e.g. truncation) are rendered as a banner above the candidates.
 
    ### Shared textbooks (generate from one chapter, reusable across every event)
    - A textbook is too big and too generic to dump wholesale into one event's source list — upload it once at the top-level `textbooks/` directory (via the **Shared textbooks** panel on any event's Sources page) and it's available to *every* event's Generate dropdown, split by chapter.
@@ -409,7 +410,7 @@ Without a key, the pipeline still runs: it skips vision OCR (image-based PDFs yi
 
 The app supports two roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
 
-- **Coach** — full admin. Every event, plus user management (`/admin/users`) and shared-textbook uploads.
+- **Coach** — full admin. Every event, plus user management (Manage Users, inside **⚙ Settings**) and shared-textbook uploads.
 - **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL.
 
 A **student** role (read-only) is intentionally not built yet — the data model (a `role` string + a per-user `events` list) is generic enough to add one later without rework.
@@ -420,7 +421,12 @@ A **student** role (read-only) is intentionally not built yet — the data model
 python auth.py --create-coach
 ```
 
-After that, log in and use **Manage users** (coach-only, linked from the header) to create volunteer accounts and check which events each one can access.
+After that, log in and use **⚙ Settings → Manage Users** (coach-only, linked from the header) to create volunteer accounts and check which events each one can access.
+
+**⚙ Settings** (linked from the header, every logged-in user) is the one place for account self-service:
+- **My Account** — change your display name (a friendlier label shown in the header instead of your username; purely cosmetic, doesn't change your login) and change your own password (requires re-entering your current password first).
+- **LLM API Keys** — supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral key(s) for this browser only (localStorage, never sent to the server except as a request header) — used to override the server's own key, with automatic fallback through the list if one is rate-limited or out of credits. This used to be a floating button on every page; it's now a plain section here instead.
+- **Manage Users** (coach-only) — the same user CRUD that used to live at `/admin/users` (still works as a redirect here for old links/bookmarks).
 
 Sessions are plain signed Flask cookies — set `FLASK_SECRET_KEY` (a random 32+ byte hex string) in `.env` for production so logins survive a restart; without it the app generates a throwaway key per process start and everyone gets logged out. Once served over HTTPS, also set `SESSION_COOKIE_SECURE=true` so the session cookie requires TLS.
 

@@ -3,11 +3,11 @@
 <style>
 {{ common_css|safe }}
 .wrap{padding:24px;max-width:1100px;margin:0 auto}
-.utbl{width:100%;border-collapse:collapse;background:#fff;
+.utbl{width:100%;border-collapse:collapse;background:var(--bg-card);
   border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:8px}
 .utbl th,.utbl td{padding:9px 14px;border-bottom:1px solid var(--line);
   text-align:left;font-size:13px;vertical-align:middle}
-.utbl th{background:#fafafa;font-weight:600;color:#444}
+.utbl th{background:#fafafa;font-weight:600;color:var(--fg-soft)}
 .utbl tr:last-child td{border-bottom:none}
 .utbl tr:hover td{background:#fafbfc}
 .numcell{text-align:right;font-variant-numeric:tabular-nums}
@@ -41,11 +41,11 @@ function escHtml(s){ return (s == null ? "" : String(s))
 
 const STATUS_BADGE = {
   queued:      ["muted", ""],
-  running:     ["badge edited", "⏳ "],
-  succeeded:   ["badge processed", "✓ "],
-  failed:      ["badge fresh", "⚠ "],
-  cancelled:   ["badge edited", "✕ "],
-  interrupted: ["badge fresh", "⚠ "],
+  running:     ["badge badge-warn", "⏳ "],
+  succeeded:   ["badge badge-ok", "✓ "],
+  failed:      ["badge badge-bad", "⚠ "],
+  cancelled:   ["badge badge-warn", "✕ "],
+  interrupted: ["badge badge-bad", "⚠ "],
 };
 
 function fmtDuration(job){
@@ -108,7 +108,7 @@ document.addEventListener("click", async e => {
   }
   const c = e.target.dataset.cancel;
   if(c){
-    if(!confirm("Cancel this job?")) return;
+    if(!await confirmModal("Cancel this job?", {danger:true, confirmLabel:"Cancel job"})) return;
     try {
       await fetch(`${APP_ROOT}/admin/jobs/api/${encodeURIComponent(e.target.dataset.event)}/${c}/cancel`,
                   {method: "POST"});

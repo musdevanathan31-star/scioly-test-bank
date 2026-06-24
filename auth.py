@@ -46,6 +46,11 @@ class User:
     # active session, fully reversible. Real removal is delete_user(), only
     # ever called from an operator CLI, never from review_app.py's routes.
     disabled: bool = False
+    # Friendlier label shown in UI chrome (header greeting, user-management
+    # table) instead of the bare username — purely cosmetic, never used as
+    # an identifier anywhere data is keyed or audited (lastEditedBy etc.
+    # keep storing `username`, which doesn't change if this does).
+    display_name: str = ""
 
     def can_access(self, slug: str) -> bool:
         return self.role == "coach" or slug in self.events
@@ -67,6 +72,7 @@ def _load() -> dict[str, User]:
                 role=d.get("role", "volunteer"),
                 events=tuple(d.get("events") or ()),
                 disabled=bool(d.get("disabled", False)),
+                display_name=d.get("display_name", ""),
             )
         except Exception:
             continue
@@ -81,6 +87,7 @@ def _save(users: dict[str, User]) -> None:
                 "role": u.role,
                 "events": list(u.events),
                 "disabled": u.disabled,
+                "display_name": u.display_name,
             }
             for u in users.values()
         }
@@ -156,6 +163,65 @@ def update_user(
         role=role if role is not None else existing.role,
         events=tuple(events) if events is not None else existing.events,
         disabled=disabled if disabled is not None else existing.disabled,
+        display_name=existing.display_name,
+    )
+    users[username] = updated
+    _save(users)
+    return updated
+
+
+class WrongPasswordError(ValueError):
+    """Raised by change_own_password() when current_password doesn't match
+    — kept distinct from the generic ValueError used for a malformed new
+    password so callers (the route) can tell "you typed your own current
+    password wrong" apart from "your new password is too short" and respond
+    with the right HTTP status (403 vs 400) for each."""
+
+
+def change_own_password(username: str, current_password: str, new_password: str) -> User:
+    """Self-service password change — requires the caller to already know
+    their current password (re-checked here via check_password_hash, the
+    same function verify_login() uses), mirroring this codebase's existing
+    password-reconfirmation pattern for sensitive self-service actions
+    (admin_app.py's Update/Restart/Rollback/Set-threads gate). Unlike
+    update_user() (coach-only, never touches password_hash by design), this
+    is the one path that can change a password outside the CLI."""
+    users = _load()
+    existing = users.get(username)
+    if existing is None:
+        raise ValueError(f"unknown user {username!r}")
+    if not check_password_hash(existing.password_hash, current_password):
+        raise WrongPasswordError("current password is incorrect")
+    if not new_password or len(new_password) < 8:
+        raise ValueError("new password must be at least 8 characters")
+    updated = User(
+        username=existing.username,
+        password_hash=generate_password_hash(new_password),
+        role=existing.role,
+        events=existing.events,
+        disabled=existing.disabled,
+        display_name=existing.display_name,
+    )
+    users[username] = updated
+    _save(users)
+    return updated
+
+
+def set_display_name(username: str, display_name: str) -> User:
+    """Self-service display-name change — no current-password check, since
+    this is a cosmetic UI label, not a security-sensitive field (see
+    User.display_name's docstring)."""
+    users = _load()
+    existing = users.get(username)
+    if existing is None:
+        raise ValueError(f"unknown user {username!r}")
+    updated = User(
+        username=existing.username,
+        password_hash=existing.password_hash,
+        role=existing.role,
+        events=existing.events,
+        disabled=existing.disabled,
+        display_name=(display_name or "").strip()[:80],
     )
     users[username] = updated
     _save(users)

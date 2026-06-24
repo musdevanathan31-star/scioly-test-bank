@@ -9,6 +9,14 @@ A task-oriented guide: "I want to do X" rather than "how does X work." For *why*
 
 There's no read-only "student" role yet (see README's "Authentication & roles"). Log in at `/login` with the username/password a coach gave you.
 
+## Account settings (any role)
+
+Click **⚙ Settings** in the header from any page — this is the same page for everyone, it just shows more sections if you're a coach.
+
+- **My Account** — change your **display name** (a friendlier label shown in the header instead of your username — purely cosmetic, your username for logging in never changes) and **change your password** (you'll need to re-enter your current password first; a wrong one is rejected with no change made).
+- **LLM API Keys** — optionally supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral API key(s) for *this browser only*. Stored in localStorage, never sent to the server except as a request header on this app's own calls — useful if you'd rather use your own billing than the server's shared key, or if the server's key runs out of credits (the app automatically falls back through whichever keys you've set, in that order).
+- **Manage Users** — coach-only, see below.
+
 ## For Coaches
 
 ### First login / bootstrapping a brand-new instance
@@ -17,11 +25,11 @@ A fresh instance has no accounts at all, so the very first one has to be created
 ```
 python auth.py --create-coach
 ```
-This prompts for a username and password and creates the first coach account directly. After that, log in normally and use **Manage users** (linked from the header) for everyone else.
+This prompts for a username and password and creates the first coach account directly. After that, log in normally and use **⚙ Settings → Manage Users** for everyone else.
 
 ### Managing users
 
-From the header, click **Manage users**. The page lists every account with its role and assigned events.
+From the header, click **⚙ Settings**, then scroll to **Manage Users**. The section lists every account with its role and assigned events.
 - **+ Add a user** — expand it, fill in username/password/role, and (for volunteers) which events they can access. Click **Create user**.
 - **✎ Edit** on any row — change role or assigned events, then **Save**.
 - **⛔ Disable** — blocks that person's login and kicks any session they currently have open, immediately. Nothing about their account or work is deleted — it's fully reversible.
@@ -42,11 +50,16 @@ On an event's main page, click **⬇ Download PDFs from scioly.org** — runs in
 
 ### Uploading your own test PDF
 
-Same event page has an upload form near the top — drop in a test PDF and, optionally, its answer key. It's saved with the correct naming and run through extraction immediately; you'll see its questions on the very next page load, no separate step required.
+Same event page has a **+ Upload test** button near the top that opens a small form with three slots: the test (required), its answer key (optional), and a figures/supplementary document (optional — for tests that ship their diagrams in a separate file, e.g. a `_sheet`/`_notes` PDF; see "pulling figures from a supplementary document" below). Each slot accepts a PDF, `.docx`, or `.doc` — Word documents are converted to PDF automatically (needs `soffice`/LibreOffice installed on the server; if it isn't, the upload fails with an install hint instead of hanging). The test and key are run through extraction immediately — you'll see questions on the very next page load, no separate step required. The figures file is never extracted; it's just stored for browsing on the review page.
+
+### Onboarding files copied directly onto the server
+
+If you (or a script) `scp` files straight into an event's directory instead of using the upload form or the scioly.org download — e.g. while assembling a question bank from elsewhere — they won't show up anywhere until they're named like everything else. The event's **Scan files** page finds them: a **Ready to process** bucket for already-correctly-named files that were never extracted (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files still waiting on PDF conversion, and an **Unrecognized** bucket for anything else, with a small form (best-effort year/division guessed from the filename, always editable) to rename it as a Test, Key, or supplementary document. This is a manual "Refresh" page, not a background watcher — revisit it after dropping in new files. The landing page also shows a small "N unrecognized" badge next to any event that has files waiting here.
 
 ### Reviewing a PDF page-by-page
 
 Click a PDF's name from the event page (or **Review by PDF**) to open the review page — the PDF on one side, extracted question cards on the other. From here you can:
+- **Pull figures from a supplementary document** — if a sheet/notes/figures file was uploaded alongside this test (or discovered already sitting next to it), a toggle button for it appears next to **Test PDF** / **Key PDF**. Switch to it and use **📌 Pick image** (or any other capture tool) against it exactly like the test PDF — useful when a test's diagrams live in a separate file the extraction pipeline doesn't automatically associate with questions.
 - **Drag a rectangle** on the PDF and use the field buttons (**Stem**, **Choices**, **Math → Stem**, **Math → Answer**) to capture text or convert an equation to LaTeX directly into a field.
 - **+ Add question from region** — drag once over an unextracted question; it gets the next free number automatically, with multiple-choice options auto-split into the choices list if present.
 - **+ Add context from region** — for a shared passage/table/intro that several questions reference; the captured text becomes a context block other questions can link to.
@@ -184,7 +197,7 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 | Action | Why not |
 |---|---|
 | See or open an unassigned event | `_select_event` (the access chokepoint every `/event/<slug>/...` route calls first) returns 403 for volunteers outside their assigned list — see `spec.md` §9 |
-| Manage users (`/admin/users`) | Gated by `@coach_required` |
+| Manage users (Settings → Manage Users) | Gated by `@coach_required` |
 | Create/edit/archive events | Gated by `@coach_required` |
 | Upload a new shared textbook | Write routes gated by `@coach_required`; reading/using existing ones is open to everyone |
 
@@ -193,11 +206,15 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 | Task | Who | Where |
 |---|---|---|
 | Bootstrap the very first account | operator (CLI) | `python auth.py --create-coach` |
-| Create/disable a user | Coach | Manage users |
+| Change your password or display name | Coach, Volunteer | ⚙ Settings → My Account |
+| Set your own LLM API key | Coach, Volunteer | ⚙ Settings → LLM API Keys |
+| Create/disable a user | Coach | ⚙ Settings → Manage Users |
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
-| Upload a test PDF | Coach, Volunteer (assigned events) | Event page → upload form |
+| Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |
+| Onboard files dropped in via scp | Coach, Volunteer (assigned events) | Event page → Scan files |
 | Review/edit one PDF's questions | Coach, Volunteer (assigned events) | Event page → click a PDF / Review by PDF |
+| Pull figures from a supplementary doc | Coach, Volunteer (assigned events) | Review page → target toggle next to Test PDF/Key PDF |
 | Browse/search/bulk-edit the whole bank | Coach, Volunteer (assigned events) | Browse questions |
 | Validate an answer with AI | Coach, Volunteer (assigned events) | Review or Browse page → 🤖 AI Validate / ✓ Validate |
 | Scrape scio.ly practice questions | Coach, Volunteer (assigned events) | Generate page → scio.ly panel |

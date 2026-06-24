@@ -1,18 +1,18 @@
 {% if current_user %}
 <script>const APP_ROOT = {{ request.script_root|tojson }};</script>
 <a id="jobs_badge" href="{{ url_for('admin_jobs_page') if current_user.role == 'coach' else '#' }}"
-   class="badge edited" style="display:none;text-decoration:none"
+   class="badge badge-warn" style="display:none;text-decoration:none"
    title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
 {% if current_user.role == "coach" %}
-<span id="cookie_badge" class="badge edited" style="display:none"
+<span id="cookie_badge" class="badge badge-warn" style="display:none"
       title="scioly.org bot-bypass cookies — scp a fresh .scioly_cookies.json from a machine that can run Playwright"></span>
 {% endif %}
 <span class="muted" style="font-size:12px;margin-left:auto;display:flex;align-items:center;gap:8px">
-  Signed in as <b>{{ current_user.username }}</b> ({{ current_user.role }})
+  Signed in as <b>{{ current_user.display_name or current_user.username }}</b> ({{ current_user.role }})
   {% if current_user.role == "coach" %}
-    <a href="{{ url_for('admin_users_page') }}">Manage users</a>
     <a href="{{ url_for('admin_jobs_page') }}">All jobs</a>
   {% endif %}
+  <a href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys{{ ', manage users' if current_user.role == 'coach' }}">⚙ Settings</a>
   <form action="{{ url_for('logout') }}" method="post" style="display:inline;margin:0">
     <button type="submit" class="ghost" style="font-size:12px">Logout</button>
   </form>
@@ -65,7 +65,7 @@
         el.textContent = j.expired
           ? "🍪 scioly.org cookies expired"
           : `🍪 scioly.org cookies expire in ${Math.max(0, Math.round(hoursLeft))}h`;
-        el.className = "badge " + (j.expired ? "fresh" : "edited");
+        el.className = "badge " + (j.expired ? "badge-bad" : "badge-warn");
         el.style.display = "";
       } else {
         el.style.display = "none";

@@ -21,11 +21,9 @@
 .new-event p.muted{margin:0 0 10px 0;font-size:12px}
 .new-event details > summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
 .new-event details[open] > summary{margin-bottom:10px}
-.new-event .form{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;
-  align-items:center;font-size:13px}
-.new-event .form input{padding:5px 8px;border:1px solid var(--line);
-  border-radius:3px;font:inherit;font-size:13px}
-.new-event .form .help{grid-column:2;color:var(--muted);font-size:11px;margin-top:-2px}
+.new-event .form-grid input{padding:5px 8px;border:1px solid var(--line);
+  border-radius:4px;font:inherit;font-size:13px}
+.new-event .form-grid .help{grid-column:2;color:var(--muted);font-size:11px;margin-top:-2px}
 .new-event .actions{margin-top:12px;text-align:right}
 .new-event .err{color:var(--bad);font-size:12px;margin-top:6px}
 .new-event .ok{color:var(--ok);font-size:12px;margin-top:6px}
@@ -58,7 +56,7 @@
             <span class="muted" style="font-size:11px"> · {{ r.n_processed_pdfs }}/{{ r.n_pdfs }} processed</span>
             {%- endif %}
             {%- if r.n_unrecognized %}
-            <a href="{{ request.script_root }}/event/{{ r.slug }}/scan" class="badge fresh"
+            <a href="{{ request.script_root }}/event/{{ r.slug }}/scan" class="badge badge-warn"
                style="margin-left:6px;text-decoration:none"
                title="{{ r.n_unrecognized }} file(s) in this event's directory don't match the naming convention yet — e.g. dropped in via scp">{{ r.n_unrecognized }} unrecognized</a>
             {%- endif %}
@@ -91,7 +89,7 @@
         the UI. To add proper keyword-based topic classification later, edit
         <code>events.py</code>.
       </p>
-      <div class="form">
+      <div class="form-grid">
         <label for="ne_slug">Slug *</label>
         <input id="ne_slug" type="text" placeholder="anatomy_physiology" autocomplete="off">
         <div class="help">URL/dir-safe. Lowercase letters, digits, underscores. Cannot be changed later.</div>
@@ -149,16 +147,12 @@
 </div>
 
 <!-- Edit event modal -->
-<div id="ev_edit_modal" style="display:none;position:fixed;inset:0;
-     background:rgba(0,0,0,.55);z-index:300;align-items:center;
-     justify-content:center;padding:32px">
-  <div style="background:var(--bg-card);border:1px solid var(--line);
-       border-radius:10px;padding:22px 26px;min-width:520px;max-width:640px;
-       box-shadow:0 12px 40px rgba(0,0,0,.4);color:var(--fg)">
+<div id="ev_edit_modal" class="modal-backdrop">
+  <div class="modal-box wide">
     <h3 style="margin:0 0 14px 0">Edit event
       <span class="muted" style="font-size:13px;font-weight:400" id="ev_edit_slug"></span>
     </h3>
-    <div class="form" style="display:grid;grid-template-columns:160px 1fr;gap:8px 14px;align-items:center;font-size:13px">
+    <div class="form-grid">
       <label for="ev_edit_name">Display name</label>
       <input id="ev_edit_name" type="text" autocomplete="off">
 
@@ -223,12 +217,10 @@ sortEventTable();
 document.addEventListener("click", async e => {
   const slug = e.target.dataset.del;
   if(slug){
-    if(!confirm(`Archive the "${slug}" event?
-
-` +
-                `It'll disappear from this list but its directory, PDFs, ` +
-                `and state file are never touched — unarchive any time ` +
-                `from "Show archived events" below.`)) return;
+    if(!await confirmModal(
+      `Archive the "${slug}" event? It'll disappear from this list but its directory, PDFs, ` +
+      `and state file are never touched — unarchive any time from "Show archived events" below.`,
+      {danger:true, confirmLabel:"Archive"})) return;
     try {
       const r = await fetch(`${APP_ROOT}/api/events/${encodeURIComponent(slug)}`, {method:"DELETE"});
       const j = await r.json();
@@ -269,12 +261,12 @@ async function openEventEditModal(slug){
     document.getElementById("ev_edit_wiki").value   = j.wiki_page || "";
     document.getElementById("ev_edit_topics").value = (j.topics || []).filter(t => t !== "Other / General").join(", ");
     document.getElementById("ev_edit_foci").value   = (j.foci || []).join(", ");
-    document.getElementById("ev_edit_modal").style.display = "flex";
+    document.getElementById("ev_edit_modal").classList.add("on");
     document.getElementById("ev_edit_name").focus();
   } catch(e){ toast("Network error: " + e.message, "err"); }
 }
 function closeEventEditModal(){
-  document.getElementById("ev_edit_modal").style.display = "none";
+  document.getElementById("ev_edit_modal").classList.remove("on");
   _editingSlug = null;
 }
 document.getElementById("ev_edit_cancel").addEventListener("click", closeEventEditModal);
@@ -313,7 +305,7 @@ document.getElementById("ev_edit_save").addEventListener("click", async () => {
 });
 // Esc closes the modal
 document.addEventListener("keydown", e => {
-  if(e.key === "Escape" && document.getElementById("ev_edit_modal").style.display !== "none"){
+  if(e.key === "Escape" && document.getElementById("ev_edit_modal").classList.contains("on")){
     closeEventEditModal();
   }
 });

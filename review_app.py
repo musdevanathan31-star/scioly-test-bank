@@ -66,6 +66,7 @@ import archive  # noqa: E402
 import pdf_safety  # noqa: E402
 import doc_convert  # noqa: E402
 import jobs  # noqa: E402
+from common_ui import COMMON_CSS as _COMMON_CSS, COMMON_JS as _COMMON_JS  # noqa: E402
 
 app = Flask(__name__)
 # Cap user uploads at 300 MB. Without this Flask accepts the full body into
@@ -755,15 +756,52 @@ def api_unarchive_event(slug: str):
 
 
 # ---------------------------------------------------------------------------
-# Routes — user management (coach-only)
+# Routes — account settings (everyone) + user management (coach-only)
 # ---------------------------------------------------------------------------
+
+@app.route("/settings")
+def settings_page():
+    """Every logged-in user gets My Account (display name + password
+    change) and LLM API Keys; coaches additionally get Manage Users
+    (the former standalone /admin/users page, now a section here) —
+    one unified surface instead of a coach-only page plus a floating
+    LLM-keys button every other page injected separately."""
+    is_coach = g.user.role == "coach"
+    users = sorted(auth.load_users().values(), key=lambda u: u.username) if is_coach else []
+    all_events = sorted(EVENTS.keys()) if is_coach else []
+    return render_template("settings.html", users=users, all_events=all_events)
+
+
+@app.route("/api/account/password", methods=["POST"])
+def api_change_password():
+    data = request.get_json() or {}
+    try:
+        auth.change_own_password(g.user.username,
+                                  data.get("current_password") or "",
+                                  data.get("new_password") or "")
+    except auth.WrongPasswordError as e:
+        return jsonify({"error": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/account/display-name", methods=["POST"])
+def api_set_display_name():
+    data = request.get_json() or {}
+    try:
+        updated = auth.set_display_name(g.user.username, data.get("display_name") or "")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "display_name": updated.display_name})
+
 
 @app.route("/admin/users")
 @coach_required
 def admin_users_page():
-    users = sorted(auth.load_users().values(), key=lambda u: u.username)
-    return render_template("admin_users.html", users=users,
-                            all_events=sorted(EVENTS.keys()))
+    """Folded into /settings's Manage Users section — kept as a redirect
+    so old links/bookmarks still land somewhere sensible."""
+    return redirect(url_for("settings_page"))
 
 
 @app.route("/admin/users", methods=["POST"])
@@ -1317,6 +1355,36 @@ def api_upload_test_pdf(event_slug):
         if err:
             return jsonify({"error": err}), 400
 
+    # Optional third document — figures/diagrams referenced by the test but
+    # living in a separate file (the same situation _supplementary_docs()
+    # already discovers for files dropped in some other way). Never fed to
+    # process_pair(): it's pure storage/browsing material, picked up
+    # automatically by _supplementary_docs()'s glob on the next review-page
+    # load purely from sharing the test's stem prefix — no further code
+    # needed once it's saved under that naming convention.
+    supplementary_name = None
+    sup_f = request.files.get("supplementary_file")
+    if sup_f and (sup_f.filename or "").strip():
+        sup_ext = Path(sup_f.filename).suffix.lower()
+        if sup_ext not in ALLOWED_EXTS:
+            return jsonify({"error": "figures file must be a PDF, .docx, or .doc"}), 400
+        # Share the test file's exact stem prefix (like key_dest above) —
+        # that shared prefix is the ONLY thing _supplementary_docs() keys
+        # off of to discover this file later.
+        supplementary_name = test_name.replace(f"_test{test_ext}", f"_figures{sup_ext}")
+        n = 1
+        while (base_dir / supplementary_name).exists():
+            supplementary_name = test_name.replace(f"_test{test_ext}", f"_figures_{n}{sup_ext}")
+            n += 1
+        sup_dest = base_dir / supplementary_name
+        sup_f.save(str(sup_dest))
+        err = _validate_saved(sup_dest, sup_ext, "figures file")
+        if err:
+            return jsonify({"error": err}), 400
+    else:
+        sup_dest = None
+        sup_ext = None
+
     # If the upload is a Word doc, it gets converted to a real PDF inside
     # the job below (so a slow LibreOffice conversion doesn't block this
     # request) — but the frontend already expects the *final* pdf_name in
@@ -1325,6 +1393,11 @@ def api_upload_test_pdf(event_slug):
     # doc_convert.convert_to_pdf()'s output naming (`stem + ".pdf"`) is
     # deterministic and doesn't depend on the conversion having happened yet.
     final_test_name = test_name if test_ext == ".pdf" else f"{Path(test_name).stem}.pdf"
+    final_supplementary_name = (
+        None if supplementary_name is None
+        else supplementary_name if sup_ext == ".pdf"
+        else f"{Path(supplementary_name).stem}.pdf"
+    )
 
     def _target(should_cancel, on_progress):
         _job_target_setup(event_slug)
@@ -1336,6 +1409,12 @@ def api_upload_test_pdf(event_slug):
         if key_dest is not None and key_ext != ".pdf":
             on_progress(phase="converting answer key to PDF")
             pdf_key = doc_convert.convert_to_pdf(key_dest, key_dest.parent)
+        # The figures doc is never extracted (process_pair never sees it) —
+        # only converted to PDF if needed, so _supplementary_docs()'s glob
+        # (which only matches `.pdf`) can find it on the next page load.
+        if sup_dest is not None and sup_ext != ".pdf":
+            on_progress(phase="converting figures document to PDF")
+            doc_convert.convert_to_pdf(sup_dest, sup_dest.parent)
         job_state = bqb._load_state()
         qs = process_pair(pdf_test, pdf_key, job_state, _vision_available(),
                           should_cancel=should_cancel, on_progress=on_progress)
@@ -1343,7 +1422,8 @@ def api_upload_test_pdf(event_slug):
         job_state.setdefault("questions", {})[pdf_test.name] = qs
         bqb._save_state(job_state)
         return {"pdf_name": pdf_test.name, "n_questions": len(qs),
-                "has_key": pdf_key is not None}
+                "has_key": pdf_key is not None,
+                "supplementary_name": final_supplementary_name}
 
     try:
         job_id = jobs.submit_job(event_slug, "upload_extract", f"Extract {final_test_name}",
@@ -1351,7 +1431,7 @@ def api_upload_test_pdf(event_slug):
     except jobs.JobQueueFull as e:
         return jsonify({"error": str(e)}), 429
     return jsonify({"ok": True, "pdf_name": final_test_name, "has_key": key_dest is not None,
-                    "job_id": job_id})
+                    "supplementary_name": final_supplementary_name, "job_id": job_id})
 
 
 @app.route("/event/<event_slug>/api/doc/<docname>/convert", methods=["POST"])
@@ -3333,548 +3413,6 @@ def api_scioly_accept(event_slug):
 # HTML pages (single-file, embedded)
 # ---------------------------------------------------------------------------
 
-_COMMON_CSS = """
-:root{
-  --bg:#fff; --bg-alt:#f7f7f8; --bg-card:#fff; --bg-input:#fff;
-  --fg:#222; --fg-soft:#444; --muted:#888;
-  --line:#e2e2e2; --line-soft:#f0f0f0;
-  --accent:#0066cc; --ok:#1f8a4d; --warn:#b86b00; --bad:#c0392b;
-  --hover:#f0f0f0; --row-hover:#fafbfc;
-  --header-bg:#fff;
-}
-*{box-sizing:border-box}
-body{font:14px -apple-system,system-ui,Segoe UI,Roboto,sans-serif;
-  margin:0;color:var(--fg);background:var(--bg-alt)}
-header{padding:10px 18px;background:var(--header-bg);
-  border-bottom:1px solid var(--line);
-  display:flex;gap:12px;align-items:center;position:sticky;top:0;z-index:10}
-header h1{margin:0;font-size:15px;font-weight:600;flex:1;color:var(--fg)}
-header a{color:var(--fg-soft)}
-button{padding:5px 11px;border:1px solid var(--line);background:var(--bg-card);
-  color:var(--fg);border-radius:4px;cursor:pointer;font-size:13px;line-height:1.4}
-button:hover{background:var(--hover)}
-button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-button.primary:hover{filter:brightness(1.08)}
-button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
-button.ghost{background:transparent;border:none;color:var(--accent)}
-button:disabled{opacity:.5;cursor:not-allowed}
-a{color:var(--accent);text-decoration:none}
-.muted{color:var(--muted);font-size:12px}
-.badge{display:inline-block;padding:1px 8px;border-radius:10px;
-  font-size:11px;font-weight:600;letter-spacing:.2px}
-.badge.processed{background:#e3f4e9;color:var(--ok)}
-.badge.fresh{background:#fde7e6;color:var(--bad)}
-.badge.edited{background:#fff3d7;color:var(--warn)}
-.banner{padding:8px 18px;background:#fff8e1;border-bottom:1px solid #f3d870;
-  font-size:13px;color:#5a4a00}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);
-  border-top-color:var(--accent);border-radius:50%;
-  animation:spin .8s linear infinite;vertical-align:middle}
-@keyframes spin{100%{transform:rotate(360deg)}}
-.skeleton{background:linear-gradient(90deg, var(--line-soft) 25%,
-  var(--line) 50%, var(--line-soft) 75%);background-size:200% 100%;
-  animation:skel 1.4s infinite;border-radius:4px;color:transparent}
-@keyframes skel{0%{background-position:200% 0}100%{background-position:-200% 0}}
-.skeleton-row{height:22px;margin:6px 0}
-
-/* Toast log */
-.toast-host{position:fixed;bottom:16px;right:16px;z-index:200;
-  display:flex;flex-direction:column;gap:8px;max-width:340px}
-.toast{background:var(--bg-card);color:var(--fg);border:1px solid var(--line);
-  border-left:3px solid var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.18);
-  padding:8px 12px;border-radius:6px;font-size:13px;
-  animation:toastin .22s ease;opacity:1;transition:opacity .25s}
-.toast.err{border-left-color:var(--bad)}
-.toast.warn{border-left-color:var(--warn)}
-.toast.ok{border-left-color:var(--ok)}
-.toast.fade{opacity:0}
-@keyframes toastin{from{transform:translateX(20px);opacity:0}
-  to{transform:translateX(0);opacity:1}}
-.toast-history{position:fixed;bottom:16px;right:16px;z-index:201;
-  background:var(--bg-card);border:1px solid var(--line);border-radius:8px;
-  box-shadow:0 8px 24px rgba(0,0,0,.25);padding:10px 14px;
-  max-height:60vh;width:380px;overflow-y:auto;display:none}
-.toast-history.on{display:block}
-.toast-history h4{margin:0 0 6px 0;font-size:13px;color:var(--fg)}
-.toast-history .item{font-size:12px;padding:5px 0;border-bottom:1px solid var(--line-soft);
-  color:var(--fg-soft)}
-.toast-history .item .ts{color:var(--muted);font-size:10px;margin-right:6px;
-  font-variant-numeric:tabular-nums}
-.toast-history .item.err{color:var(--bad)}
-.toast-history .empty{color:var(--muted);font-size:12px;padding:6px 0}
-.history-btn{background:transparent;border:1px solid var(--line);font-size:11px;
-  color:var(--muted);padding:2px 7px;border-radius:10px;cursor:pointer}
-.history-btn:hover{background:var(--hover);color:var(--fg-soft)}
-/* Running Anthropic-spend badge. Polls /api/usage every 30s. */
-.cost-badge{display:inline-block;background:#fff8e1;color:#7a5a00;
-  border:1px solid #f3d870;font-size:11px;padding:2px 8px;border-radius:10px;
-  font-weight:600;font-variant-numeric:tabular-nums;cursor:default}
-.cost-badge.over{background:#fde7e6;color:#a02020;border-color:#f3a0a0}
-
-/* Floating action bar (sticky bottom-right) */
-.floating-actions{position:fixed;bottom:18px;right:18px;z-index:150;
-  display:flex;gap:6px;background:var(--bg-card);border:1px solid var(--line);
-  border-radius:8px;padding:8px 10px;box-shadow:0 4px 18px rgba(0,0,0,.22)}
-.floating-actions button{font-size:13px}
-
-/* LLM API key settings panel (floating gear button, bottom-left) */
-#llm_settings_btn{position:fixed;bottom:18px;left:18px;z-index:150;
-  font-size:12px;padding:6px 12px;border-radius:8px;
-  box-shadow:0 4px 14px rgba(0,0,0,.18)}
-#llm_settings_modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
-  z-index:400;align-items:center;justify-content:center;padding:20px}
-#llm_settings_modal .box{background:var(--bg-card);color:var(--fg);border-radius:8px;
-  padding:18px 22px;width:420px;max-width:95vw;max-height:90vh;overflow:auto;
-  box-shadow:0 12px 40px rgba(0,0,0,.45)}
-#llm_settings_modal label{display:block;margin-bottom:10px;font-size:13px}
-#llm_settings_modal input{display:block;width:100%;margin-top:4px;padding:7px 9px;
-  border:1px solid var(--line);border-radius:4px;font:inherit;
-  background:var(--bg-input);color:var(--fg)}
-
-/* Job progress modal (jobs.py) — shared by every Tier-1 long-running action:
-   PDF reprocess/upload-extract, scio.ly download/scrape, LLM generation,
-   wiki scrape. See openJobProgress() in _COMMON_JS. */
-.job-progress-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
-  z-index:500;align-items:center;justify-content:center;padding:24px}
-.job-progress-modal .box{background:var(--bg-card);color:var(--fg);border-radius:8px;
-  padding:18px 22px;width:620px;max-width:95vw;max-height:85vh;
-  display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.45)}
-.job-progress-modal .hdr{display:flex;justify-content:space-between;
-  align-items:center;margin-bottom:8px}
-.job-progress-modal .hdr h3{margin:0;font-size:15px}
-.jp-phase{font-size:13px;color:var(--fg-soft);margin-bottom:8px;
-  text-transform:capitalize}
-.jp-bar-wrap{height:8px;background:var(--line-soft);border-radius:4px;
-  overflow:hidden;margin-bottom:6px}
-.jp-bar{height:100%;background:var(--accent);width:0%;
-  transition:width .3s ease}
-.jp-bar.failed{background:var(--bad)}
-.jp-bar.cancelled{background:var(--warn)}
-.jp-meta{font-size:11px;color:var(--muted);margin-bottom:10px;
-  font-variant-numeric:tabular-nums}
-.jp-console{background:#1b1b1f;color:#d8d8e0;font-family:ui-monospace,Consolas,monospace;
-  font-size:12px;line-height:1.5;padding:10px 12px;border-radius:6px;
-  flex:1;overflow-y:auto;min-height:160px;max-height:40vh;white-space:pre-wrap;
-  word-break:break-word;margin:0 0 10px 0}
-.jp-actions{display:flex;justify-content:flex-end;gap:8px}
-"""
-
-# Common JS helpers injected into every page. Provides:
-#  - toast(msg, kind?)        — append to the toast host + record in history
-#  - setStatus(msg, kind?)    — back-compat shim that pipes through toast()
-#  - hotkey(combo, handler)   — `Ctrl+S`, `Esc`, `/`, etc.
-_COMMON_JS = r"""
-// ---- toast / history ---------------------------------------------------
-(function(){
-  if(document.getElementById("toast-host")) return;
-  const host = document.createElement("div");
-  host.id = "toast-host"; host.className = "toast-host";
-  document.body.appendChild(host);
-  const hist = document.createElement("div");
-  hist.id = "toast-history"; hist.className = "toast-history";
-  hist.innerHTML = '<h4>Recent messages</h4><div id="toast-history-items"></div>';
-  document.body.appendChild(hist);
-})();
-window._toastLog = [];
-// Default to TEXT semantics so server-supplied strings can't inject HTML.
-// Callers that need rich markup (e.g. inline <b>) pass {html: true} —
-// they're responsible for escaping any interpolated user data themselves.
-window.toast = function(msg, kind, opts){
-  if(!msg) return;
-  const host = document.getElementById("toast-host");
-  if(!host) return;
-  const el = document.createElement("div");
-  el.className = "toast" + (kind ? " " + kind : "");
-  if(opts && opts.html){
-    el.innerHTML = msg;
-  } else {
-    el.textContent = msg;
-  }
-  host.appendChild(el);
-  // record in history (keep last 30, plain-text)
-  const txt = el.textContent.trim();
-  if(txt){
-    const now = new Date();
-    const ts = now.toLocaleTimeString();
-    window._toastLog.push({ts, msg: txt, kind: kind||""});
-    if(window._toastLog.length > 30) window._toastLog.shift();
-  }
-  // auto-dismiss after 4.5s (errors stay 8s)
-  const lifespan = (kind === "err") ? 8000 : 4500;
-  setTimeout(() => { el.classList.add("fade"); }, lifespan - 250);
-  setTimeout(() => { if(el.parentNode) el.parentNode.removeChild(el); }, lifespan);
-};
-function renderHistory(){
-  const root = document.getElementById("toast-history-items");
-  if(!root) return;
-  if(!window._toastLog.length){
-    root.innerHTML = '<div class="empty">No messages yet.</div>'; return;
-  }
-  root.innerHTML = window._toastLog.slice().reverse().map(e =>
-    `<div class="item ${e.kind}"><span class="ts">${e.ts}</span>${
-       (e.msg||"").replace(/&/g,'&amp;').replace(/</g,'&lt;')}</div>`).join("");
-}
-window.toggleToastHistory = function(){
-  const el = document.getElementById("toast-history");
-  if(!el) return;
-  const showing = el.classList.toggle("on");
-  if(showing) renderHistory();
-};
-// Back-compat: the old setStatus() targeted #status. Keep that path working,
-// but ALSO funnel into the toast log so the message is preserved.
-//
-// Default: TEXT semantics. Inline spinners and other markup need explicit
-// opt-in via window.setStatusHtml(...) — auto-detection of "<" in msg as
-// the HTML signal was tried but proved brittle (`<5` etc).
-window.setStatus = function(msg, kind){
-  const el = document.getElementById("status");
-  if(el){
-    el.textContent = msg || "";
-    el.style.color = kind === "err" ? "var(--bad)" : "var(--muted)";
-  }
-  window.toast(msg, kind);
-};
-window.setStatusHtml = function(html, kind){
-  const el = document.getElementById("status");
-  if(el){
-    el.innerHTML = html || "";
-    el.style.color = kind === "err" ? "var(--bad)" : "var(--muted)";
-  }
-  window.toast(html, kind, {html: true});
-};
-// Tiny HTML-escape helper — used wherever a message wants to mix safe markup
-// with untrusted server strings.
-window.escHtml = function(s){
-  return (s == null ? "" : String(s))
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-};
-// ---- hotkey registration ----------------------------------------------
-window._hotkeys = {};
-window.hotkey = function(combo, handler, opts){
-  window._hotkeys[combo.toLowerCase()] = {handler, opts: opts || {}};
-};
-document.addEventListener("keydown", function(e){
-  // Ignore typing in inputs unless the hotkey is explicitly meta-modifier
-  const tag = (e.target.tagName || "").toUpperCase();
-  const inField = (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
-                   || e.target.isContentEditable);
-  const parts = [];
-  if(e.ctrlKey || e.metaKey) parts.push("ctrl");
-  if(e.shiftKey) parts.push("shift");
-  if(e.altKey)   parts.push("alt");
-  const k = (e.key || "").toLowerCase();
-  parts.push(k === " " ? "space" : k);
-  const combo = parts.join("+");
-  const reg = window._hotkeys[combo];
-  if(!reg) return;
-  if(inField && !reg.opts.global) return;
-  e.preventDefault();
-  reg.handler(e);
-});
-// ---- Anthropic spend badge --------------------------------------------
-// Polls /api/usage every 30s and updates the #cost-badge in the header. The
-// goal isn't precise billing — it's an "uh oh" surface so an accidentally-
-// running scrape becomes visible before the invoice arrives.
-async function refreshCostBadge(){
-  const el = document.getElementById("cost-badge");
-  if(!el) return;
-  try {
-    const r = await fetch("/api/usage");
-    const j = await r.json();
-    const cost = Number(j.estimated_cost_usd || 0);
-    el.textContent = "$" + cost.toFixed(cost >= 1 ? 2 : 3);
-    el.title = (
-      "Anthropic API spend this process\\n" +
-      `Calls: ${j.calls}\\n` +
-      `Input tokens: ${j.input_tokens.toLocaleString()}\\n` +
-      `Output tokens: ${j.output_tokens.toLocaleString()}\\n` +
-      `Rate: $${j.input_price_per_mtok}/MTok in, $${j.output_price_per_mtok}/MTok out`
-    );
-    el.classList.toggle("over", cost >= 5);
-  } catch(e){ /* ignore — badge stays at the last known value */ }
-}
-refreshCostBadge();
-setInterval(refreshCostBadge, 30000);
-// ---- page title management --------------------------------------------
-window._titleBase = document.title;
-window.setPageTitlePrefix = function(prefix){
-  document.title = (prefix ? prefix + " · " : "") + window._titleBase;
-};
-
-// ---- LLM API key settings -----------------------------------------------
-// Lets the user supply their OWN API keys for Anthropic, OpenAI, Gemini,
-// DeepSeek, and Mistral. Keys live ONLY in this browser's localStorage —
-// never written to any file or sent anywhere except as the X-LLM-Keys
-// header on this app's own same-origin /api/ requests, so the backend can
-// use them (with automatic fallback to the next provider if the current
-// one is out of credits, rate-limited, or invalid) instead of the server's
-// own .env key.
-const LLM_KEYS_STORAGE = "llm_api_keys";
-const LLM_PROVIDERS = [
-  {id: "anthropic", label: "Anthropic (Claude)"},
-  {id: "openai",    label: "OpenAI (GPT)"},
-  {id: "gemini",    label: "Google Gemini"},
-  {id: "deepseek",  label: "DeepSeek"},
-  {id: "mistral",   label: "Mistral"},
-];
-window.getLLMKeys = function(){
-  try {
-    const raw = JSON.parse(localStorage.getItem(LLM_KEYS_STORAGE) || "{}");
-    const out = {};
-    for(const p of LLM_PROVIDERS) if(raw[p.id]) out[p.id] = raw[p.id];
-    return out;
-  } catch(e){ return {}; }
-};
-window.setLLMKeys = function(keys){
-  localStorage.setItem(LLM_KEYS_STORAGE, JSON.stringify(keys || {}));
-};
-(function(){
-  if(document.getElementById("llm_settings_btn")) return;
-
-  const btn = document.createElement("button");
-  btn.id = "llm_settings_btn";
-  btn.textContent = "⚙ LLM keys";
-  btn.title = "Set your own API keys for Anthropic / OpenAI / Gemini / "
-    + "DeepSeek / Mistral (stored only in this browser, never on the server)";
-  document.body.appendChild(btn);
-
-  const modal = document.createElement("div");
-  modal.id = "llm_settings_modal";
-  const rowsHtml = LLM_PROVIDERS.map(p => `
-    <label>${escHtml(p.label)}
-      <input type="password" data-llm-key="${p.id}" autocomplete="off">
-    </label>`).join("");
-  modal.innerHTML = `
-    <div class="box">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <h3 style="margin:0;font-size:15px">LLM API keys</h3>
-        <button id="llm_settings_close">✕ Close</button>
-      </div>
-      <p class="muted" style="margin:0 0 14px 0">
-        Stored only in this browser (localStorage) — never written to any file
-        on the server. If you set more than one, the app tries them in this
-        order (Anthropic → OpenAI → Gemini → DeepSeek → Mistral)
-        and automatically falls back to the next one if the current key is out
-        of credits, rate-limited, or invalid.
-      </p>
-      ${rowsHtml}
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
-        <button id="llm_settings_clear">Clear all</button>
-        <button id="llm_settings_save" class="primary">Save</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-
-  function openModal(){
-    const keys = getLLMKeys();
-    modal.querySelectorAll("[data-llm-key]").forEach(inp => {
-      inp.value = keys[inp.dataset.llmKey] || "";
-    });
-    modal.style.display = "flex";
-  }
-  function closeModal(){ modal.style.display = "none"; }
-  btn.addEventListener("click", openModal);
-  modal.querySelector("#llm_settings_close").addEventListener("click", closeModal);
-  modal.addEventListener("click", e => { if(e.target === modal) closeModal(); });
-  modal.querySelector("#llm_settings_save").addEventListener("click", () => {
-    const keys = {};
-    modal.querySelectorAll("[data-llm-key]").forEach(inp => {
-      const v = inp.value.trim();
-      if(v) keys[inp.dataset.llmKey] = v;
-    });
-    setLLMKeys(keys);
-    closeModal();
-    window.toast(
-      Object.keys(keys).length
-        ? `Saved ${Object.keys(keys).length} API key(s) to this browser.`
-        : "No API keys saved — the app will use the server's own key, if any.",
-      "ok",
-    );
-  });
-  modal.querySelector("#llm_settings_clear").addEventListener("click", () => {
-    if(!confirm("Remove all saved API keys from this browser?")) return;
-    setLLMKeys({});
-    modal.querySelectorAll("[data-llm-key]").forEach(inp => inp.value = "");
-    window.toast("Cleared all saved API keys.", "ok");
-  });
-})();
-
-// Auto-attach saved LLM keys to every same-origin /api/ request, so a key
-// entered once in Settings reaches every current AND future LLM-backed
-// endpoint without each call site needing to remember to do it.
-(function(){
-  const origFetch = window.fetch.bind(window);
-  window.fetch = function(input, init){
-    init = init || {};
-    try {
-      const url = typeof input === "string" ? input
-        : (input && input.url) || "";
-      if(url.indexOf("/api/") !== -1){
-        const keys = getLLMKeys();
-        if(Object.keys(keys).length){
-          const baseHeaders = init.headers
-            || (input && typeof input !== "string" && input.headers)
-            || {};
-          const headers = new Headers(baseHeaders);
-          headers.set("X-LLM-Keys", JSON.stringify(keys));
-          init = Object.assign({}, init, {headers});
-        }
-      }
-    } catch(e){ /* never let key-attachment break a request */ }
-    return origFetch(input, init);
-  };
-})();
-
-// Auto-attach the CSRF double-submit-cookie token (see _check_csrf in
-// review_app.py) to every mutating request, so no call site needs to
-// remember to do it. GET/HEAD requests are never checked server-side, so
-// they're skipped here too.
-(function(){
-  const origFetch = window.fetch.bind(window);
-  function getCsrfToken(){
-    const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
-    return m ? m[1] : null;
-  }
-  window.fetch = function(input, init){
-    init = init || {};
-    try {
-      const method = (init.method || (input && typeof input !== "string" && input.method) || "GET").toUpperCase();
-      if(method !== "GET" && method !== "HEAD"){
-        const token = getCsrfToken();
-        if(token){
-          const baseHeaders = init.headers
-            || (input && typeof input !== "string" && input.headers)
-            || {};
-          const headers = new Headers(baseHeaders);
-          headers.set("X-CSRF-Token", token);
-          init = Object.assign({}, init, {headers});
-        }
-      }
-    } catch(e){ /* never let CSRF-attachment break a request */ }
-    return origFetch(input, init);
-  };
-})();
-
-// ---- job progress modal (jobs.py) -------------------------------------
-// Shared by every Tier-1 long-running action. Usage:
-//   const handle = openJobProgress({eventSlug, jobId, title});
-//   handle.onDone(job => { ...job.result or job.error... });
-// Polls status (~1.5s) + log tail (only new lines, via ?after=) until the
-// job reaches a terminal status, then calls the caller's onDone callback
-// once. The Cancel button is shown only when the job payload's `can_cancel`
-// flag is true — computed server-side (jobs.can_cancel), never re-derived
-// client-side.
-window.openJobProgress = function({eventSlug, jobId, title}){
-  let modal = document.getElementById("job_progress_modal");
-  if(!modal){
-    modal = document.createElement("div");
-    modal.id = "job_progress_modal";
-    modal.className = "job-progress-modal";
-    modal.innerHTML = `
-      <div class="box">
-        <div class="hdr">
-          <h3 id="jp_title"></h3>
-          <button id="jp_close">✕ Close</button>
-        </div>
-        <div class="jp-phase" id="jp_phase"></div>
-        <div class="jp-bar-wrap"><div class="jp-bar" id="jp_bar"></div></div>
-        <div class="jp-meta" id="jp_meta"></div>
-        <pre class="jp-console" id="jp_console"></pre>
-        <div class="jp-actions">
-          <button class="danger" id="jp_cancel" style="display:none">Cancel job</button>
-        </div>
-      </div>`;
-    document.body.appendChild(modal);
-    document.getElementById("jp_close").addEventListener("click", () => {
-      modal.style.display = "none";
-      if(modal._jpStop) modal._jpStop();
-    });
-  }
-  if(modal._jpStop) modal._jpStop();  // stop any previous job's polling first
-
-  modal.style.display = "flex";
-  const titleEl   = document.getElementById("jp_title");
-  const phaseEl   = document.getElementById("jp_phase");
-  const barEl     = document.getElementById("jp_bar");
-  const metaEl    = document.getElementById("jp_meta");
-  const consoleEl = document.getElementById("jp_console");
-  const cancelBtn = document.getElementById("jp_cancel");
-  titleEl.textContent = title || "Job progress";
-  phaseEl.textContent = "queued";
-  barEl.style.width = "0%";
-  barEl.className = "jp-bar";
-  metaEl.textContent = "";
-  consoleEl.textContent = "";
-  cancelBtn.style.display = "none";
-
-  const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted"];
-  let logAfter = 0;
-  let doneCallback = null;
-  let stopped = false;
-  let timer = null;
-
-  cancelBtn.onclick = async () => {
-    if(!confirm("Cancel this job?")) return;
-    try {
-      await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}/cancel`, {method: "POST"});
-    } catch(e){ /* next poll will reflect whatever actually happened */ }
-  };
-
-  async function pollOnce(){
-    if(stopped) return;
-    let job;
-    try {
-      const r = await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}`);
-      job = await r.json();
-    } catch(e){
-      if(!stopped) timer = setTimeout(pollOnce, 2000);
-      return;
-    }
-    phaseEl.textContent = job.status + (job.phase ? " — " + job.phase : "");
-    barEl.className = "jp-bar" + (job.status === "failed" ? " failed"
-                      : job.status === "cancelled" ? " cancelled" : "");
-    if(job.total){
-      const pct = Math.min(100, Math.round(100 * job.done_count / job.total));
-      barEl.style.width = pct + "%";
-      metaEl.textContent = `${job.done_count} / ${job.total}`;
-    } else {
-      barEl.style.width = (job.status === "running") ? "100%" : "0%";
-      metaEl.textContent = "";
-    }
-    cancelBtn.style.display = (job.can_cancel && !TERMINAL.includes(job.status)) ? "" : "none";
-
-    try {
-      const r2 = await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}/log?after=${logAfter}`);
-      const lg = await r2.json();
-      if(lg.lines && lg.lines.length){
-        consoleEl.textContent += lg.lines.join("\n") + "\n";
-        consoleEl.scrollTop = consoleEl.scrollHeight;
-      }
-      logAfter = lg.total || logAfter;
-    } catch(e){ /* a missed log line isn't worth aborting the modal over */ }
-
-    if(stopped) return;
-    if(TERMINAL.includes(job.status)){
-      cancelBtn.style.display = "none";
-      if(doneCallback) doneCallback(job);
-      return;
-    }
-    timer = setTimeout(pollOnce, 1500);
-  }
-  modal._jpStop = function(){
-    stopped = true;
-    if(timer) clearTimeout(timer);
-  };
-  stopped = false;
-  pollOnce();
-
-  return {
-    onDone(cb){ doneCallback = cb; },
-    close(){ modal._jpStop(); modal.style.display = "none"; },
-  };
-};
-"""
 
 # Shared across every page template via Jinja globals — see templates/*.html
 # `{{ common_css|safe }}` / `{{ common_js|safe }}`.

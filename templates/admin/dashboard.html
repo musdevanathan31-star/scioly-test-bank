@@ -1,41 +1,23 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Server Admin</title>
 <style>
-:root{
-  --bg:#fff;--bg-alt:#f7f7f8;--bg-card:#fff;--fg:#222;--fg-soft:#444;--muted:#888;
-  --line:#e2e2e2;--accent:#0066cc;--ok:#1f8a4d;--warn:#b86b00;--bad:#c0392b;--hover:#f0f0f0;
-}
-*{box-sizing:border-box}
-body{font:14px -apple-system,system-ui,Segoe UI,Roboto,sans-serif;margin:0;color:var(--fg);background:var(--bg-alt)}
-header{padding:10px 18px;background:var(--bg-card);border-bottom:1px solid var(--line);
-  display:flex;gap:12px;align-items:center;position:sticky;top:0}
-header h1{margin:0;font-size:15px;font-weight:600;flex:1}
+{{ common_css|safe }}
 main{padding:18px;max-width:960px;margin:0 auto}
 section{background:var(--bg-card);border:1px solid var(--line);border-radius:8px;
   padding:16px 18px;margin-bottom:18px}
 section h2{margin:0 0 12px 0;font-size:14px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
-button{padding:5px 11px;border:1px solid var(--line);background:var(--bg-card);
-  color:var(--fg);border-radius:4px;cursor:pointer;font-size:13px}
-button:hover{background:var(--hover)}
-button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
-button:disabled{opacity:.5;cursor:not-allowed}
-.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
-.badge.active{background:#e3f4e9;color:var(--ok)}
-.badge.inactive{background:#f0f0f0;color:var(--muted)}
-.badge.failed{background:#fde7e6;color:var(--bad)}
 select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px}
 pre.console{background:#1e1e1e;color:#ddd;padding:10px;border-radius:6px;max-height:320px;
   overflow:auto;font-size:12px;white-space:pre-wrap}
 .row{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
-.muted{color:var(--muted);font-size:12px}
 .msg{font-size:13px;margin-top:8px}
 .msg.ok{color:var(--ok)}
 .msg.err{color:var(--bad)}
 </style></head>
 <body>
+<script>{{ common_js|safe }}</script>
 <header>
   <h1>Server Admin</h1>
   <form method="post" action="{{ url_for('logout') }}"><button type="submit">Sign out</button></form>
@@ -50,7 +32,7 @@ pre.console{background:#1e1e1e;color:#ddd;padding:10px;border-radius:6px;max-hei
         {% for inst in instances %}
         <tr data-instance="{{ inst.name }}">
           <td>{{ inst.label }}</td>
-          <td><span class="badge {{ 'active' if inst.status == 'active' else ('failed' if inst.status == 'failed' else 'inactive') }}">{{ inst.status }}</span></td>
+          <td><span class="badge {{ 'badge-ok' if inst.status == 'active' else ('badge-bad' if inst.status == 'failed' else 'badge-neutral') }}">{{ inst.status }}</span></td>
           <td>{{ inst.port }}</td>
           <td class="workers-cell" title="Locked at 1 — raising it needs build_question_bank.py's state lock and jobs.py's job queue redesigned for multiple processes first. See spec.md."><span class="workers-value">{{ inst.workers if inst.workers is not none else "?" }}</span> 🔒</td>
           <td>
@@ -112,16 +94,14 @@ pre.console{background:#1e1e1e;color:#ddd;padding:10px;border-radius:6px;max-hei
      (not a literal Unix/sudo password — see spec.md §16) immediately before
      Update / standalone Restart / Rollback / Set threads, so a stolen
      session cookie alone can't trigger any of them. -->
-<div id="pwd-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
-     align-items:center;justify-content:center;z-index:50">
-  <div style="background:var(--bg-card);border-radius:8px;padding:20px;width:340px;
-       box-shadow:0 8px 24px rgba(0,0,0,.3)">
-    <h3 style="margin:0 0 4px 0;font-size:14px">Confirm: <span id="pwd-modal-label"></span></h3>
+<div id="pwd-modal" class="modal-backdrop">
+  <div class="modal-box narrow">
+    <div class="hdr"><h3>Confirm: <span id="pwd-modal-label"></span></h3></div>
     <p class="muted" style="margin:4px 0 10px 0">Re-enter your admin password to proceed.</p>
     <input type="password" id="pwd-modal-input" style="width:100%;padding:6px 8px;
            border:1px solid var(--line);border-radius:4px;font:inherit" autocomplete="current-password">
     <div class="msg err" id="pwd-modal-err" style="min-height:16px"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:8px">
+    <div class="actions">
       <button onclick="closePasswordConfirm()">Cancel</button>
       <button class="primary" id="pwd-modal-submit">Confirm</button>
     </div>
@@ -156,12 +136,12 @@ function showPasswordConfirm(actionLabel, onConfirm){
   document.getElementById("pwd-modal-label").textContent = actionLabel;
   document.getElementById("pwd-modal-input").value = "";
   document.getElementById("pwd-modal-err").textContent = "";
-  document.getElementById("pwd-modal").style.display = "flex";
+  document.getElementById("pwd-modal").classList.add("on");
   document.getElementById("pwd-modal-input").focus();
   _pwdModalConfirm = onConfirm;
 }
 function closePasswordConfirm(){
-  document.getElementById("pwd-modal").style.display = "none";
+  document.getElementById("pwd-modal").classList.remove("on");
   _pwdModalConfirm = null;
 }
 document.getElementById("pwd-modal-submit").addEventListener("click", async () => {
@@ -179,9 +159,9 @@ document.getElementById("pwd-modal-input").addEventListener("keydown", e => {
 });
 
 function statusBadgeClass(status){
-  if(status === "active") return "active";
-  if(status === "failed") return "failed";
-  return "inactive";
+  if(status === "active") return "badge-ok";
+  if(status === "failed") return "badge-bad";
+  return "badge-neutral";
 }
 
 async function refreshStatus(){
@@ -282,7 +262,7 @@ async function loadBackups(){
   }
 }
 
-function doRollback(){
+async function doRollback(){
   const name = document.getElementById("rollback-instance").value;
   const ts = document.getElementById("rollback-timestamp").value;
   const msg = document.getElementById("rollback-msg");
@@ -291,7 +271,8 @@ function doRollback(){
     msg.textContent = "Pick an instance and a backup first.";
     return;
   }
-  if(!confirm(`Roll back ${name} to backup ${ts}? This restarts the service.`)) return;
+  if(!await confirmModal(`Roll back ${name} to backup ${ts}? This restarts the service.`,
+                          {danger:true, confirmLabel:"Roll back"})) return;
   showPasswordConfirm(`Roll back ${name} to ${ts}`, password => doRollbackConfirmed(name, ts, password));
 }
 async function doRollbackConfirmed(name, ts, password){

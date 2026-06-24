@@ -6,16 +6,16 @@
 .quiz-section{background:#fff;border:1px solid var(--line);border-radius:8px;
   padding:24px;margin-bottom:18px}
 .quiz-section h2{margin:0 0 14px 0;font-size:17px;color:#222}
-.quiz-config{display:grid;grid-template-columns:140px 1fr;gap:10px 14px;align-items:center;font-size:13px}
-.quiz-config input[type=number]{width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:3px}
-.quiz-config select{padding:5px 8px;border:1px solid var(--line);border-radius:3px;min-width:180px;font:inherit}
+.quiz-config.form-grid{align-items:center}
+.quiz-config input[type=number]{width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:4px}
+.quiz-config select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;min-width:180px;font:inherit}
 .quiz-actions{margin-top:18px;text-align:right}
 .quiz-actions button{padding:8px 18px;font-size:14px}
 .quiz-q{font-size:16px;line-height:1.55;color:#222;margin-bottom:14px}
 .quiz-meta{font-size:11px;color:var(--muted);margin-bottom:14px;
   text-transform:uppercase;letter-spacing:.4px}
 .quiz-choices{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}
-.quiz-choice{padding:10px 14px;border:1px solid var(--line);border-radius:5px;cursor:pointer;
+.quiz-choice{padding:10px 14px;border:1px solid var(--line);border-radius:4px;cursor:pointer;
   background:#fff;text-align:left;font-size:14px;transition:background .1s,border-color .1s}
 .quiz-choice:hover{background:#f5f9fd;border-color:var(--accent)}
 .quiz-choice.picked{background:#e3f0fa;border-color:var(--accent)}
@@ -27,14 +27,14 @@
 .quiz-timer{font-variant-numeric:tabular-nums;font-weight:600;color:var(--fg)}
 .quiz-timer.warn{color:var(--warn)}
 .quiz-timer.danger{color:var(--bad)}
-.quiz-feedback{padding:12px;background:var(--bg-alt);border-radius:5px;font-size:13px;margin-bottom:14px}
+.quiz-feedback{padding:12px;background:var(--bg-alt);border-radius:4px;font-size:13px;margin-bottom:14px}
 .quiz-feedback.correct{background:#e3f4e9;color:#1f6f3a}
 .quiz-feedback.wrong{background:#fde7e6;color:#a02020}
 .quiz-score-big{font-size:36px;font-weight:700;color:var(--accent);text-align:center;margin:12px 0}
 .quiz-score-detail{text-align:center;color:var(--fg-soft);font-size:13px}
 .quiz-mistakes{margin-top:18px}
 .quiz-mistakes h3{font-size:14px;margin:14px 0 8px 0}
-.quiz-mistake{padding:10px;border:1px solid var(--line);border-radius:5px;margin-bottom:8px}
+.quiz-mistake{padding:10px;border:1px solid var(--line);border-radius:4px;margin-bottom:8px}
 .quiz-mistake-q{font-size:13px;margin-bottom:6px}
 .quiz-mistake-meta{font-size:11px;color:var(--muted)}
 .quiz-mistake-you{color:var(--bad);font-size:12px}
@@ -45,7 +45,7 @@
   font-weight:700;color:#9a7a1a;margin-bottom:4px}
 .quiz-context-banner .images{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .quiz-context-banner .images img{max-width:160px;max-height:160px;border:1px solid var(--line);
-  border-radius:3px;background:#fff}
+  border-radius:4px;background:#fff}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -61,7 +61,7 @@
 
   <div class="quiz-section" id="config_section">
     <h2>Take a practice quiz</h2>
-    <div class="quiz-config">
+    <div class="quiz-config form-grid">
       <label for="qc_n">How many questions</label>
       <input id="qc_n" type="number" value="10" min="1" max="100" title="Number of questions in the quiz">
 

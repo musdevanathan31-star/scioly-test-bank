@@ -3,12 +3,12 @@
 <style>
 {{ common_css|safe }}
 .list-wrap{padding:18px}
-table{width:100%;border-collapse:collapse;background:#fff;
+table{width:100%;border-collapse:collapse;background:var(--bg-card);
   border:1px solid var(--line);border-radius:6px;overflow:hidden}
 th,td{padding:9px 14px;border-bottom:1px solid var(--line);text-align:left;
   font-size:13px}
 th{background:#fafafa;cursor:pointer;user-select:none;
-  font-weight:600;color:#444}
+  font-weight:600;color:var(--fg-soft)}
 th:hover{background:#f0f0f0}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#fafbfc}
@@ -27,46 +27,64 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   <span id="status" class="muted"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/jobs"><button title="View running/queued/recent background jobs for this event (reprocess, scio.ly, generation, …)">Jobs</button></a>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">Scan files</button></a>
+  <div class="toolbar-group">
+    <a href="{{ request.script_root }}/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
+    <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
+    <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  </div>
+  <div class="toolbar-group">
+    <a href="{{ request.script_root }}/event/{{ event_slug }}/jobs"><button title="View running/queued/recent background jobs for this event (reprocess, scio.ly, generation, …)">Jobs</button></a>
+    <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">Scan files</button></a>
+  </div>
   {% include "_user_badge.html" %}
 </header>
 <div class="list-wrap">
   <div class="controls">
     <span class="muted">Click a row to review. Sort by column. Tick boxes to bulk-reprocess.</span>
-    <form id="upload_test_form" enctype="multipart/form-data"
-          style="display:flex;gap:8px;align-items:center;margin-left:18px">
-      <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
-        Upload test
-        <input type="file" name="test_file" accept=".pdf,.docx,.doc" required
-               title="The test / question-paper file to add to this event (PDF, .docx, or .doc — Word docs are converted to PDF automatically)">
-      </label>
-      <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
-        + key (optional)
-        <input type="file" name="key_file" accept=".pdf,.docx,.doc"
-               title="The matching answer-key file, if you have one (PDF, .docx, or .doc)">
-      </label>
-      <button type="submit"
-              title="Upload this test (and key, if provided) and extract its questions immediately">
-        Upload
-      </button>
-    </form>
+    <div class="toolbar-group" style="position:relative;margin-left:18px">
+      <button id="upload_toggle_btn" type="button" title="Upload a test PDF/.docx/.doc directly into this event">+ Upload test</button>
+      <div id="upload_dropdown" class="dropdown-panel">
+        <form id="upload_test_form" enctype="multipart/form-data">
+          <label class="muted" style="font-size:12px;display:block;margin-bottom:8px">
+            Test file (required)
+            <input type="file" name="test_file" accept=".pdf,.docx,.doc" required
+                   title="The test / question-paper file to add to this event (PDF, .docx, or .doc — Word docs are converted to PDF automatically)"
+                   style="display:block;width:100%;margin-top:4px">
+          </label>
+          <label class="muted" style="font-size:12px;display:block;margin-bottom:8px">
+            + key (optional)
+            <input type="file" name="key_file" accept=".pdf,.docx,.doc"
+                   title="The matching answer-key file, if you have one (PDF, .docx, or .doc)"
+                   style="display:block;width:100%;margin-top:4px">
+          </label>
+          <label class="muted" style="font-size:12px;display:block;margin-bottom:10px">
+            + figures (optional)
+            <input type="file" name="supplementary_file" accept=".pdf,.docx,.doc"
+                   title="A separate document (e.g. a 'sheet'/'notes' file) containing figures referenced by this test — stored alongside it and browsable later from the review page's target toggle, not run through extraction"
+                   style="display:block;width:100%;margin-top:4px">
+          </label>
+          <button type="submit" class="primary" style="width:100%"
+                  title="Upload this test (and key/figures, if provided) and extract its questions immediately">
+            Upload
+          </button>
+        </form>
+      </div>
+    </div>
     <span style="flex:1"></span>
-    <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
-      Group by
-      <select id="group_by" title="Visually group PDF rows">
-        <option value="">none</option>
-        <option value="year">year</option>
-        <option value="division">division</option>
-      </select>
-    </label>
-    <button id="bulk_reprocess" class="danger" disabled
-            title="Re-extract every selected PDF using the latest pipeline (annotations are replayed on top).">
-      Bulk reprocess (<span id="bulk_count">0</span>)
-    </button>
+    <div class="toolbar-group">
+      <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
+        Group by
+        <select id="group_by" title="Visually group PDF rows">
+          <option value="">none</option>
+          <option value="year">year</option>
+          <option value="division">division</option>
+        </select>
+      </label>
+      <button id="bulk_reprocess" class="danger" disabled
+              title="Re-extract every selected PDF using the latest pipeline (annotations are replayed on top).">
+        Bulk reprocess (<span id="bulk_count">0</span>)
+      </button>
+    </div>
   </div>
   <table id="tbl">
     <thead><tr>
@@ -102,6 +120,15 @@ function esc_grp(s){ return (s||"").toString().replaceAll("<","&lt;").replaceAll
 
 document.getElementById("group_by").addEventListener("change", load);
 
+document.getElementById("upload_toggle_btn").addEventListener("click", e => {
+  e.stopPropagation();
+  document.getElementById("upload_dropdown").classList.toggle("on");
+});
+document.addEventListener("click", e => {
+  if(!e.target.closest("#upload_toggle_btn") && !e.target.closest("#upload_dropdown"))
+    document.getElementById("upload_dropdown").classList.remove("on");
+});
+
 document.getElementById("upload_test_form").addEventListener("submit", async e => {
   e.preventDefault();
   const form = e.target;
@@ -115,6 +142,7 @@ document.getElementById("upload_test_form").addEventListener("submit", async e =
     const j = await r.json();
     if(!j.ok){ setStatus("Upload failed: " + (j.error || ""), "err"); btn.disabled = false; return; }
     form.reset();
+    document.getElementById("upload_dropdown").classList.remove("on");
     const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id,
                                     title: `Extracting ${j.pdf_name}`});
     handle.onDone(job => {
@@ -123,6 +151,7 @@ document.getElementById("upload_test_form").addEventListener("submit", async e =
       setStatus(job.status === "succeeded"
         ? `Uploaded ${j.pdf_name}: ${r2.n_questions || 0} question(s) extracted`
           + (j.has_key ? " (with key)" : "")
+          + (j.supplementary_name ? " (+ figures)" : "")
         : `Extraction ${job.status}: ${job.error || ""}`,
         job.status === "succeeded" ? "ok" : "err");
       load();
@@ -180,16 +209,16 @@ async function load(){
       <tr ${needsAttention}>
         <td><input type="checkbox" class="row-check" data-pdf="${r.name}" title="Select for bulk reprocess"></td>
         <td><a href="${APP_ROOT}/event/${EVENT_SLUG}/review/${r.name}" title="Review questions extracted from this PDF">${r.name}</a>
-          ${r.has_key ? '' : '<span class="badge fresh" title="No answer-key PDF found for this test">no key</span>'}</td>
+          ${r.has_key ? '' : '<span class="badge badge-warn" title="No answer-key PDF found for this test">no key</span>'}</td>
         <td>${r.mtime_h}</td>
         <td class="numcell">${r.size_h}</td>
         <td class="numcell">${r.n_questions}</td>
         <td class="numcell">${r.n_with_img}</td>
         <td class="numcell">${r.n_with_ans}</td>
         <td>${
-           r.manual_edited ? '<span class="badge edited" title="You have edited this PDF\'s questions in the review UI">manual edits</span>'
-         : r.processed ? '<span class="badge processed">processed</span>'
-         : '<span class="badge fresh">not processed</span>'
+           r.manual_edited ? '<span class="badge badge-warn" title="You have edited this PDF\'s questions in the review UI">manual edits</span>'
+         : r.processed ? '<span class="badge badge-ok">processed</span>'
+         : '<span class="badge badge-warn">not processed</span>'
         }</td>
         <td class="row-actions">
           <a href="${viewQ}" title="See these questions in the browse view"><button class="ghost">View questions</button></a>
@@ -236,13 +265,12 @@ document.getElementById("select_all").addEventListener("change", e => {
 document.getElementById("bulk_reprocess").addEventListener("click", async () => {
   const picked = [...document.querySelectorAll(".row-check:checked")].map(cb => cb.dataset.pdf);
   if(!picked.length) return;
-  if(!confirm(`Reprocess ${picked.length} PDF(s)?
-
-`
-              + `Annotations are replayed automatically. Each PDF becomes its own background job; `
-              + `they run one at a time (this server can't do two extractions at once), watch/cancel `
-              + `them individually from the Jobs page. Hold Shift while clicking Reprocess on `
-              + `a single PDF if you need to wipe annotations too — bulk mode always preserves them.`)) return;
+  if(!await confirmModal(
+    `Reprocess ${picked.length} PDF(s)? Annotations are replayed automatically. Each PDF becomes its own background job; `
+    + `they run one at a time (this server can't do two extractions at once), watch/cancel `
+    + `them individually from the Jobs page. Hold Shift while clicking Reprocess on `
+    + `a single PDF if you need to wipe annotations too — bulk mode always preserves them.`,
+    {confirmLabel:"Reprocess"})) return;
   document.getElementById("bulk_reprocess").disabled = true;
   let queued = 0;
   for(const name of picked){
@@ -275,7 +303,7 @@ document.querySelectorAll("th[data-sort]").forEach(th=>{
 document.addEventListener("click", async e=>{
   const n = e.target.dataset.reprocess;
   if(n){
-    if(!confirm(`Reprocess ${n}? Manual edits will be lost.`)) return;
+    if(!await confirmModal(`Reprocess ${n}? Manual edits will be lost.`, {danger:true, confirmLabel:"Reprocess"})) return;
     e.target.textContent = "Working...";
     e.target.disabled = true;
     try{
@@ -303,12 +331,10 @@ document.addEventListener("click", async e=>{
   }
   const d = e.target.dataset.delall;
   if(d){
-    if(!confirm(`Delete ALL questions from ${d}?
-
-` +
-                `Recorded as annotations — deletions survive Reprocess.
-` +
-                `You can re-add questions from regions in the review page.`)) return;
+    if(!await confirmModal(
+      `Delete ALL questions from ${d}? Recorded as annotations — deletions survive Reprocess. ` +
+      `You can re-add questions from regions in the review page.`,
+      {danger:true, confirmLabel:"Delete all"})) return;
     e.target.textContent = "Deleting...";
     e.target.disabled = true;
     try{

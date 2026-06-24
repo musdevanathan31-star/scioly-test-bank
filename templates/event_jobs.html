@@ -3,11 +3,11 @@
 <style>
 {{ common_css|safe }}
 .list-wrap{padding:18px}
-table{width:100%;border-collapse:collapse;background:#fff;
+table{width:100%;border-collapse:collapse;background:var(--bg-card);
   border:1px solid var(--line);border-radius:6px;overflow:hidden}
 th,td{padding:9px 14px;border-bottom:1px solid var(--line);text-align:left;
   font-size:13px;vertical-align:middle}
-th{background:#fafafa;font-weight:600;color:#444}
+th{background:#fafafa;font-weight:600;color:var(--fg-soft)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#fafbfc}
 .numcell{text-align:right;font-variant-numeric:tabular-nums}
@@ -43,11 +43,11 @@ function escHtml(s){ return (s == null ? "" : String(s))
 
 const STATUS_BADGE = {
   queued:      ["muted", ""],
-  running:     ["badge edited", "⏳ "],
-  succeeded:   ["badge processed", "✓ "],
-  failed:      ["badge fresh", "⚠ "],
-  cancelled:   ["badge edited", "✕ "],
-  interrupted: ["badge fresh", "⚠ "],
+  running:     ["badge badge-warn", "⏳ "],
+  succeeded:   ["badge badge-ok", "✓ "],
+  failed:      ["badge badge-bad", "⚠ "],
+  cancelled:   ["badge badge-warn", "✕ "],
+  interrupted: ["badge badge-bad", "⚠ "],
 };
 
 function fmtDuration(job){
@@ -111,7 +111,7 @@ document.addEventListener("click", async e => {
   }
   const c = e.target.dataset.cancel;
   if(c){
-    if(!confirm("Cancel this job?")) return;
+    if(!await confirmModal("Cancel this job?", {danger:true, confirmLabel:"Cancel job"})) return;
     try {
       await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/jobs/${c}/cancel`, {method: "POST"});
     } catch(err){ toast("Cancel failed: " + err.message, "err"); }

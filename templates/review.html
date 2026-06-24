@@ -39,7 +39,7 @@
 .q-card .row.tight{margin-bottom:3px}
 .q-card input[type=text],.q-card textarea,.q-card select{
   width:100%;padding:4px 6px;border:1px solid var(--line);
-  border-radius:3px;font:inherit;font-size:13px;background:#fff;
+  border-radius:4px;font:inherit;font-size:13px;background:#fff;
   min-width:0;box-sizing:border-box}
 .q-card textarea{min-height:48px;resize:vertical;font-family:inherit}
 .q-card .q-num{flex:0 0 70px}
@@ -49,7 +49,7 @@
 .q-card .images{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .q-card .imgbox{position:relative}
 .q-card .imgbox img{width:78px;height:78px;object-fit:contain;
-  border:1px solid var(--line);background:#fff;border-radius:3px;display:block}
+  border:1px solid var(--line);background:#fff;border-radius:4px;display:block}
 .q-card .imgbox .x{position:absolute;top:-7px;right:-7px;background:var(--bad);
   color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;
   line-height:16px;cursor:pointer;font-size:13px;font-weight:bold;
@@ -64,9 +64,9 @@
   border-radius:2px;text-align:center;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;pointer-events:none}
 .q-card .pending-img-note{margin-top:6px;padding:6px 8px;background:#fff8e1;
-  border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:3px}
+  border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:4px}
 /* Diagram chat panel */
-.dc-msg{padding:8px 10px;margin:6px 0;border-radius:5px;font-size:12px;line-height:1.5}
+.dc-msg{padding:8px 10px;margin:6px 0;border-radius:4px;font-size:12px;line-height:1.5}
 .dc-msg.dc-user{background:var(--bg-card);border:1px solid var(--line)}
 .dc-msg.dc-assistant{background:#fff;border:1px solid var(--accent)}
 .dc-msg b{display:block;font-size:10px;color:var(--muted);
@@ -75,22 +75,22 @@
   border-radius:4px}
 .dc-svg-render{max-width:100%;overflow:auto}
 .dc-svg-render svg{max-width:100%;height:auto;display:block;margin:0 auto;
-  background:#fff;border-radius:3px}
+  background:#fff;border-radius:4px}
 .dc-svg-actions{display:flex;gap:6px;margin-top:6px}
 .dc-prose{font-style:italic;color:var(--fg-soft);font-size:11px;margin-top:4px}
 /* Shared context blocks — passages/intros/tables that multiple Qs reference */
 .context-section{margin-bottom:14px;padding:8px;background:#fff8e1;
   border:1px dashed #d8b75c;border-radius:6px}
 .context-card{padding:8px 10px;background:#fffbeb;border:1px solid #e8c875;
-  border-radius:5px;margin-bottom:6px}
+  border-radius:4px;margin-bottom:6px}
 .context-card textarea{width:100%;padding:5px 7px;border:1px solid var(--line);
-  border-radius:3px;font:inherit;font-size:12px;background:#fff;resize:vertical}
+  border-radius:4px;font:inherit;font-size:12px;background:#fff;resize:vertical}
 .context-card .delQ{background:transparent;border:none;color:var(--bad);
   cursor:pointer;font-size:14px;padding:0 6px}
 .context-card .images{display:flex;gap:6px;flex-wrap:wrap}
 .context-card .imgbox{position:relative}
 .context-card .imgbox img{width:64px;height:64px;object-fit:contain;
-  border:1px solid var(--line);background:#fff;border-radius:3px;display:block}
+  border:1px solid var(--line);background:#fff;border-radius:4px;display:block}
 .context-card .imgbox .x{position:absolute;top:-7px;right:-7px;background:var(--bad);
   color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;
   line-height:16px;cursor:pointer;font-size:13px;font-weight:bold;
@@ -111,7 +111,7 @@
   grid-template-columns:repeat(auto-fill,90px);gap:6px}
 .image-bay .grid .ibox{position:relative;cursor:pointer}
 .image-bay .grid img{width:90px;height:90px;object-fit:contain;
-  border:2px solid transparent;background:#f0f0f0;border-radius:3px;display:block}
+  border:2px solid transparent;background:#f0f0f0;border-radius:4px;display:block}
 .image-bay .grid .ibox.selected img{border-color:var(--accent)}
 .image-bay .grid .ibox .usage{position:absolute;bottom:0;left:0;right:0;
   background:rgba(0,0,0,.6);color:#fff;font-size:10px;text-align:center;
@@ -124,7 +124,7 @@
 .capture-bar .lbl{color:#225;font-weight:600;margin-right:4px}
 .capture-bar button{padding:3px 9px;font-size:12px}
 .math-preview{font-size:13px;padding:6px 8px;margin-top:4px;
-  background:#fafbfd;border:1px dashed #d0d6de;border-radius:3px;
+  background:#fafbfd;border:1px dashed #d0d6de;border-radius:4px;
   min-height:24px;color:#222;line-height:1.5;overflow-x:auto}
 .math-preview:empty{display:none}
 .math-preview .ph{color:var(--muted);font-style:italic;font-size:12px}
@@ -141,10 +141,10 @@
 .btn-tiny{padding:2px 8px;font-size:11px}
 .help{font-size:12px;color:var(--muted);margin:4px 0 10px 0;line-height:1.5}
 .help kbd{background:#eee;border:1px solid #ccc;padding:1px 5px;
-  border-radius:3px;font-size:11px}
+  border-radius:4px;font-size:11px}
 .page-nav{display:flex;align-items:center;gap:6px}
 .page-nav input{width:54px;text-align:center;padding:3px 4px;
-  border:1px solid var(--line);border-radius:3px;font:inherit}
+  border:1px solid var(--line);border-radius:4px;font:inherit}
 .target-toggle{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
 .target-toggle button{border:none;border-radius:0;padding:4px 10px;font-size:12px}
 .target-toggle button.on{background:var(--accent);color:#fff}
@@ -154,7 +154,7 @@
   overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--line);
   height:96px;flex-shrink:0;align-items:flex-start}
 .thumb-strip .thumb{flex:0 0 56px;height:74px;border:2px solid transparent;
-  cursor:pointer;background:#fff;border-radius:3px;position:relative;
+  cursor:pointer;background:#fff;border-radius:4px;position:relative;
   display:flex;align-items:center;justify-content:center;
   font-size:10px;color:var(--muted);font-weight:500}
 .thumb-strip .thumb.on{border-color:var(--accent)}
@@ -185,7 +185,7 @@
 .outline-drawer h4{margin:0 0 8px 0;font-size:12px;color:var(--muted);
   text-transform:uppercase;letter-spacing:.5px}
 .outline-drawer .item{font-size:13px;padding:4px 6px;cursor:pointer;
-  border-radius:3px;color:var(--fg-soft);line-height:1.3}
+  border-radius:4px;color:var(--fg-soft);line-height:1.3}
 .outline-drawer .item:hover{background:var(--hover)}
 .outline-drawer .lvl-1{font-weight:600;color:var(--fg)}
 .outline-drawer .lvl-2{padding-left:16px}
@@ -198,16 +198,16 @@
   border-radius:2px}
 .region-overlay:hover{background:rgba(0,102,204,.15)}
 .region-overlay .ro-label{position:absolute;top:-22px;left:0;background:var(--accent);
-  color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap}
+  color:#fff;font-size:10px;padding:1px 6px;border-radius:4px;white-space:nowrap}
 
 /* Question bounding boxes (algorithm's confidence regions) */
 .q-bbox{position:absolute;border:2px solid rgba(31,138,77,.55);
-  background:rgba(31,138,77,.06);border-radius:3px;cursor:pointer;
+  background:rgba(31,138,77,.06);border-radius:4px;cursor:pointer;
   pointer-events:auto;transition:background .12s ease}
 .q-bbox:hover{background:rgba(31,138,77,.18)}
 .q-bbox.focused{border-color:rgba(207,99,11,.85);background:rgba(207,99,11,.10)}
 .q-bbox .bb-label{position:absolute;top:-19px;left:-2px;background:var(--ok);
-  color:#fff;font-size:10px;padding:1px 7px;border-radius:3px;font-weight:600;
+  color:#fff;font-size:10px;padding:1px 7px;border-radius:4px;font-weight:600;
   white-space:nowrap;letter-spacing:.2px}
 .q-bbox.focused .bb-label{background:var(--warn)}
 .q-bbox.unmatched{border-style:dashed;border-color:rgba(192,57,43,.55);
@@ -252,7 +252,7 @@
 .cases-panel .row-item{display:flex;align-items:center;gap:8px;padding:5px 10px;
   border-top:1px dashed #e8c875;font-size:12px;flex-wrap:wrap}
 .cases-panel .row-item input[type=text]{flex:0 1 220px;padding:2px 6px;font-size:12px;
-  border:1px solid var(--line);border-radius:3px}
+  border:1px solid var(--line);border-radius:4px}
 .cases-panel .jump-q{color:var(--accent);cursor:pointer;text-decoration:underline;
   font-size:11px}
 #groupQuestions.on{background:#9b1cb3;color:#fff;border-color:#9b1cb3}
@@ -293,72 +293,86 @@
     </div>
   </div>
   <span id="status" class="muted"></span>
-  <span id="dirty" class="badge edited" style="display:none">unsaved</span>
+  <span id="dirty" class="badge badge-warn" style="display:none">unsaved</span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
   <button id="save" class="primary" disabled title="Persist edits to .qbank_state.json (Ctrl+S)">Save</button>
   {% include "_user_badge.html" %}
 </header>
 <div class="toolbar">
-  <div class="page-nav">
-    <button id="prev" title="Previous page">◀</button>
-    <span>Page</span>
-    <input id="pageInput" type="number" min="1" value="1" title="Page number">
-    <span id="pageCount" class="muted">/ ?</span>
-    <span id="pageProgress" class="muted" style="font-size:11px"></span>
-    <button id="next" title="Next page">▶</button>
+  <div class="toolbar-group">
+    <div class="page-nav">
+      <button id="prev" title="Previous page">◀</button>
+      <span>Page</span>
+      <input id="pageInput" type="number" min="1" value="1" title="Page number">
+      <span id="pageCount" class="muted">/ ?</span>
+      <span id="pageProgress" class="muted" style="font-size:11px"></span>
+      <button id="next" title="Next page">▶</button>
+    </div>
   </div>
-  <div class="page-nav" style="margin-left:14px">
-    <span>Go to Q</span>
-    <input id="gotoQ" type="text" placeholder="#" style="width:60px"
-           title="Jump to a question by number">
+  <div class="toolbar-group">
+    <div class="page-nav">
+      <span>Go to Q</span>
+      <input id="gotoQ" type="text" placeholder="#" style="width:60px"
+             title="Jump to a question by number">
+    </div>
   </div>
-  <div class="target-toggle" id="targetToggle">
-    <button data-target="test" class="on" title="Render and capture from the main test PDF">Test PDF</button>
-    <button data-target="key" title="Render and capture from the answer key PDF (when available)">Key PDF</button>
+  <div class="toolbar-group">
+    <div class="target-toggle" id="targetToggle">
+      <button data-target="test" class="on" title="Render and capture from the main test PDF">Test PDF</button>
+      <button data-target="key" title="Render and capture from the answer key PDF (when available)">Key PDF</button>
+    </div>
   </div>
   <div class="grow"></div>
-  <button id="validatePage" title="Send every question on this page to Haiku for answer validation (~$0.003/question)">✓ Validate page</button>
-  <button id="ocr" title="Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing">OCR this page (vision)</button>
-  <button id="addRegion" class="primary" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">+ Add question from region</button>
-  <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">+ Add context from region</button>
-  <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for case studies — capture the passage, then group its questions.">🔗 Group questions</button>
-  <button id="addQ" title="Insert an empty question card you can fill out manually">+ Add blank</button>
-  <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
-  <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
-  <button id="delAllQ" class="danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">🗑 Delete all</button>
+  <div class="toolbar-group">
+    <span class="label">Inspect</span>
+    <button id="validatePage" title="Send every question on this page to Haiku for answer validation (~$0.003/question)">✓ Validate page</button>
+    <button id="ocr" title="Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing">OCR this page (vision)</button>
+  </div>
+  <div class="toolbar-group">
+    <span class="label">Add</span>
+    <button id="addRegion" class="primary" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">+ Add question from region</button>
+    <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">+ Add context from region</button>
+    <button id="addQ" title="Insert an empty question card you can fill out manually">+ Add blank</button>
+  </div>
+  <div class="toolbar-group">
+    <span class="label">Organize</span>
+    <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for case studies — capture the passage, then group its questions.">🔗 Group questions</button>
+    <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
+    <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
+  </div>
+  <div class="toolbar-group">
+    <button id="delAllQ" class="danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">🗑 Delete all</button>
+  </div>
 </div>
-<div id="snapshotsModal" style="display:none;position:fixed;inset:0;
-     background:rgba(0,0,0,.55);z-index:300;padding:32px;align-items:center;justify-content:center">
-  <div style="background:var(--bg-card);border-radius:8px;padding:20px 22px;
-       width:520px;max-width:95vw;max-height:80vh;overflow:auto;color:var(--fg);
-       box-shadow:0 12px 40px rgba(0,0,0,.45)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h3 style="margin:0">Snapshot history <span class="muted" style="font-weight:400">· {{ pdf_name }}</span></h3>
+<div id="snapshotsModal" class="modal-backdrop">
+  <div class="modal-box" style="width:520px;max-height:80vh">
+    <div class="hdr">
+      <h3>Snapshot history <span class="muted" style="font-weight:400">· {{ pdf_name }}</span></h3>
       <button onclick="closeSnapshotsModal()">✕ Close</button>
     </div>
     <p class="muted" style="font-size:12px">Saved automatically right before a "wipe annotations" or "manual mode" reprocess. Restoring brings back this PDF's annotations, manual-edit tracking, and question list as they were at that point.</p>
     <div id="snapshotsList"></div>
   </div>
 </div>
-<div id="cmpModal" style="display:none;position:fixed;inset:0;
-     background:rgba(0,0,0,.55);z-index:300;padding:32px;overflow:auto">
-  <div style="background:var(--bg-card);border-radius:8px;padding:20px;
-       max-width:1100px;margin:0 auto;color:var(--fg)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <h3 style="margin:0">Compare questions <span class="muted" style="font-weight:400" id="cmpMeta"></span></h3>
+<!-- align-items:flex-start, not the default centered — a side-by-side
+     compare grid can be taller than the viewport, and centering a
+     too-tall flex item clips its top with no way to scroll back to it. -->
+<div id="cmpModal" class="modal-backdrop" style="align-items:flex-start;padding-top:32px">
+  <div class="modal-box" style="width:1100px">
+    <div class="hdr">
+      <h3>Compare questions <span class="muted" style="font-weight:400" id="cmpMeta"></span></h3>
       <button onclick="closeCmp()" title="Close the side-by-side compare modal">✕ Close</button>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" id="cmpGrid"></div>
   </div>
 </div>
 
-<!-- Diagram-generation chat modal -->
-<div id="diagram_modal" style="display:none;position:fixed;inset:0;
-     background:rgba(0,0,0,.55);z-index:310;padding:24px;align-items:center;justify-content:center">
-  <div style="background:var(--bg-card);border-radius:8px;padding:18px 22px;
-       width:760px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;
-       color:var(--fg);box-shadow:0 12px 40px rgba(0,0,0,.45)">
+<!-- Diagram-generation chat modal. z-index:310, deliberately above the
+     default .modal-backdrop stacking (300) — can be opened from within
+     the compare modal, so it needs to land on top of it, not behind. -->
+<div id="diagram_modal" class="modal-backdrop" style="z-index:310">
+  <div class="modal-box" style="width:760px;max-height:90vh;display:flex;flex-direction:column">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <div>
         <h3 style="margin:0;font-size:15px">
@@ -730,7 +744,7 @@ function allTopics(){
 
 // ---- Compare two questions side by side ----
 window.closeCmp = function(){
-  document.getElementById("cmpModal").style.display = "none";
+  document.getElementById("cmpModal").classList.remove("on");
 };
 function _cmpRender(a, b){
   const wd = (text, against) => {
@@ -762,7 +776,7 @@ function _cmpRender(a, b){
   document.getElementById("cmpGrid").innerHTML = card(a, b.text) + card(b, a.text);
   document.getElementById("cmpMeta").textContent =
     `· words in common are highlighted green`;
-  document.getElementById("cmpModal").style.display = "block";
+  document.getElementById("cmpModal").classList.add("on");
   renderMath(document.getElementById("cmpGrid"));
 }
 window.openCompareDialog = function(seed){
@@ -1259,9 +1273,9 @@ function bindCasesPanelEvents(){
     });
   });
   panel.querySelectorAll("[data-cases-act=del]").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const id = btn.dataset.ctx;
-      if(!confirm(`Delete context "${id}" and unlink it from every question that referenced it?`)) return;
+      if(!await confirmModal(`Delete context "${id}" and unlink it from every question that referenced it?`, {danger:true, confirmLabel:"Delete"})) return;
       _undoSnapshot(`delete context ${id}`);
       annDeleteContext(id);
       setDirty(true); renderCards();
@@ -1306,7 +1320,7 @@ function contextCardHTML(c){
   return `
     <div class="context-card" data-ctx-id="${c.id}">
       <div class="row tight">
-        <span class="badge edited" style="font-size:10px"
+        <span class="badge badge-neutral" style="font-size:10px"
               title="Shared context block. Pages: ${pages.join(", ")}.">
           📎 ${esc(c.id)} · p${pages.join(", p")}
         </span>
@@ -1366,13 +1380,13 @@ function bindContextEvents(){
     });
     // Action buttons
     card.querySelectorAll("[data-ctx-act]").forEach(btn => {
-      btn.addEventListener("click", ev => {
+      btn.addEventListener("click", async ev => {
         ev.stopPropagation();
         const c = findContext(id);
         if(!c) return;
         const act = btn.dataset.ctxAct;
         if(act === "del"){
-          if(!confirm(`Delete context "${id}" and unlink it from every question that referenced it?`)) return;
+          if(!await confirmModal(`Delete context "${id}" and unlink it from every question that referenced it?`, {danger:true, confirmLabel:"Delete"})) return;
           _undoSnapshot(`delete context ${id}`);
           annDeleteContext(id);
           setDirty(true); renderCards();
@@ -1451,9 +1465,9 @@ function cardHTML(q){
     const choicesPreview = (q.choices && q.choices.length)
       ? ` (${q.choices.length} choices)` : "";
     const vStatus = (q.validation && q.validation.status) || "";
-    const vBadge = vStatus === "correct"   ? `<span class="badge processed" title="Validated correct">✓</span>`
-                 : vStatus === "incorrect" ? `<span class="badge fresh"     title="Validated incorrect">⚠</span>`
-                 : vStatus === "uncertain" ? `<span class="badge edited"    title="Validation uncertain">?</span>`
+    const vBadge = vStatus === "correct"   ? `<span class="badge badge-ok" title="Validated correct">✓</span>`
+                 : vStatus === "incorrect" ? `<span class="badge badge-bad" title="Validated incorrect">⚠</span>`
+                 : vStatus === "uncertain" ? `<span class="badge badge-warn" title="Validation uncertain">?</span>`
                  : "";
     return `
     <div class="q-card collapsed" data-id="${q._id}">
@@ -1501,7 +1515,7 @@ function cardHTML(q){
   }
   const qPages = questionPages(q);
   const multiPageBadge = qPages.length > 1
-    ? `<span class="badge edited" style="margin-left:6px;font-size:10px"
+    ? `<span class="badge badge-neutral" style="margin-left:6px;font-size:10px"
             title="This question spans multiple pages: ${qPages.join(", ")}. Click a page number to jump.">
          spans p${qPages.join(", p")}
        </span>` : "";
@@ -1707,14 +1721,14 @@ function bindCardEvents(){
       el.addEventListener("change", handler);
     });
     card.querySelectorAll("[data-act]").forEach(el => {
-      el.addEventListener("click", ev => {
+      el.addEventListener("click", async ev => {
         ev.stopPropagation();
         const q = findQ(id);
         const act = el.dataset.act;
         if(act === "toggleSelect"){
           toggleQSelection(q.number);
         } else if(act === "delQ"){
-          if(!confirm(`Delete question #${q.number}?`)) return;
+          if(!await confirmModal(`Delete question #${q.number}?`, {danger:true, confirmLabel:"Delete"})) return;
           _undoSnapshot(`delete Q#${q.number}`);
           annDeleteQuestion(q.number);
           STATE.questions = STATE.questions.filter(x => x._id !== q._id);
@@ -1937,7 +1951,7 @@ let DIAGRAM_CHAT = null;   // {q, messages: [...]}
 function openDiagramChat(q){
   DIAGRAM_CHAT = { q, messages: [] };
   const m = document.getElementById("diagram_modal");
-  m.style.display = "flex";
+  m.classList.add("on");
   document.getElementById("dc_qnum").textContent = "Q#" + q.number;
   document.getElementById("dc_topic").textContent = q.topic || "—";
   const seed = (q.image_descriptions || {}).__pending__
@@ -1956,7 +1970,7 @@ function openDiagramChat(q){
 }
 
 function closeDiagramChat(){
-  document.getElementById("diagram_modal").style.display = "none";
+  document.getElementById("diagram_modal").classList.remove("on");
   DIAGRAM_CHAT = null;
 }
 
@@ -2486,15 +2500,13 @@ document.getElementById("expandAll").addEventListener("click", ()=>{
   renderCards();
 });
 
-document.getElementById("delAllQ").addEventListener("click", ()=>{
+document.getElementById("delAllQ").addEventListener("click", async ()=>{
   const n = STATE.questions.length;
   if(n === 0){ setStatus("No questions to delete.", "warn"); return; }
-  if(!confirm(`Delete ALL ${n} question(s) on this PDF?
-
-` +
-              `This survives Save and Reprocess (deletions are recorded as annotations).
-` +
-              `Use this when you plan to rebuild the question set manually from regions.`)) return;
+  if(!await confirmModal(
+    `Delete ALL ${n} question(s) on this PDF? This survives Save and Reprocess (deletions are recorded as annotations). ` +
+    `Use this when you plan to rebuild the question set manually from regions.`,
+    {danger:true, confirmLabel:"Delete all"})) return;
   _undoSnapshot(`delete all ${n} questions`);
   // Record each as an annotation deletion (or strip from `added` if user-added)
   STATE.questions.slice().forEach(q => annDeleteQuestion(q.number));
@@ -2532,11 +2544,11 @@ document.getElementById("validatePage").addEventListener("click", async ()=>{
   if(!STATE.vision_available){ setStatus("ANTHROPIC_API_KEY not set", "err"); return; }
   const list = questionsOnPage(curPage).filter(q => !q.validation || q.validation.stale);
   if(list.length === 0){
-    if(!confirm("All questions on this page already have a validation. Re-validate all?")) return;
+    if(!await confirmModal("All questions on this page already have a validation. Re-validate all?", {confirmLabel:"Re-validate all"})) return;
     questionsOnPage(curPage).forEach(q => list.push(q));
   }
-  if(!confirm(`Validate ${list.length} question(s) on page ${curPage} via Haiku?
-(About ~$${(list.length*0.003).toFixed(3)} estimated.)`)) return;
+  if(!await confirmModal(`Validate ${list.length} question(s) on page ${curPage} via Haiku? (About ~$${(list.length*0.003).toFixed(3)} estimated.)`,
+                          {confirmLabel:"Validate"})) return;
   let done = 0;
   let errs = 0;
   let firstErr = "";
@@ -2568,7 +2580,7 @@ document.getElementById("validatePage").addEventListener("click", async ()=>{
 });
 
 document.getElementById("ocr").addEventListener("click", async ()=>{
-  if(!confirm(`Run vision OCR on page ${curPage}? (uses ~1 Haiku call)`)) return;
+  if(!await confirmModal(`Run vision OCR on page ${curPage}? (uses ~1 Haiku call)`, {confirmLabel:"Run OCR"})) return;
   const ocrBtn = document.getElementById("ocr");
   ocrBtn.disabled = true;
   setStatusHtml("Running OCR... <span class='spinner'></span>");
@@ -2592,7 +2604,9 @@ document.getElementById("ocr").addEventListener("click", async ()=>{
     return;
   }
   const sample = j.suggestions.map(s => `#${s.number}: ${s.text.slice(0,60)}`).join("\n");
-  if(!confirm(`Vision found ${j.suggestions.length} questions on this page:\n\n${sample}\n\nReplace existing questions on this page with these?`)){
+  if(!await confirmModal(
+    `Vision found ${j.suggestions.length} questions on this page:\n\n${sample}\n\nReplace existing questions on this page with these?`,
+    {wide:true, confirmLabel:"Replace"})){
     setStatus(`OCR cancelled — ${j.suggestions.length} suggestion(s) discarded.`);
     return;
   }
@@ -2655,7 +2669,7 @@ document.getElementById("save").addEventListener("click", async ()=>{
 async function openSnapshotsModal(){
   const listEl = document.getElementById("snapshotsList");
   listEl.innerHTML = `<p class="muted">Loading…</p>`;
-  document.getElementById("snapshotsModal").style.display = "flex";
+  document.getElementById("snapshotsModal").classList.add("on");
   try {
     const r = await fetch(`${API}/pdf/${PDF}/snapshots`);
     const j = await r.json();
@@ -2675,12 +2689,13 @@ async function openSnapshotsModal(){
   }
 }
 function closeSnapshotsModal(){
-  document.getElementById("snapshotsModal").style.display = "none";
+  document.getElementById("snapshotsModal").classList.remove("on");
 }
 document.getElementById("snapshotsModal").addEventListener("click", async e => {
   const file = e.target.dataset.restoreSnapshot;
   if(!file) return;
-  if(!confirm(`Restore this snapshot? It will overwrite ${PDF}'s current annotations, manual-edit tracking, and question list with what was saved at this point. The page will reload.`)) return;
+  if(!await confirmModal(`Restore this snapshot? It will overwrite ${PDF}'s current annotations, manual-edit tracking, and question list with what was saved at this point. The page will reload.`,
+                          {danger:true, confirmLabel:"Restore"})) return;
   try {
     const r = await fetch(`${API}/pdf/${PDF}/restore-snapshot`, {
       method: "POST",
@@ -2693,7 +2708,7 @@ document.getElementById("snapshotsModal").addEventListener("click", async e => {
   } catch(err){ toast("Network error: " + err.message, "err"); }
 });
 document.addEventListener("keydown", e => {
-  if(e.key === "Escape" && document.getElementById("snapshotsModal").style.display !== "none"){
+  if(e.key === "Escape" && document.getElementById("snapshotsModal").classList.contains("on")){
     closeSnapshotsModal();
   }
 });
@@ -2701,28 +2716,21 @@ document.addEventListener("keydown", e => {
 async function runReprocess(mode){
   // mode: "keep" | "wipe" | "manual"
   if(mode === "wipe"){
-    if(!confirm(`Re-extract ${PDF} and WIPE all manual edits & annotations?
-
-` +
-                `Field overrides, deletes, image moves, and validations will be cleared from this PDF — but a snapshot is saved first, so you can restore them later from "Snapshot history" in this menu.`)) return;
+    if(!await confirmModal(
+      `Re-extract ${PDF} and WIPE all manual edits & annotations? Field overrides, deletes, image moves, and validations ` +
+      `will be cleared from this PDF — but a snapshot is saved first, so you can restore them later from "Snapshot history" in this menu.`,
+      {danger:true, confirmLabel:"Wipe & reprocess"})) return;
   } else if(mode === "manual"){
-    if(!confirm(`Enter manual mode for ${PDF}?
-
-` +
-                `• A snapshot of existing questions/annotations is saved first (see "Snapshot history" in this menu) — they'll then be wiped
-` +
-                `• Use "+ Add question from region" to draw each question's region
-` +
-                `• For multi-page questions, capture a region from the second page too (the same Q gets the next page added to extra_pages)
-` +
-                `• Use "Try Haiku" in the capture bar if pure-Python extraction is weak
-
-` +
-                `Continue?`)) return;
+    if(!await confirmModal(
+      `Enter manual mode for ${PDF}?\n\n` +
+      `• A snapshot of existing questions/annotations is saved first (see "Snapshot history" in this menu) — they'll then be wiped\n` +
+      `• Use "+ Add question from region" to draw each question's region\n` +
+      `• For multi-page questions, capture a region from the second page too (the same Q gets the next page added to extra_pages)\n` +
+      `• Use "Try Haiku" in the capture bar if pure-Python extraction is weak`,
+      {wide:true, danger:true, confirmLabel:"Enter manual mode"})) return;
   } else {
-    if(!confirm(`Re-run the pipeline on ${PDF}?
-
-Your saved annotations will be replayed on top of the fresh extraction.`)) return;
+    if(!await confirmModal(`Re-run the pipeline on ${PDF}? Your saved annotations will be replayed on top of the fresh extraction.`,
+                            {confirmLabel:"Reprocess"})) return;
   }
   setStatus("Queueing reprocess…");
   const r = await fetch(`${API}/pdf/${PDF}/reprocess`, {

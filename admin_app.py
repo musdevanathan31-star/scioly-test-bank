@@ -49,6 +49,8 @@ except ImportError:
 
 from werkzeug.security import check_password_hash
 
+from common_ui import COMMON_CSS, COMMON_JS
+
 REPO_ROOT = Path(__file__).parent
 
 
@@ -69,6 +71,12 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 app = Flask(__name__)
+
+# Shared across every page template via Jinja globals — see templates/*.html
+# `{{ common_css|safe }}` / `{{ common_js|safe }}`. Same constants
+# review_app.py uses, imported from common_ui.py rather than duplicated.
+app.jinja_env.globals["common_css"] = COMMON_CSS
+app.jinja_env.globals["common_js"] = COMMON_JS
 
 # ---------------------------------------------------------------------------
 # Security config — same patterns as review_app.py (secret key fail-fast,

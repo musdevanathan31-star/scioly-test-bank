@@ -12,10 +12,10 @@ header{background:#fff;border-bottom:1px solid var(--line)}
   padding:16px;position:sticky;top:46px;height:calc(100vh - 46px);
   overflow-y:auto;box-sizing:border-box}
 .sidebar h3{margin:0 0 6px 0;font-size:12px;text-transform:uppercase;
-  letter-spacing:.6px;color:#666;font-weight:600}
+  letter-spacing:.6px;color:var(--fg-soft);font-weight:600}
 .sidebar section{margin-bottom:18px}
 .sidebar input[type=text],.sidebar select{width:100%;padding:7px 9px;
-  border:1px solid var(--line);border-radius:5px;font:inherit;font-size:13px;
+  border:1px solid var(--line);border-radius:4px;font:inherit;font-size:13px;
   background:#fff;box-sizing:border-box}
 .sidebar input[type=text]:focus,.sidebar select:focus{outline:none;
   border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,102,204,.12)}
@@ -59,10 +59,14 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .qcard .badge.bucket{background:#f5eee5;color:#a3651a;font-family:ui-monospace,monospace;
   font-size:10px;font-weight:500}
 .qcard .badge.type{background:#f1eef7;color:#5e3a99}
-.qcard .v-correct{background:#e6f4e6;color:var(--ok)}
-.qcard .v-incorrect{background:#fceaea;color:var(--bad)}
+/* Aliased to the shared badge-* palette (same colors as job/instance status
+   badges elsewhere) rather than hardcoding their own — kept as their own
+   class names since `.v-correct` etc. are already self-descriptive, unlike
+   `.fresh`/`.processed`/`.edited` elsewhere. */
+.qcard .v-correct{background:#e3f4e9;color:var(--ok)}
+.qcard .v-incorrect{background:#fde7e6;color:var(--bad)}
 .qcard .v-uncertain{background:#fff3d7;color:var(--warn)}
-.qcard .v-none{background:#eee;color:#777}
+.qcard .v-none{background:#f0f0f0;color:var(--muted)}
 .qcard .qstem{font-size:14px;line-height:1.5;color:#222;margin:8px 0;
   white-space:pre-wrap}
 .qcard .choices{margin:6px 0;padding-left:20px;font-size:13px;color:#333}
@@ -73,7 +77,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .qcard .images{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
 .qcard .images img{width:80px;height:80px;object-fit:contain;
   border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
-.qcard .rationale{margin-top:8px;background:#fafafa;border-left:3px solid #bbb;
+.qcard .rationale{margin-top:8px;background:#fafafa;border-left:3px solid var(--muted);
   padding:8px 12px;font-size:12px;color:#555;font-style:italic;border-radius:0 4px 4px 0}
 .qcard .rationale b{color:#222;font-style:normal}
 .qcard .src-row{display:flex;justify-content:space-between;align-items:center;
@@ -100,7 +104,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .inline-editor .ie-row{display:flex;gap:10px;align-items:flex-start;margin-bottom:8px}
 .inline-editor .ie-lbl{flex:0 0 70px;font-size:12px;color:var(--muted);padding-top:4px}
 .inline-editor input[type=text],.inline-editor textarea,.inline-editor select{
-  flex:1;padding:5px 8px;border:1px solid var(--line);border-radius:3px;
+  flex:1;padding:5px 8px;border:1px solid var(--line);border-radius:4px;
   font:inherit;font-size:13px;background:var(--bg-input);color:var(--fg)}
 .inline-editor textarea{min-height:60px;resize:vertical}
 .inline-editor .ie-choices{flex:1;display:flex;flex-direction:column;gap:4px}
@@ -109,16 +113,16 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .inline-editor .ce-c{flex:1}
 .inline-editor .ie-actions{display:flex;gap:8px;margin-top:10px;align-items:center}
 .qcard .pending-img-note{margin-top:8px;padding:6px 8px;background:#fff8e1;
-  border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:3px}
+  border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:4px}
 .save-status{font-size:11px;color:var(--muted)}
 .save-status.saving{color:var(--accent)}
 .save-status.err{color:var(--bad)}
 .last-edited{font-size:11px;color:var(--muted);margin-top:6px}
 .validation-row{display:flex;gap:8px;align-items:center;margin:6px 0}
 .validation-row select{padding:3px 6px;font-size:12px;border:1px solid var(--line);
-  border-radius:3px;font:inherit}
+  border-radius:4px;font:inherit}
 /* Diagram chat panel */
-.dc-msg{padding:8px 10px;margin:6px 0;border-radius:5px;font-size:12px;line-height:1.5}
+.dc-msg{padding:8px 10px;margin:6px 0;border-radius:4px;font-size:12px;line-height:1.5}
 .dc-msg.dc-user{background:var(--bg-card);border:1px solid var(--line)}
 .dc-msg.dc-assistant{background:#fff;border:1px solid var(--accent)}
 .dc-msg b{display:block;font-size:10px;color:var(--muted);
@@ -127,7 +131,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
   border-radius:4px}
 .dc-svg-render{max-width:100%;overflow:auto}
 .dc-svg-render svg{max-width:100%;height:auto;display:block;margin:0 auto;
-  background:#fff;border-radius:3px}
+  background:#fff;border-radius:4px}
 .dc-svg-actions{display:flex;gap:6px;margin-top:6px}
 .dc-prose{font-style:italic;color:var(--fg-soft);font-size:11px;margin-top:4px}
 .btn-tiny{padding:2px 8px;font-size:11px}
@@ -235,9 +239,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
         </select>
       </div>
       <button id="export_btn" title="Export the currently filtered set">Export ▾</button>
-      <div id="export_menu" style="display:none;position:absolute;background:var(--bg-card);
-           border:1px solid var(--line);border-radius:6px;padding:6px 0;
-           box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:100">
+      <div id="export_menu" class="dropdown-panel" style="padding:6px 0">
         <button class="ghost" data-export="csv" title="Download every question in the bank as CSV" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV (everything)</button>
         <button class="ghost" data-export="json" title="Download every question in the bank as JSON" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON (everything)</button>
         <button class="ghost" data-export="csv-filtered" title="Download only the questions visible after applying the current filters (CSV)" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV (filtered set)</button>
@@ -295,12 +297,13 @@ header{background:#fff;border-bottom:1px solid var(--line)}
     </div>
   </div>
 </div>
-<div id="compare_modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
-     z-index:300;padding:30px;overflow:auto">
-  <div style="background:var(--bg-card);border-radius:8px;padding:18px;
-       max-width:1200px;margin:0 auto;color:var(--fg)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h3 style="margin:0">Compare selected questions</h3>
+<!-- align-items:flex-start, not the default centered — a side-by-side
+     compare grid can be taller than the viewport, and centering a
+     too-tall flex item clips its top with no way to scroll back to it. -->
+<div id="compare_modal" class="modal-backdrop" style="align-items:flex-start;padding-top:32px">
+  <div class="modal-box" style="width:1200px">
+    <div class="hdr">
+      <h3>Compare selected questions</h3>
       <button onclick="closeCompare()" title="Close the compare panel">✕ Close</button>
     </div>
     <div id="compare_grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px"></div>
@@ -796,7 +799,7 @@ async function runAiValidate(card, q){
   await setValidation(card, q, {...v, validated_by: "ai"});
 }
 
-document.getElementById("results").addEventListener("click", e => {
+document.getElementById("results").addEventListener("click", async e => {
   if(e.target.classList.contains("undo-btn")){
     const card = e.target.closest(".qcard");
     const q = _findQ(card.dataset.bucket, card.dataset.qid);
@@ -814,9 +817,8 @@ document.getElementById("results").addEventListener("click", e => {
     const bucket = card.dataset.bucket, num = card.dataset.qid;
     const q = _findQ(bucket, num);
     if(!q) return;
-    if(!confirm(`Delete Q${q.number} from ${q._bucket}?
-
-This is recorded as an annotation so reprocess will respect it.`)) return;
+    if(!await confirmModal(`Delete Q${q.number} from ${q._bucket}? This is recorded as an annotation so reprocess will respect it.`,
+                            {danger:true, confirmLabel:"Delete"})) return;
     fetch(`${API}/q/${encodeURIComponent(q._bucket)}/${encodeURIComponent(q.number)}`, {method:"DELETE"})
       .then(r => r.json())
       .then(j => {
@@ -901,7 +903,7 @@ Seed: "${(seed.text||"").slice(0,80)}…"
         <button onclick="closeCompare()" title="Throw away the generated candidates without saving">Discard</button>
       </div>
     </div>`;
-  document.getElementById("compare_modal").style.display = "block";
+  document.getElementById("compare_modal").classList.add("on");
   // Stash for the Accept handler
   window._lastSimilarBatch = j.candidates;
   window._lastSimilarSeed = seed;
@@ -1150,7 +1152,7 @@ function updateSelectionBar(){
   document.getElementById("sel_count").textContent = sel.length;
   document.getElementById("bulk_bar").style.display = (sel.length || FILTERED.length) ? "flex" : "none";
 }
-window.bulkAction = function(action){
+window.bulkAction = async function(action){
   const sel = selectedQs();
   if(action === "selectall"){
     document.querySelectorAll(".qcard-check").forEach(cb => cb.checked = true);
@@ -1175,14 +1177,14 @@ window.bulkAction = function(action){
         <div style="font-size:12px;color:var(--ok);margin-top:4px"><b>A:</b> ${esc(q.answer || "—")}</div>
       </div>`).join("");
     document.getElementById("compare_grid").innerHTML = html;
-    document.getElementById("compare_modal").style.display = "block";
+    document.getElementById("compare_modal").classList.add("on");
     renderMath(document.getElementById("compare_grid"));
     return;
   }
   if(action === "delete"){
     if(!sel.length){ toast("No questions selected", "err"); return; }
-    if(!confirm(`Delete ${sel.length} selected question(s) from their respective buckets?
-This is recorded as an annotation and will replay on reprocess.`)) return;
+    if(!await confirmModal(`Delete ${sel.length} selected question(s) from their respective buckets? This is recorded as an annotation and will replay on reprocess.`,
+                            {danger:true, confirmLabel:"Delete"})) return;
     (async () => {
       let done = 0;
       const failures = [];
@@ -1212,21 +1214,21 @@ This is recorded as an annotation and will replay on reprocess.`)) return;
   }
 };
 window.closeCompare = function(){
-  document.getElementById("compare_modal").style.display = "none";
+  document.getElementById("compare_modal").classList.remove("on");
 };
 
 // Wire export menu
 document.getElementById("export_btn").addEventListener("click", e => {
   e.stopPropagation();
   const m = document.getElementById("export_menu");
-  m.style.display = m.style.display === "none" ? "block" : "none";
+  m.classList.toggle("on");
   const r = e.target.getBoundingClientRect();
   m.style.top = (r.bottom + 4) + "px";
   m.style.right = "28px";
 });
 document.addEventListener("click", e => {
   if(!e.target.closest("#export_btn") && !e.target.closest("#export_menu"))
-    document.getElementById("export_menu").style.display = "none";
+    document.getElementById("export_menu").classList.remove("on");
 });
 document.getElementById("export_menu").addEventListener("click", e => {
   const kind = e.target.dataset.export;
@@ -1257,7 +1259,7 @@ document.getElementById("export_menu").addEventListener("click", e => {
     });
     downloadBlob(md, "text/markdown", `${EVENT_SLUG}-filtered.md`);
   }
-  document.getElementById("export_menu").style.display = "none";
+  document.getElementById("export_menu").classList.remove("on");
 });
 function downloadBlob(content, mime, filename){
   const blob = new Blob([content], {type:mime});

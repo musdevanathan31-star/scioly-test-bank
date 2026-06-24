@@ -19,7 +19,7 @@
 .gen-form{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
 .gen-form label{display:flex;flex-direction:column;font-size:12px;color:#444;gap:3px}
 .gen-form select,.gen-form input{padding:5px 8px;border:1px solid var(--line);
-  border-radius:3px;font:inherit;font-size:13px;min-width:180px}
+  border-radius:4px;font:inherit;font-size:13px;min-width:180px}
 .gen-form .types{display:flex;gap:8px;align-items:center}
 .gen-form .types label{flex-direction:row;align-items:center;gap:4px}
 .cand{background:#fff;border:1px solid var(--line);border-radius:6px;
@@ -41,7 +41,7 @@
 .cand .actions{margin-top:8px;display:flex;gap:6px}
 .cand .actions button{padding:4px 10px;font-size:12px}
 .row-info{font-size:12px;color:#666;margin:8px 0}
-.row-info .kw{background:#eee;padding:1px 6px;border-radius:3px;font-family:monospace}
+.row-info .kw{background:#eee;padding:1px 6px;border-radius:4px;font-family:monospace}
 .upload-form{display:flex;gap:8px;align-items:center}
 .upload-form input[type=file]{font-size:12px}
 .btn-tiny{padding:2px 8px;font-size:11px}
@@ -141,56 +141,6 @@ Thermodynamics, 58"></textarea>
   </div>
 
   <div class="panel">
-    <h2>Pull from scio.ly/practice</h2>
-    <p class="muted">
-      Fetches public practice questions from
-      <a href="https://scio.ly/practice" target="_blank">scio.ly/practice</a>'s API.
-      scio.ly questions <b>never include images</b>, and many are partial or
-      missing context — leave <i>Validate with Haiku</i> on so the LLM can
-      flag the unsolvable ones for you. Polite rate-limit (~2 req/s).
-    </p>
-    <div class="gen-form">
-      <label>scio.ly event name
-        <input type="text" id="sc_event" value="{{ event_name }}">
-      </label>
-      <label>How many?
-        <input type="number" id="sc_n" value="20" min="1" max="50">
-      </label>
-      <label>Division
-        <select id="sc_div">
-          <option value="">Both</option>
-          <option value="B">Div B</option>
-          <option value="C">Div C</option>
-        </select>
-      </label>
-      <label id="sc_focus_wrap" style="display:none">Focus
-        <select id="sc_focus"></select>
-      </label>
-      <div class="types">
-        <span class="muted">Types:</span>
-        <label><input type="checkbox" id="sc_mcq" checked> MCQ</label>
-        <label><input type="checkbox" id="sc_frq" checked> FRQ</label>
-      </div>
-      <label class="types"><input type="checkbox" id="sc_validate" checked> Validate with Haiku</label>
-      <button id="btn_sc_scrape" class="primary" title="Fetch questions from scio.ly/practice for this event — runs as a background job; a progress window opens">Scrape</button>
-      <span class="muted" id="sc_cost" style="font-size:11px">est. cost: $0.00</span>
-    </div>
-  </div>
-
-  <div class="panel" id="scrape_results" style="display:none">
-    <h2>scio.ly candidates <span id="sc_meta" class="muted"></span></h2>
-    <div style="margin:6px 0 12px">
-      <button id="sc_keep_correct" class="primary" title="Mark only the candidates Haiku flagged as correct">Keep only ✓ Correct</button>
-      <button id="sc_keep_all" title="Mark every scraped candidate as kept">Keep all</button>
-      <button id="sc_drop_unsolvable" title="Drop candidates flagged as 'definitely wrong' or 'unable to evaluate'">Drop ⚠/?</button>
-      <button id="sc_reject_all" class="danger" title="Mark every scraped candidate as rejected">Drop all</button>
-      <span class="muted" style="margin-left:8px">→</span>
-      <button id="sc_accept" class="primary" title="Persist the kept candidates into the question bank (_scioly_*.pdf bucket)">Accept kept &amp; save</button>
-    </div>
-    <div id="sc_candidates"></div>
-  </div>
-
-  <div class="panel">
     <h2>Generate new questions</h2>
     <p class="muted">Send a source text to Haiku to draft fresh questions.
        Candidates are deduped against the existing bank using Jaccard
@@ -239,6 +189,56 @@ Thermodynamics, 58"></textarea>
       Auto-rejected during generation:
     </h3>
     <div id="rejected"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Pull from scio.ly/practice</h2>
+    <p class="muted">
+      Fetches public practice questions from
+      <a href="https://scio.ly/practice" target="_blank">scio.ly/practice</a>'s API.
+      scio.ly questions <b>never include images</b>, and many are partial or
+      missing context — leave <i>Validate with Haiku</i> on so the LLM can
+      flag the unsolvable ones for you. Polite rate-limit (~2 req/s).
+    </p>
+    <div class="gen-form">
+      <label>scio.ly event name
+        <input type="text" id="sc_event" value="{{ event_name }}">
+      </label>
+      <label>How many?
+        <input type="number" id="sc_n" value="20" min="1" max="50">
+      </label>
+      <label>Division
+        <select id="sc_div">
+          <option value="">Both</option>
+          <option value="B">Div B</option>
+          <option value="C">Div C</option>
+        </select>
+      </label>
+      <label id="sc_focus_wrap" style="display:none">Focus
+        <select id="sc_focus"></select>
+      </label>
+      <div class="types">
+        <span class="muted">Types:</span>
+        <label><input type="checkbox" id="sc_mcq" checked> MCQ</label>
+        <label><input type="checkbox" id="sc_frq" checked> FRQ</label>
+      </div>
+      <label class="types"><input type="checkbox" id="sc_validate" checked> Validate with Haiku</label>
+      <button id="btn_sc_scrape" class="primary" title="Fetch questions from scio.ly/practice for this event — runs as a background job; a progress window opens">Scrape</button>
+      <span class="muted" id="sc_cost" style="font-size:11px">est. cost: $0.00</span>
+    </div>
+  </div>
+
+  <div class="panel" id="scrape_results" style="display:none">
+    <h2>scio.ly candidates <span id="sc_meta" class="muted"></span></h2>
+    <div style="margin:6px 0 12px">
+      <button id="sc_keep_correct" class="primary" title="Mark only the candidates Haiku flagged as correct">Keep only ✓ Correct</button>
+      <button id="sc_keep_all" title="Mark every scraped candidate as kept">Keep all</button>
+      <button id="sc_drop_unsolvable" title="Drop candidates flagged as 'definitely wrong' or 'unable to evaluate'">Drop ⚠/?</button>
+      <button id="sc_reject_all" class="danger" title="Mark every scraped candidate as rejected">Drop all</button>
+      <span class="muted" style="margin-left:8px">→</span>
+      <button id="sc_accept" class="primary" title="Persist the kept candidates into the question bank (_scioly_*.pdf bucket)">Accept kept &amp; save</button>
+    </div>
+    <div id="sc_candidates"></div>
   </div>
 
   <div class="panel" id="import_panel">
@@ -387,8 +387,8 @@ async function loadSources(){
       <td>${s.kind.toUpperCase()}</td>
       <td>${(s.size/1024).toFixed(1)} KB</td>
       <td>${s.has_markdown
-            ? `<span class="badge processed" title="Processed markdown: ${esc(s.markdown_name)} (~${wordCount(s.markdown_size)} words)">${esc(s.markdown_name)} · ~${wordCount(s.markdown_size)} words</span>`
-            : '<span class="badge fresh">needs processing</span>'}</td>
+            ? `<span class="badge badge-ok" title="Processed markdown: ${esc(s.markdown_name)} (~${wordCount(s.markdown_size)} words)">${esc(s.markdown_name)} · ~${wordCount(s.markdown_size)} words</span>`
+            : '<span class="badge badge-warn">needs processing</span>'}</td>
       <td class="actions">
         ${s.kind === "pdf" ? `<button data-process="${esc(s.name)}" title="Extract text from this PDF and write a sibling .md file">${s.has_markdown ? "Re-process" : "Process → MD"}</button>` : ""}
       </td>
@@ -769,11 +769,11 @@ function renderScrapeResults(){
         ${v.source ? `<div class="src">Source: ${esc(v.source)}</div>` : ""}
       </div>`;
     }
-    const flagBadge = f === "likely-wrong"     ? `<span class="badge edited" title="Marked likely-wrong; will be saved with quality_flag='likely-wrong'.">⚠ likely-wrong</span>`
-                    : f === "definitely-wrong" ? `<span class="badge fresh" title="Marked definitely-wrong; will be saved with quality_flag='definitely-wrong'.">✗ definitely-wrong</span>`
+    const flagBadge = f === "likely-wrong"     ? `<span class="badge badge-warn" title="Marked likely-wrong; will be saved with quality_flag='likely-wrong'.">⚠ likely-wrong</span>`
+                    : f === "definitely-wrong" ? `<span class="badge badge-bad" title="Marked definitely-wrong; will be saved with quality_flag='definitely-wrong'.">✗ definitely-wrong</span>`
                     : "";
     const editPanel = editing ? `
-      <div style="margin-top:8px;padding:10px;background:var(--bg-alt);border:1px dashed var(--line);border-radius:5px">
+      <div style="margin-top:8px;padding:10px;background:var(--bg-alt);border:1px dashed var(--line);border-radius:4px">
         <div style="margin-bottom:6px"><b>Edit candidate</b>
           <span class="muted" style="font-size:11px">— changes persist when you save; original is preserved as _orig_*</span>
         </div>
@@ -1238,7 +1238,7 @@ document.getElementById("reject_all").addEventListener("click", () => {
 document.getElementById("validate_then_accept").addEventListener("click", async () => {
   if(!LAST_RESULT || KEPT.size === 0){ setStatus("Nothing to validate", "err"); return; }
   const picked = [...KEPT].sort((a,b)=>a-b).map(i => LAST_RESULT.candidates[i]);
-  if(!confirm(`Validate ${picked.length} candidate(s) with Haiku (~$${(picked.length*0.003).toFixed(3)}), then auto-accept only the ones flagged 'correct'?`)) return;
+  if(!await confirmModal(`Validate ${picked.length} candidate(s) with Haiku (~$${(picked.length*0.003).toFixed(3)}), then auto-accept only the ones flagged 'correct'?`)) return;
   pushBusy();
   try {
     let i = 0, kept_correct = [];
@@ -1286,8 +1286,8 @@ async function loadTextbooks(){
   const rows = TEXTBOOKS.map(t => {
     const chCount = (t.chapters || []).length;
     const status = t.needs_manual_chapters
-      ? `<span class="badge fresh">no chapters detected</span>`
-      : `<span class="badge processed">${chCount} chapter(s) · ${esc(t.source)}</span>`;
+      ? `<span class="badge badge-warn">no chapters detected</span>`
+      : `<span class="badge badge-ok">${chCount} chapter(s) · ${esc(t.source)}</span>`;
     return `<tr>
       <td>${esc(t.name)}</td>
       <td>${(t.size/1024/1024).toFixed(1)} MB</td>
