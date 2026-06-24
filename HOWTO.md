@@ -42,7 +42,7 @@ Two ways to add an event — see README's "Adding a new event" for the full trad
 - **From the UI** (no code, works immediately): on the landing page, expand **+ Register a new event**, fill in slug/display name/scioly.org event name/optional wiki page/topics/rotating foci, and click **Create event**. Good for getting started fast; topic auto-classification won't work until you manually topic a few questions, since UI-registered events start with no keyword list.
 - **By editing `events.py`** (a code change, needs a redeploy): worth it once you have a topic taxonomy worked out, since it gets keyword-based auto-classification from day one.
 
-To temporarily hide an event without losing anything, use **🗄 Archive** next to it on the landing page — reversible via **Show archived events** → **↩ Unarchive**. Built-in events (Circuit Lab, Thermodynamics) can't be archived.
+To temporarily hide an event without losing anything, use **🗄 Archive** next to it on the landing page — reversible via **Show archived events** → **↩ Unarchive**. Every event, including Circuit Lab and Thermodynamics, can be edited and archived the same way.
 
 ### Downloading test PDFs from scioly.org
 
@@ -54,7 +54,12 @@ Same event page has a **+ Upload test** button near the top that opens a small f
 
 ### Onboarding files copied directly onto the server
 
-If you (or a script) `scp` files straight into an event's directory instead of using the upload form or the scioly.org download — e.g. while assembling a question bank from elsewhere — they won't show up anywhere until they're named like everything else. The event's **Scan files** page finds them: a **Ready to process** bucket for already-correctly-named files that were never extracted (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files still waiting on PDF conversion, and an **Unrecognized** bucket for anything else, with a small form (best-effort year/division guessed from the filename, always editable) to rename it as a Test, Key, or supplementary document. This is a manual "Refresh" page, not a background watcher — revisit it after dropping in new files. The landing page also shows a small "N unrecognized" badge next to any event that has files waiting here.
+If you (or a script) `scp` files straight into an event's directory instead of using the upload form or the scioly.org download — e.g. while assembling a question bank from elsewhere — they won't show up anywhere until they're named like everything else. The event's **Scan files** page finds them: a **Ready to process** bucket for already-correctly-named files that were never extracted (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files still waiting on PDF conversion, and an **Unrecognized** bucket for anything else, with a small form to onboard each one by role:
+- **Test** / **Key** — needs a best-effort year/division guess (always editable) plus a submitter label; renamed in place to match the naming convention.
+- **Supplementary** — figures/images for *one specific* test; pick which test it belongs to and a short label (e.g. "sheet"). Becomes browsable on that test's review page via the target toggle.
+- **Notes** — reading material for *generating new questions*, the same kind of thing as anything already uploaded on the Sources page. No extra fields — it's moved straight into the event's source list (`.pdf`/`.docx`/`.doc`/`.md`/`.txt` all accepted; Word docs convert to PDF automatically). **Supplementary and Notes are easy to confuse** but serve different purposes: supplementary is *for a test*, notes is *for the LLM*.
+
+This is a manual "Refresh" page, not a background watcher — revisit it after dropping in new files. The landing page also shows a small "N unrecognized" badge next to any event that has files waiting here.
 
 ### Reviewing a PDF page-by-page
 
@@ -66,6 +71,7 @@ Click a PDF's name from the event page (or **Review by PDF**) to open the review
 - **+ Add blank** — an empty card to fill in by hand.
 - Reassign a figure to a different question by clicking the image, then clicking the target card.
 - **✓ Validate answer** (per question) or **✓ Validate page** (everything on the current page) — sends the question to Haiku and stores a verdict + rationale.
+- **Mark a verdict yourself, no LLM call** — the small dropdown next to each question's validation status ((unset) / ✓ Correct / ⚠ Incorrect / ? Uncertain) lets you set or override it directly, instantly, free. Whichever happens most recently wins — re-running AI Validate can overwrite your manual verdict, and you can always override a stale or wrong AI one back. Same dropdown as the Browse page already has, just available here too now.
 - **🤖 Generate diagram** — opens a small chat with Claude Sonnet seeded with the question's stem/topic; each reply renders an SVG you can save and attach with one click.
 - **Reprocess ▾** — re-runs extraction. The default mode keeps your annotations; "wipe annotations" and "manual mode" discard them but snapshot first (see **🕘 Snapshot history** to restore any prior state — nothing here is ever truly lost).
 - **💾 Save** (or Ctrl+S) persists everything to `.qbank_state.json`. **↶ Undo** (or Ctrl+Z) reverts the last destructive action.
@@ -212,11 +218,12 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |
-| Onboard files dropped in via scp | Coach, Volunteer (assigned events) | Event page → Scan files |
+| Onboard files dropped in via scp (test/key/supplementary/notes) | Coach, Volunteer (assigned events) | Event page → Scan files |
 | Review/edit one PDF's questions | Coach, Volunteer (assigned events) | Event page → click a PDF / Review by PDF |
 | Pull figures from a supplementary doc | Coach, Volunteer (assigned events) | Review page → target toggle next to Test PDF/Key PDF |
 | Browse/search/bulk-edit the whole bank | Coach, Volunteer (assigned events) | Browse questions |
 | Validate an answer with AI | Coach, Volunteer (assigned events) | Review or Browse page → 🤖 AI Validate / ✓ Validate |
+| Mark a verdict yourself, no LLM call | Coach, Volunteer (assigned events) | Review or Browse page → validation dropdown |
 | Scrape scio.ly practice questions | Coach, Volunteer (assigned events) | Generate page → scio.ly panel |
 | Generate questions from a source | Coach, Volunteer (assigned events) | Generate page |
 | Upload a shared textbook | Coach only | Generate page → Shared textbooks |

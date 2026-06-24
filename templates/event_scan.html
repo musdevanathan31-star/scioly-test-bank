@@ -47,7 +47,7 @@ tr:last-child td{border-bottom:none}
 
   <section>
     <h2>Unrecognized</h2>
-    <p class="muted">Files that don't match this event's naming convention and aren't a known test's supplementary document either — likely sourced from somewhere other than scioly.org. Pick a role and (for Test/Key) fill in year/division/submitter, or attach as a supplementary document to an existing test. This only renames the file on disk — no content is changed.</p>
+    <p class="muted">Files that don't match this event's naming convention and aren't a known test's supplementary document either — likely sourced from somewhere other than scioly.org. Pick a role and (for Test/Key) fill in year/division/submitter, or attach as a supplementary document to an existing test. This only renames the file on disk — no content is changed. <b>Supplementary</b> vs. <b>Notes</b> are easy to mix up: Supplementary is figures/images for one specific test, browsed on that test's review page. Notes is reading material used to generate new questions — moved into this event's source list on the Sources page, just like anything uploaded there directly.</p>
     <div id="unrecognizedSection"><div class="empty">Loading…</div></div>
   </section>
 </div>
@@ -126,7 +126,8 @@ function renderUnrecognized(rows){
               <select class="role-sel">
                 <option value="test">Test</option>
                 <option value="key">Key</option>
-                <option value="supplementary">Supplementary (sheet/notes/…)</option>
+                <option value="supplementary">Supplementary (figures for one test)</option>
+                <option value="notes">Notes (source material for generating questions)</option>
               </select>
               <span class="role-fields"></span>
               <button data-onboard="${escHtml(r.filename)}">Rename</button>
@@ -139,6 +140,9 @@ function renderUnrecognized(rows){
     if(role === "supplementary"){
       return `<select class="f-attach"><option value="">Attach to test…</option>${testOptions}</select>
               <input type="text" class="f-label" placeholder="label (e.g. sheet)">`;
+    }
+    if(role === "notes"){
+      return `<span class="muted" style="font-size:11px">Will be moved into this event's Sources list (no extra fields needed).</span>`;
     }
     return `<input type="text" class="f-year" placeholder="year" value="${escHtml(guess.year||"")}" style="width:50px">
             <input type="text" class="f-division" placeholder="div" value="${escHtml(guess.division||"")}" style="width:36px">
@@ -164,6 +168,8 @@ function renderUnrecognized(rows){
         body.attach_to = tr.querySelector(".f-attach").value;
         body.label = tr.querySelector(".f-label").value;
         if(!body.attach_to){ toast("Pick a test to attach this to", "err"); return; }
+      } else if(role === "notes"){
+        // No extra fields — moved into texts_dir as-is, discovered by extension alone.
       } else {
         body.year = tr.querySelector(".f-year").value;
         body.division = tr.querySelector(".f-division").value;
@@ -177,7 +183,10 @@ function renderUnrecognized(rows){
         });
         const j = await r.json();
         if(!j.ok){ toast("Failed: " + (j.error||""), "err"); btn.disabled = false; return; }
-        toast(`Renamed to ${j.new_filename}`, "ok");
+        toast(j.moved_to === "texts"
+          ? `Moved to this event's Sources list as ${j.new_filename}${j.warning ? " (conversion warning: " + j.warning + ")" : ""}`
+          : `Renamed to ${j.new_filename}`,
+          j.warning ? "warn" : "ok");
         load();
       } catch(err){ toast("Failed: " + err.message, "err"); btn.disabled = false; }
     });

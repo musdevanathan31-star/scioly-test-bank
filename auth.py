@@ -25,7 +25,13 @@ from pathlib import Path
 from werkzeug.security import check_password_hash, generate_password_hash
 
 REPO_ROOT = Path(__file__).parent
-USERS_FILE = REPO_ROOT / "auth_users.json"
+# Mirrors events.py's DATA_ROOT resolution independently (this module
+# deliberately doesn't import events.py — keeping these two small, easily
+# duplicated constants out of an import dependency between otherwise
+# unrelated modules) — see events.py's DATA_ROOT docstring for the full
+# rationale. Defaults to REPO_ROOT, so existing deployments need no config.
+DATA_ROOT = Path(os.environ.get("DATA_ROOT") or REPO_ROOT)
+USERS_FILE = DATA_ROOT / "auth_users.json"
 
 _users_lock = threading.Lock()
 

@@ -34,6 +34,8 @@ All persistent state lives in **one** file per event: `<event>/.qbank_state.json
 
 Per-event configuration (slug, display name, topic taxonomy, keyword weights, filename prefix, wiki page name) lives in `events.py`. `build_question_bank.set_event(slug)` swaps the module's globals (`BASE_DIR`, `IMAGE_DIR`, `OUT_MD`, `STATE_FILE`, `TOPICS`, `TOPIC_KEYWORDS`, `EVENT`) so the rest of the code is event-agnostic.
 
+**`<event>/` itself resolves under `events.DATA_ROOT`**, not `REPO_ROOT` (the app's code directory) — `DATA_ROOT = Path(os.environ.get("DATA_ROOT") or REPO_ROOT)`, so it's identical to `REPO_ROOT` unless the `DATA_ROOT` env var is set (see README's "Separating app code from data"). `events_custom.json`, `auth.py`'s `auth_users.json` (mirrors the same resolution independently rather than importing `events.py`, to avoid coupling two otherwise-unrelated modules), and `review_app.py`'s shared `TEXTBOOKS_DIR` all resolve the same way. `events.relative_data_path(p)` renders a path relative to `DATA_ROOT` for display (used by the landing page's Directory column) instead of ever showing an absolute filesystem path in the UI.
+
 ## 3. Pipeline stages (per PDF)
 
 `process_pair(test_pdf, key_pdf, state, use_vision)` runs the following, with caching at every stage:
@@ -315,7 +317,7 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `GET /event/<slug>/api/pdf/<pdf>/outline` | PyMuPDF-extracted PDF outline (`doc.get_toc()`) for the review-page outline drawer. Returns `[{level, title, page}]`. |
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>/qboxes` | Per-page bounding boxes for every question whose text starts on this page. Computed on demand from PyMuPDF text blocks: each `Q_START` match anchors a box that spans down to the next anchor (or page bottom), widened to the leftmost/rightmost edges of the text blocks within that vertical slice. Returns `{boxes: [{number, x0, y0, x1, y1}], page_height_pt}` in PDF points; the frontend scales to image pixels using the same 120 DPI factor as region-extract. |
 | `POST /event/<slug>/api/generate-similar` | Seed-based question generation. Body: `{seed_text, seed_topic, n}`. Wraps `qgen.generate_questions` with the seed as both source material and "do not duplicate" anchor. |
-| `PATCH /api/events/<slug>` | Edit a user-registered event's name/topics/foci/wiki_page in place. Refuses built-ins. |
+| `PATCH /api/events/<slug>` | Edit an event's name/topics/foci/wiki_page in place. Refuses true built-ins per `is_builtin()` — none ship by default; see §12. |
 | `POST /event/<slug>/api/upload-test-pdf` | Multipart upload of a test file (`test_file`, required, `.pdf`/`.docx`/`.doc`) + answer key (`key_file`, optional, same formats) + a figures/supplementary document (`supplementary_file`, optional, same formats — shares the test's exact stem prefix so `_supplementary_docs()` (§9b) discovers it automatically; never fed to `process_pair`, pure storage/browsing material). Normalizes filenames to the `{filename_prefix}_*_test.<ext>` glob `_list_test_pdfs` expects (de-duped with a numeric suffix), saves siblings `_key.<ext>`/`_figures.<ext>` if provided, then enqueues a job (§16b) that converts any non-PDF to PDF first (§11e) and runs `process_pair` on the test+key only, returning `{ok, pdf_name, has_key, supplementary_name, job_id}` — `pdf_name`/`supplementary_name` are already the post-conversion `.pdf` names even though conversion hasn't run yet (deterministic from `doc_convert`'s naming), so the frontend's progress UI doesn't need to special-case Word uploads. The file save itself is synchronous, only conversion+extraction is queued. |
 | `GET /event/<slug>/api/pdfs?sort=…&order=…` | List PDFs with status |
 | `GET /event/<slug>/api/pdf/<pdf>` | All questions + annotations + page count for one PDF. Also returns `key_page_count` (null if no key) so the frontend can track per-target page-count bounds (§9b) without a separate request. |
@@ -631,33 +633,38 @@ The landing page (`GET /`) shows each event's unrecognized-file count next to it
 
 ## 12. Adding another event
 
-Two paths, depending on whether you need topic-keyword classification from day one.
+Two paths, depending on whether you need topic-keyword classification from day one. Either way the event ends up fully editable and archivable from the landing page — there is no longer a "permanently hard-coded, can't touch it" tier of event. `EVENTS` (the in-memory registry) starts out empty in `events.py`; it's populated by `_load_custom_events()` (whatever's already in `events_custom.json` from a previous run) and then by `_seed_default_events()` (fills in any of `_DEFAULT_EVENT_SEEDS` — currently `circuit_lab`/`thermodynamics` — that aren't already present). Load-then-seed in that order means a user's prior edit or archive of a default event always wins over re-seeding it.
 
-### 12a. Hard-coded events (`events.py`)
+### 12a. Seed it with a curated keyword taxonomy (`events.py`)
 
-The recommended path when you have a topic taxonomy worked out:
+The recommended path when you already have a topic taxonomy worked out — this is how `circuit_lab`/`thermodynamics` themselves are defined. Add an entry to the `_DEFAULT_EVENT_SEEDS` tuple in `events.py`:
 
 ```python
-EVENTS["my_event"] = Event(
-    slug="my_event",                       # → directory my_event/ and URL /event/my_event/
-    name="My Event",                       # display name + vision-prompt context
-    event_match=("my event",),             # scioly_tests.json event-name substrings
-    filename_prefix="myevent",             # PDF filename prefix (matches scioly URLs)
-    topics=("Topic A", "Topic B", "Other / General"),
-    topic_keywords={"Topic A": [("kw", 4)], ...},
+_DEFAULT_EVENT_SEEDS = (
+    ...,
+    dict(
+        slug="my_event",                       # → directory my_event/ and URL /event/my_event/
+        name="My Event",                       # display name + vision-prompt context
+        event_match=["my event"],              # scioly_tests.json event-name substrings
+        topics=["Topic A", "Topic B", "Other / General"],
+        topic_keywords={"Topic A": [("kw", 4)], ...},
+    ),
 )
 ```
 
-### 12b. UI-registered events (`events_custom.json`)
+On next startup, `_seed_default_events()` registers it into `events_custom.json` (if not already there) with the full keyword table intact — auto-classification works from day one, and the event is editable/archivable through the UI exactly like one registered through the Register-event form. The curated keyword data stays in version-controlled `events.py` (since `events_custom.json` is gitignored and per-deployment) but the live, editable registry entry lives in `events_custom.json` from first run onward.
+
+If you genuinely want an event nobody can edit or archive through the UI at all, add it directly to the `EVENTS` dict literal instead (the mechanism `_BUILTIN_SLUGS`/`is_builtin()` still exists for this) — but nothing currently shipped uses that path.
+
+### 12b. Register from the UI (`events_custom.json`)
 
 For quick experimentation or events whose taxonomy isn't fully defined yet:
 
 - **Endpoint**: `POST /api/events` (top-level, no event slug). Body: `{slug, name, filename_prefix, event_match, wiki_page, topics}`. Strings for `event_match` and `topics` are accepted as either JSON arrays or comma-separated strings.
 - **Validation**: slug must match `^[a-z][a-z0-9_]*$`; name and filename_prefix are required; filename_prefix must have no spaces or slashes.
 - **Persistence**: written to `events_custom.json` at the repo root via `add_custom_event()`. Loaded on import in `events.py`.
-- **Behavior**: at module import time `events.py` builds the hard-coded `EVENTS` dict, then `_load_custom_events()` merges in entries from `events_custom.json` (skipping any slug that collides with a built-in).
-- **`topic_keywords` is empty** for UI-registered events, so `classify_topic` will fall through to "Other / General" for every pipeline-extracted question. The user re-topics from the dropdown on each question card. `qgen` generation is unaffected — it asks Haiku to pick a topic.
-- **Removal**: `remove_custom_event(slug)` deletes from the dict and re-saves. Built-ins (`circuit_lab`, `thermodynamics`) cannot be removed; checked via `is_builtin(slug)`.
+- **`topic_keywords` is empty** for events created this way, since the Register-event form has no field for authoring one — `classify_topic` will fall through to "Other / General" for every pipeline-extracted question until the user re-topics from the dropdown on each question card. (The storage format itself supports arbitrary `topic_keywords` just fine — see 12a's seed mechanism, which populates exactly this field.) `qgen` generation is unaffected — it asks Haiku to pick a topic.
+- **Removal**: `archive_custom_event(slug)`/`unarchive_custom_event(slug)` flip the `archived` flag and re-save — reversible, never deletes the directory or files on disk. Every event can be archived this way; nothing ships exempt from it.
 
 ### Common to both paths
 
@@ -676,7 +683,7 @@ The CLI tools (`download_event.py`, `build_question_bank.py`) take `--event <slu
       "event_match":     ["fermi"],            // [] is allowed for upload-only events
       "filename_prefix": "fermiquestions",
       "topics":          ["Estimation", "Orders of magnitude", "Other / General"],
-      "topic_keywords":  {},                   // always empty when created via UI
+      "topic_keywords":  {},                   // empty when created via UI; populated when seeded via _DEFAULT_EVENT_SEEDS (§12a)
       "wiki_page":       "Fermi_Questions"     // "" → derived from `name`
     }
   ]
@@ -706,7 +713,7 @@ Every destructive action the app exposes — including to coaches — is now a r
 
 **Reprocess hook** (`review_app.py`'s `api_reprocess`): when `discard_annotations` is set and the PDF actually has annotations/manual-edits/questions to lose, `archive.snapshot_pdf_state(...)` runs *before* the wipe. `GET .../snapshots` and `POST .../restore-snapshot` (same `_select_event` access gate as every other PDF route — restoring is protective, not destructive) round out the UI in `templates/review.html`'s Reprocess dropdown.
 
-**Event archive** (`events.py`): `Event.archived: bool = False`, threaded through `_event_to_dict`/`_dict_to_event` same as every other field. `archive_custom_event`/`unarchive_custom_event` replace the old `remove_custom_event` — built-ins still can't be archived (same `is_builtin()` guard as edit/delete). `index()` (`review_app.py`) excludes archived events from the normal landing-page list and surfaces them to coaches in a separate "Show archived" section; `_select_event` 404s any direct access to an archived event until it's unarchived.
+**Event archive** (`events.py`): `Event.archived: bool = False`, threaded through `_event_to_dict`/`_dict_to_event` same as every other field. `archive_custom_event`/`unarchive_custom_event` replace the old `remove_custom_event`. The `is_builtin()` guard on edit/delete still exists (`_BUILTIN_SLUGS`, populated only by entries hard-coded directly into the `EVENTS` dict literal — see §12a), but nothing ships that way by default, so in practice every event, including Circuit Lab and Thermodynamics, can be archived. `index()` (`review_app.py`) excludes archived events from the normal landing-page list and surfaces them to coaches in a separate "Show archived" section; `_select_event` 404s any direct access to an archived event until it's unarchived.
 
 **User disable** (`auth.py`): `User.disabled: bool = False`, same threading through `_load`/`_save`. `disable_user`/`enable_user` wrap `update_user`. `verify_login` rejects disabled accounts outright; `_require_login`'s `before_request` (`review_app.py`) treats a disabled user exactly like a deleted one — clears the session and redirects to `/login` on their very next request, so a disable takes effect immediately even for an already-logged-in session. `auth.delete_user` (true removal) still exists as a primitive but is only ever meant to be called from an operator shell, not from any route.
 

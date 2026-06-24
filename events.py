@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent
-CUSTOM_EVENTS_FILE = REPO_ROOT / "events_custom.json"
 
 # Serialise concurrent custom-event registrations. Two browser tabs hitting
 # "Register a new event" milliseconds apart used to race on the file write;
@@ -26,6 +25,29 @@ CUSTOM_EVENTS_FILE = REPO_ROOT / "events_custom.json"
 import threading as _threading
 import os as _os
 _custom_events_lock = _threading.Lock()
+
+# Where per-event DATA (PDFs, images, generated markdown, state files) lives
+# — separate from REPO_ROOT (the app CODE) so data can be redirected to a
+# bigger/separate disk without touching the deployed code tree. Defaults to
+# REPO_ROOT so every existing deployment keeps working with zero config;
+# only set DATA_ROOT once you've actually moved data there (see README's
+# "Maintaining the server" migration runbook before setting this on a box
+# that already has data under REPO_ROOT).
+DATA_ROOT = Path(_os.environ.get("DATA_ROOT") or REPO_ROOT)
+CUSTOM_EVENTS_FILE = DATA_ROOT / "events_custom.json"
+
+
+def relative_data_path(p: Path) -> str:
+    """For display only — never used to reconstruct a real path. Shows a
+    path relative to DATA_ROOT instead of the absolute filesystem location
+    (e.g. on the events landing page), so the server's real directory
+    layout isn't exposed to anyone who can view that page. Falls back to
+    the bare name if `p` isn't actually under DATA_ROOT, rather than
+    leaking the absolute path in that edge case either."""
+    try:
+        return str(Path(p).relative_to(DATA_ROOT))
+    except ValueError:
+        return Path(p).name
 
 
 @dataclass(frozen=True)
@@ -69,7 +91,7 @@ class Event:
 
     @property
     def base_dir(self) -> Path:
-        return REPO_ROOT / self.slug
+        return DATA_ROOT / self.slug
 
     @property
     def image_dir(self) -> Path:
@@ -325,24 +347,7 @@ _THERMO_KEYWORDS: dict[str, list[tuple[str, int]]] = {
 # Registry
 # ---------------------------------------------------------------------------
 
-EVENTS: dict[str, Event] = {
-    "circuit_lab": Event(
-        slug="circuit_lab",
-        name="Circuit Lab",
-        event_match=("circuit lab",),
-        topics=_CIRCUIT_LAB_TOPICS,
-        topic_keywords=_CIRCUIT_LAB_KEYWORDS,
-        # filename_prefix auto-derives to "circuitlab"
-    ),
-    "thermodynamics": Event(
-        slug="thermodynamics",
-        name="Thermodynamics",
-        event_match=("thermodynamics",),
-        topics=_THERMO_TOPICS,
-        topic_keywords=_THERMO_KEYWORDS,
-        # filename_prefix auto-derives to "thermodynamics"
-    ),
-}
+EVENTS: dict[str, Event] = {}
 
 
 def get_event(slug: str) -> Event:
@@ -354,7 +359,9 @@ def get_event(slug: str) -> Event:
     return EVENTS[slug]
 
 
-# Hard-coded events (kept stable; user-defined events go in events_custom.json)
+# Reserved for any event hardcoded directly into the EVENTS literal above —
+# currently empty; every event ships via _seed_default_events() below instead,
+# so it's editable/archivable like any other event from the start.
 _BUILTIN_SLUGS = frozenset(EVENTS.keys())
 
 
@@ -424,6 +431,32 @@ def _load_custom_events() -> None:
             EVENTS[slug] = _dict_to_event({**entry, "slug": slug})
         except Exception:
             continue
+
+
+_DEFAULT_EVENT_SEEDS: tuple[dict, ...] = (
+    dict(slug="circuit_lab", name="Circuit Lab", event_match=["circuit lab"],
+         topics=list(_CIRCUIT_LAB_TOPICS), topic_keywords=_CIRCUIT_LAB_KEYWORDS),
+    dict(slug="thermodynamics", name="Thermodynamics", event_match=["thermodynamics"],
+         topics=list(_THERMO_TOPICS), topic_keywords=_THERMO_KEYWORDS),
+)
+
+
+def _seed_default_events() -> None:
+    """Registers the default events (with their curated topic_keywords) into
+    the normal custom-event registry on first run, or whenever
+    events_custom.json doesn't already have them. After this they're
+    indistinguishable from any other event: editable, archivable, persisted
+    normally. Never overwrites a slug that's already present, so a prior
+    edit or archive (already loaded by _load_custom_events() by the time
+    this runs) is never clobbered."""
+    added = False
+    for seed in _DEFAULT_EVENT_SEEDS:
+        if seed["slug"] in EVENTS:
+            continue
+        EVENTS[seed["slug"]] = _dict_to_event(seed)
+        added = True
+    if added:
+        _save_custom_events()
 
 
 def add_custom_event(
@@ -508,5 +541,10 @@ def unarchive_custom_event(slug: str) -> None:
     _set_archived(slug, False)
 
 
-# Load any events that were registered in a previous run
+# Load any events that were registered in a previous run, then fill in the
+# default events if they're not already present (e.g. first run, or a fresh
+# clone with no events_custom.json yet). Load-then-seed in this order so a
+# previously-saved edit or archive always wins over re-seeding the pristine
+# default.
 _load_custom_events()
+_seed_default_events()

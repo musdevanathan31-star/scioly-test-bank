@@ -1489,6 +1489,15 @@ function cardHTML(q){
       <button data-act="compare" title="Compare this question side-by-side with another from the same PDF">⇄ Compare</button>
     </div>` : "";
   const v = q.validation;
+  // Lets a human set/override the verdict directly, no LLM call — mirrors
+  // Browse page's existing manual Validation dropdown (validated_by:
+  // "human") exactly, just reachable from the review page too now.
+  const markHumanSelect = `<select class="btn-tiny mark-human" title="Set this verdict yourself — no LLM call">
+      <option value="" ${!v || !v.status ? "selected" : ""}>(unset)</option>
+      <option value="correct" ${v && v.status==="correct" ? "selected" : ""}>✓ Correct</option>
+      <option value="incorrect" ${v && v.status==="incorrect" ? "selected" : ""}>⚠ Incorrect</option>
+      <option value="uncertain" ${v && v.status==="uncertain" ? "selected" : ""}>? Uncertain</option>
+    </select>`;
   let validateBar;
   if(v && v.status){
     const cls = v.stale ? "stale" : v.status;
@@ -1498,11 +1507,12 @@ function cardHTML(q){
       ? `<button class="btn-tiny" data-act="acceptAns">Use "${esc(v.correct_answer)}"</button>` : "";
     validateBar = `
       <div class="validate-bar ${cls}">
-        <span class="vstatus">${icon} ${esc(lbl)}</span>
+        <span class="vstatus">${icon} ${esc(lbl)}${v.validated_by ? ` <span class="muted">(${esc(v.validated_by)})</span>` : ""}</span>
         ${v.correct_answer && v.status !== "correct" ? `<span>→ <b>${esc(v.correct_answer)}</b></span>` : ""}
         ${sugg}
         <button class="btn-tiny" data-act="validate">Re-validate</button>
         <button class="btn-tiny" data-act="clearVal" title="Forget this verdict">Clear</button>
+        ${markHumanSelect}
         ${v.rationale ? `<div class="rationale">${esc(v.rationale)}</div>` : ""}
         ${v.source ? `<div class="src">Source: ${esc(v.source)}</div>` : ""}
       </div>`;
@@ -1511,6 +1521,8 @@ function cardHTML(q){
       <div class="validate-bar" style="background:#f8f8f8;border-color:#ddd">
         <button class="btn-tiny" data-act="validate">✓ Validate answer</button>
         <span class="muted">(LLM checks the answer against the question)</span>
+        ${markHumanSelect}
+        <span class="muted">or mark it yourself</span>
       </div>`;
   }
   const qPages = questionPages(q);
@@ -1808,6 +1820,25 @@ function bindCardEvents(){
             setDirty(true); renderCards();
           }
         }
+      });
+    });
+    card.querySelectorAll(".mark-human").forEach(el => {
+      el.addEventListener("change", () => {
+        const q = findQ(id);
+        const status = el.value;
+        // Same persistence path the AI-validate result already uses —
+        // stored locally + ANN.validations, picked up by the existing
+        // Save button and annotation-replay, no separate API call needed.
+        // `delete` rather than `= null` to match clearVal's existing
+        // shape exactly (an absent key, not a null-valued one).
+        if(status){
+          q.validation = {status, rationale: "", validated_by: "human"};
+          ANN.validations[q.number] = q.validation;
+        } else {
+          delete q.validation;
+          delete ANN.validations[q.number];
+        }
+        setDirty(true); renderCards();
       });
     });
   });

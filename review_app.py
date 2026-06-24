@@ -55,7 +55,7 @@ from build_question_bank import (  # noqa: E402
     vision_extract_region,
     process_pair, apply_annotations,
 )
-from events import EVENTS, get_event, add_custom_event, is_builtin, REPO_ROOT  # noqa: E402
+from events import EVENTS, get_event, add_custom_event, is_builtin, DATA_ROOT, relative_data_path  # noqa: E402
 import texts as texts_mod  # noqa: E402
 import qgen  # noqa: E402
 import scrape_scioly  # noqa: E402
@@ -416,7 +416,16 @@ def _supplementary_docs(test_pdf: Path) -> list[Path]:
     test PDF or its key — e.g. `_sheet.pdf`, `_notes.pdf`, `_notes1.pdf`,
     whatever scioly.org happened to attach via `other_links`. No hardcoded
     suffix list, so any such file already sitting in the event directory
-    (downloaded but never surfaced anywhere) is picked up automatically."""
+    (downloaded but never surfaced anywhere) is picked up automatically.
+
+    Despite the literal `_notes.pdf` filename scioly.org sometimes uses,
+    everything this function returns is figures/images *attached to this
+    one test* — browsed via the review page's target toggle, never fed to
+    the LLM. This is NOT the same thing as the Scan page's `role="notes"`
+    onboarding option (`api_scan_rename`), which is event-wide *source
+    material* for question generation, moved into `texts_dir`. The
+    filename coincidence is scioly.org's, not this codebase's — don't let
+    it blur the two concepts when working on either one."""
     if not test_pdf.name.endswith("_test.pdf"):
         return []
     prefix = test_pdf.name[: -len("_test.pdf")]
@@ -667,7 +676,7 @@ def index():
             "slug": slug, "name": ev.name,
             "n_pdfs": n_pdfs, "n_questions": n_q,
             "n_processed_pdfs": n_processed_pdfs,
-            "base_dir": str(ev.base_dir),
+            "base_dir": relative_data_path(ev.base_dir),
             "is_builtin": is_builtin(slug),
             "n_unrecognized": _count_unrecognized(ev),
         })
@@ -1483,17 +1492,50 @@ def api_scan_rename(event_slug):
     after which it's indistinguishable from anything scioly.org-sourced and
     is picked up by every existing discovery path (this module's
     _list_test_pdfs/_key_path/_supplementary_docs, build_question_bank's
-    CLI) with no further code involved."""
+    CLI) with no further code involved.
+
+    `role="notes"` is different in kind, not just naming: a notes file is
+    source *material* for the Generate page (the same category as anything
+    already uploaded to <event>/texts/), not a document tied to one test —
+    so it's *moved* into texts_dir instead of renamed in place under the
+    test/key/supplementary convention. See `_supplementary_docs()`'s
+    docstring for why supplementary stays distinct from this."""
     from werkzeug.utils import secure_filename
     _select_event(event_slug)
     data = request.get_json() or {}
     role = (data.get("role") or "").strip().lower()
-    if role not in ("test", "key", "supplementary"):
-        return jsonify({"error": "role must be test, key, or supplementary"}), 400
+    if role not in ("test", "key", "supplementary", "notes"):
+        return jsonify({"error": "role must be test, key, supplementary, or notes"}), 400
     src = _safe_join(bqb.BASE_DIR, data.get("filename") or "")
     if not src.exists():
         return jsonify({"error": "file not found"}), 404
     ext = src.suffix.lower()
+
+    if role == "notes":
+        if ext not in (".pdf", ".docx", ".doc", ".md", ".txt"):
+            return jsonify({"error": "notes must be a PDF, .docx, .doc, .md, or .txt"}), 400
+        texts_dir = bqb.EVENT.texts_dir
+        texts_dir.mkdir(parents=True, exist_ok=True)
+        dest_name = secure_filename(src.name) or f"notes{ext}"
+        dest = texts_dir / dest_name
+        n = 1
+        while dest.exists():
+            dest = texts_dir / f"{Path(dest_name).stem}_{n}{Path(dest_name).suffix}"
+            n += 1
+        src.rename(dest)
+        if dest.suffix.lower() in (".docx", ".doc"):
+            # Converted in place, same directory — becomes an ordinary
+            # uploaded-source PDF from here on, needing the same one-click
+            # "Process → MD" step any other source PDF needs. A conversion
+            # failure here doesn't undo the move — the original (now in
+            # texts_dir) is still a valid source.
+            try:
+                doc_convert.convert_to_pdf(dest, dest.parent)
+            except doc_convert.DocConvertError as e:
+                return jsonify({"ok": True, "new_filename": dest.name, "moved_to": "texts",
+                                "warning": str(e)})
+        return jsonify({"ok": True, "new_filename": dest.name, "moved_to": "texts"})
+
     if ext not in (".pdf", ".docx", ".doc"):
         return jsonify({"error": "only .pdf/.docx/.doc files can be onboarded here"}), 400
 
@@ -2791,7 +2833,7 @@ def api_source_upload(event_slug):
 # a single 500-page book doesn't get dumped wholesale into one LLM call.
 # ---------------------------------------------------------------------------
 
-TEXTBOOKS_DIR = REPO_ROOT / "textbooks"
+TEXTBOOKS_DIR = DATA_ROOT / "textbooks"
 
 
 def _textbook_pdf_path(textbook_id: str) -> Path:

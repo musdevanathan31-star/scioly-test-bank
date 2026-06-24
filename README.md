@@ -20,11 +20,13 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [The cache & annotations](#the-cache--annotations)
 - [Cost notes](#cost-notes)
 - [Configuration](#configuration)
+  - [Separating app code from data (`DATA_ROOT`)](#separating-app-code-from-data-data_root)
 - [Authentication & roles](#authentication--roles)
 - [Deploying (shared, multi-user instance)](#deploying-shared-multi-user-instance)
 - [Production deployment (current state)](#production-deployment-current-state)
   - [Admin app](#admin-app)
 - [Maintaining the server](#maintaining-the-server)
+  - [Migrating an instance's data to a new `DATA_ROOT`](#migrating-an-instances-data-to-a-new-data_root-one-time-as-needed)
 - [Security hardening](#security-hardening)
 - [CLI reference](#cli-reference)
 - [Adding a new event](#adding-a-new-event)
@@ -35,6 +37,8 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 |---|---|---|---|
 | `circuit_lab` | Circuit Lab | `circuitlab_*.pdf` | 11 topics (Ohm's Law, Series & Parallel, Kirchhoff, RLC, semiconductors, …) |
 | `thermodynamics` | Thermodynamics | `thermodynamics_*.pdf` | 12 topics (Heat Transfer, Gas Laws, Carnot Engine, Entropy, …) |
+
+These two ship pre-seeded with a full topic/keyword taxonomy out of the box, but they're ordinary events from there on — editable and archivable from the landing page exactly like anything registered through the UI.
 
 The slug is the value to pass to `--event` on every CLI tool. To see what's registered:
 
@@ -212,7 +216,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
 | `.env.example` | Template for the Anthropic API key |
 | `.scioly_cookies.json` | Cached Anubis cookies (auto-managed; delete to force a fresh bot-bypass) |
-| `events_custom.json` | Auto-generated registry of events created via the web UI (built-ins stay in `events.py`) |
+| `events_custom.json` | Auto-generated registry of every registered event, including the Circuit Lab/Thermodynamics defaults (their curated keyword data lives in `events.py` and is seeded in here on first run, but the live registry entry — and any edits/archiving — lives here) |
 | `TODO_brittleness.md` | Self-audit of fragility / brittleness in the codebase with a suggested refactor ordering |
 | `TODO_ux.md` | Self-audit of UX rough edges with suggestions grouped by effort (⚡/🛠/🏗) |
 | `spec.md` | Technical spec — data shapes, pipeline stages, annotation/validation/generation schemas |
@@ -406,6 +410,18 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 Without a key, the pipeline still runs: it skips vision OCR (image-based PDFs yield no questions) and skips image-association refinement (falls back to y-coordinate heuristic). The review UI still works; vision-dependent buttons disable themselves.
 
+### Separating app code from data (`DATA_ROOT`)
+
+By default every event's data — PDFs, images, generated markdown, state/job files — plus `auth_users.json`, `events_custom.json`, and the shared `textbooks/` directory all live right next to the app's code, under the same directory `events.py` is in (`REPO_ROOT`). That's fine for local dev or a small instance, but on a real deployment the data grows continuously while the code doesn't — set `DATA_ROOT` in `.env` to put data on a separate (e.g. larger) disk instead:
+
+```
+DATA_ROOT=/mnt/qbank-data
+```
+
+Leave it unset and nothing changes — `DATA_ROOT` defaults to the app directory, so this is purely opt-in. Moving an *existing* instance's data to a new `DATA_ROOT` needs a one-time manual migration — see ["Maintaining the server"](#maintaining-the-server) below; don't just set the variable on a box that already has data in the old location, or the app will look for (and start creating) a second, empty copy at the new path instead of finding what's already there.
+
+What stays with the code regardless of `DATA_ROOT` (none of it grows unboundedly or benefits from a bigger disk): `scioly_tests.json` (shipped, read-only), `.scioly_cookies.json` (small, refreshed every ~7 days), `.env`, `deploy/instances.conf`, `static/`.
+
 ## Authentication & roles
 
 The app supports two roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
@@ -575,6 +591,19 @@ This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant 
 **As-needed, not scheduled**: rotating the GitHub PAT / AWS keys / restic password is *not* a calendar habit — it's a deliberate one-off. The restic password especially must never be rotated casually: rotating it means re-encrypting or losing access to every existing snapshot, so confirm you don't need anything from the old encryption before touching it.
 
 **When onboarding a new school**: repeat the full pattern in ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) for the app itself, then create that school's own private GitHub databank repo and S3 bucket and repeat ["Backups"](#backups) — nothing in the backup mechanism is shared between schools by design. Add a line for it to [`deploy/instances.conf`](deploy/instances.conf) so the admin app and `_apply-update.sh` both pick it up immediately — that's the only file to touch for the admin app to start managing it.
+
+### Migrating an instance's data to a new `DATA_ROOT` (one-time, as-needed)
+
+Do this when "`df -h` for disk headroom" above stops being reassuring — moving an instance's data to a bigger/separate disk via [`DATA_ROOT`](#separating-app-code-from-data-data_root). This is a manual, operator-run cutover, not something the app automates (consistent with this project's existing manual-over-automatic stance — see the GitHub-update mechanism's own rationale):
+
+1. **Stop the instance**: `sudo systemctl stop qbank` (or whichever unit, per [`deploy/instances.conf`](deploy/instances.conf)) — or use the admin app's Stop button.
+2. **Copy, don't move yet**: `rsync -a /opt/qbank/app/<slug>/ /mnt/qbank-data/<slug>/` for every event directory, plus `auth_users.json`, `events_custom.json`, and `textbooks/` — all currently sitting directly in the app directory. `rsync -a` preserves timestamps/permissions and is safely re-runnable if interrupted partway.
+3. **Match ownership**: confirm the new location is readable/writable by the same system user the systemd unit runs as (`User=` in the unit file) — `sudo chown -R qbank:qbank /mnt/qbank-data` (adjust the user/group per instance).
+4. **Point the instance at it**: add `DATA_ROOT=/mnt/qbank-data` to that instance's `.env`.
+5. **Restart and verify**: `sudo systemctl start qbank`, then load the landing page and confirm every event still lists the same question counts as before — this is the real "did it work" check, not just "did the service start."
+6. **Only after verifying**: remove the old copies from the app directory (`rm -rf /opt/qbank/app/<slug>` etc.) to actually reclaim the space — the app never does this for you, matching its no-permanent-deletion stance everywhere else.
+
+Repeat per-instance — `DATA_ROOT` is set in each instance's own `.env`, so e.g. NCMS and CHS can have entirely independent data locations (or share one, if you point both at the same mount and their slugs don't collide).
 
 ## Security hardening
 
