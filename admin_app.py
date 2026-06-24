@@ -364,7 +364,12 @@ def api_update_start():
     def _run():
         try:
             proc = subprocess.Popen(
-                ["sudo", "-u", "qbank-deploy", "bash", UPDATE_SCRIPT],
+                # Exec the script directly (not "bash <script>") -- sudoers
+                # matches the command being exec'd, and the NOPASSWD grant
+                # for qbank-admin is scoped to this exact path; wrapping it
+                # in "bash" makes sudo see "bash" as the command and demand
+                # a password instead.
+                ["sudo", "-u", "qbank-deploy", UPDATE_SCRIPT],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             for line in proc.stdout:  # type: ignore[union-attr]
