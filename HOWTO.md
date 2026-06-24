@@ -67,6 +67,7 @@ Click a PDF's name from the event page (or **Review by PDF**) to open the review
 - **Pull figures from a supplementary document** — if a sheet/notes/figures file was uploaded alongside this test (or discovered already sitting next to it), a toggle button for it appears next to **Test PDF** / **Key PDF**. Switch to it and use **📌 Pick image** (or any other capture tool) against it exactly like the test PDF — useful when a test's diagrams live in a separate file the extraction pipeline doesn't automatically associate with questions.
 - **Drag a rectangle** on the PDF and use the field buttons (**Stem**, **Choices**, **Math → Stem**, **Math → Answer**) to capture text or convert an equation to LaTeX directly into a field.
 - **+ Add question from region** — drag once over an unextracted question; it gets the next free number automatically, with multiple-choice options auto-split into the choices list if present.
+- **+ Add matching question** — for a "match each term to its definition" table the automatic extraction missed or mis-split: drag the left column, then the right column (it auto-advances, no second click needed). You get an editable two-column card — fix up any row, attach an image to a cell the same way you'd reassign any other figure, and set the correct A→B pairs in the dropdown list at the bottom. The pipeline also detects these tables on its own when processing a PDF now (previously the whole table landed as one unstructured question); this button is for fixing one up or building one from scratch.
 - **+ Add context from region** — for a shared passage/table/intro that several questions reference; the captured text becomes a context block other questions can link to.
 - **+ Add blank** — an empty card to fill in by hand.
 - Reassign a figure to a different question by clicking the image, then clicking the target card.
@@ -79,7 +80,7 @@ Click a PDF's name from the event page (or **Review by PDF**) to open the review
 ### Browsing, searching, and bulk-editing the whole bank
 
 **Browse questions** (from any event's page) is the event-wide view: every question, across every PDF/source, on one filterable/sortable page.
-- Filter by topic, focus, source, bucket, validation status, MCQ vs. FRQ, has-image; the search box is hotkeyed to `/`.
+- Filter by topic, focus, source, bucket, validation status, question type (MCQ / FRQ / Matching), has-image; the search box is hotkeyed to `/`.
 - **Every card is directly editable** — topic, focus, stem, choices, and answer are live fields right on the card; edits autosave about 600ms after you stop typing, no Save button. **↺ Undo** reverts a card's last autosaved batch of edits.
 - **🤖 AI Validate** persists a Haiku verdict immediately; the **Validation** dropdown next to it lets you set or override the status yourself — whichever happens most recently wins, so you can always correct a wrong AI verdict (or a stale human one).
 - **✨ Generate similar** / **🤖 Generate diagram** are available per-card too, seeded from that specific question.
@@ -159,7 +160,9 @@ Fields outside this list (e.g. a difficulty rating) are silently dropped on impo
 
 ### Taking or building a practice quiz
 
-Click **Quiz** from an event's page, set your filters (topic/count/etc.), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
+Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only" is one of the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
+
+A matching question shows a dropdown next to each left-column item listing every right-column label, with the right column displayed alongside so you can see every option before picking. It's graded with **partial credit** — getting 3 of 5 pairs right adds 0.6 to your running score, not all-or-nothing — and the feedback/mistake-review screens show exactly which pairs you got right or wrong.
 
 ### What only a coach can do, at a glance
 

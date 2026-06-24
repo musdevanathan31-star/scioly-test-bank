@@ -104,6 +104,20 @@
 .choice-row{display:flex;gap:5px;align-items:center;margin-bottom:3px;min-width:0}
 .choice-row .letter{flex:0 0 25px;font-weight:bold;color:#555}
 .choice-row .x{flex:0 0 20px;color:var(--bad);cursor:pointer;text-align:center}
+.match-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;margin-bottom:6px}
+.match-col-head{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px}
+.match-item{display:flex;gap:5px;align-items:flex-start;margin-bottom:4px;min-width:0}
+.match-item .label{flex:0 0 28px;font-weight:bold;color:#555;font-size:12px;
+  border:1px solid var(--line);border-radius:3px;padding:2px;text-align:center}
+.match-item textarea{flex:1 1 auto;min-width:0;min-height:30px;font-size:12px;resize:vertical}
+.match-item .imgbox{flex:0 0 auto}
+.match-item .imgbox img{width:54px;height:54px}
+.match-item .x{flex:0 0 18px;color:var(--bad);cursor:pointer;text-align:center}
+.match-pairs{margin-top:4px}
+.match-pairs .row{display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:12px}
+.match-pairs select{flex:0 0 auto}
+.match-raw{font-size:11px;color:var(--muted);background:#f8f8f8;border:1px solid var(--line);
+  border-radius:4px;padding:6px;margin-bottom:6px;max-height:80px;overflow:auto;white-space:pre-wrap}
 .image-bay{background:#fff;border:1px solid var(--line);border-radius:6px;
   padding:12px;margin-top:18px}
 .image-bay h3{margin:0 0 6px 0;font-size:13px;font-weight:600;color:#444}
@@ -332,6 +346,7 @@
   <div class="toolbar-group">
     <span class="label">Add</span>
     <button id="addRegion" class="primary" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">+ Add question from region</button>
+    <button id="addMatching" title="Draw two rectangles — the left column, then the right column — to create a matching question (e.g. 'match each term to its definition').">+ Add matching question</button>
     <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">+ Add context from region</button>
     <button id="addQ" title="Insert an empty question card you can fill out manually">+ Add blank</button>
   </div>
@@ -484,8 +499,9 @@ let dirty = false;
 let selectedImage = null;     // filename in the bay user clicked
 let LAST_CAPTURE = null;      // remembered drag region for Haiku fallback re-extract
 let focusedId = null;         // _id of currently focused question card
-let captureMode = null;       // null | {field: "stem"|"choices"|"answer"|"newQ", id?: _id}
+let captureMode = null;       // null | {field: "stem"|"choices"|"answer"|"newQ"|"matchingLeft"|"matchingRight", id?: _id}
 let nextLocalId = 1;
+let MATCHING_DRAFT = null;    // {left: [...], right: []} while the two-drag matching capture is in progress
 const collapsedIds = new Set(); // session-only: which Q card _ids are collapsed
 let extraTopics = [];         // user-added topics, persisted via questions
 let extraFoci   = [];         // user-added foci, persisted via questions
@@ -628,6 +644,16 @@ function annOverride(qnum, field, value){
   if(!qnum) return;
   ANN.field_overrides[qnum] = ANN.field_overrides[qnum] || {};
   ANN.field_overrides[qnum][field] = value;
+}
+// Matching-question edits always override both fields together — qtype
+// alongside matching itself — so a saved edit survives even if a later
+// reprocess's auto-detection pass doesn't re-flag the same question as a
+// matching candidate (e.g. the edited stem no longer contains the "match"
+// cue). annUpdateAdded keeps ANN.added in sync for manually-added drafts.
+function annOverrideMatching(q){
+  annOverride(q.number, "matching", q.matching);
+  annOverride(q.number, "qtype", "matching");
+  annUpdateAdded(q.number, q);
 }
 function annAddQuestion(q){
   // Strip transient _id before saving in ANN
@@ -1409,6 +1435,64 @@ function bindContextEvents(){
   });
 }
 
+// Renders a matching question's two-column editor: left/right item rows
+// (label + text-or-image + delete), an "add item" button per column, and a
+// dropdown-based pairs editor (one row per left item, picking its correct
+// right-column label) — a plain <select> is fine here since the reviewer is
+// authoring the answer key, not taking the quiz (contrast quiz.html's
+// student-facing dropdown, which starts blank).
+function matchingHTML(q){
+  const m = q.matching || {left: [], right: [], pairs: {}};
+  const left = m.left || [], right = m.right || [];
+  const itemRow = (side, i, item) => {
+    const cell = item.image
+      ? `<div class="imgbox" data-fn="${esc(item.image)}">
+           <img src="${IMG_BASE}/${esc(item.image)}" title="${esc(item.image)}">
+           <span class="x" data-act="detachMatchImg" data-side="${side}" data-idx="${i}" title="Detach">×</span>
+         </div>`
+      : `<textarea data-edit="matchText" data-side="${side}" data-idx="${i}">${esc(item.text)}</textarea>`;
+    return `
+    <div class="match-item" data-side="${side}" data-idx="${i}">
+      <input type="text" class="label" data-edit="matchLabel" data-side="${side}" data-idx="${i}" value="${esc(item.label)}">
+      ${cell}
+      <span class="x" data-act="delMatchItem" data-side="${side}" data-idx="${i}" title="Remove">×</span>
+    </div>`;
+  };
+  const rows = Math.max(left.length, right.length);
+  let gridRows = "";
+  for(let i = 0; i < rows; i++){
+    gridRows += (i < left.length ? itemRow("left", i, left[i]) : "<div></div>");
+    gridRows += (i < right.length ? itemRow("right", i, right[i]) : "<div></div>");
+  }
+  const pairs = m.pairs || {};
+  const rightOpts = right.map(r => `<option value="${esc(r.label)}">${esc(r.label)}</option>`).join("");
+  const pairRows = left.map(l => `
+    <div class="row">
+      <span>${esc(l.label)}.</span> →
+      <select data-edit="matchPair" data-leftlabel="${esc(l.label)}">
+        <option value="">(unanswered)</option>
+        ${right.map(r => `<option value="${esc(r.label)}" ${pairs[l.label] === r.label ? "selected" : ""}>${esc(r.label)}</option>`).join("")}
+      </select>
+    </div>`).join("");
+  const rawNote = m.raw_text ? `
+    <div class="match-raw" title="Original extracted text — the automatic pipeline couldn't confidently split this into columns. Use it as a reference while filling in the rows above.">${esc(m.raw_text)}</div>` : "";
+  return `
+    <div class="match-grid">
+      <div class="match-col-head">Column A
+        <button class="ghost btn-tiny" data-act="addMatchItem" data-side="left" title="Add a left-column item">+</button>
+      </div>
+      <div class="match-col-head">Column B
+        <button class="ghost btn-tiny" data-act="addMatchItem" data-side="right" title="Add a right-column item">+</button>
+      </div>
+      ${gridRows}
+    </div>
+    ${rawNote}
+    <div class="match-pairs">
+      <div class="row tight"><span class="lbl">Correct matches</span></div>
+      ${pairRows || `<span class="muted" style="font-size:12px">Add at least one item to each column first.</span>`}
+    </div>`;
+}
+
 function cardHTML(q){
   const choices = (q.choices||[]).map((c,i) => `
     <div class="choice-row" data-cid="${i}">
@@ -1513,6 +1597,9 @@ function cardHTML(q){
         <button class="btn-tiny" data-act="validate">Re-validate</button>
         <button class="btn-tiny" data-act="clearVal" title="Forget this verdict">Clear</button>
         ${markHumanSelect}
+        ${(v.per_pair && v.per_pair.length) ? `<div class="rationale">${v.per_pair.map(p =>
+            `<span style="color:${p.ok ? 'var(--ok)' : 'var(--bad)'}">${esc(p.left)}→${esc(p.given||'?')}${p.ok ? '' : ` (should be ${esc(p.correct_answer||'?')})`}</span>`
+          ).join("; ")}</div>` : ""}
         ${v.rationale ? `<div class="rationale">${esc(v.rationale)}</div>` : ""}
         ${v.source ? `<div class="src">Source: ${esc(v.source)}</div>` : ""}
       </div>`;
@@ -1587,13 +1674,14 @@ function cardHTML(q){
     <div class="row tight"><span class="lbl">Text</span></div>
     <textarea data-edit="text">${esc(q.text)}</textarea>
     <div class="math-preview" data-preview-for="text"></div>
+    ${q.qtype === "matching" ? matchingHTML(q) : `
     <div class="row tight" style="margin-top:6px">
       <span class="lbl">Choices</span>
       <button class="ghost" data-act="addChoice" title="Append a new empty choice to this question">+ add choice</button>
     </div>
     ${choices}
     <div class="row tight" style="margin-top:6px"><span class="lbl">Answer</span></div>
-    <input type="text" data-edit="answer" value="${esc(q.answer)}">
+    <input type="text" data-edit="answer" value="${esc(q.answer)}">`}
     ${imgs ? `<div class="images">${imgs}</div>` : ""}
     ${pendingNote}
     <div class="row tight" style="margin-top:6px;justify-content:flex-start">
@@ -1631,6 +1719,24 @@ function bindCardEvents(){
       if(SELECTION_MODE && !e.target.closest("input,textarea,button,select,.x")){
         const q = findQ(id);
         if(q) toggleQSelection(q.number);
+        return;
+      }
+      // Per-cell image assignment for matching questions — checked before
+      // the whole-question assignment below, since a click inside a
+      // .match-item row is a more specific target than the card background.
+      const matchItemEl = e.target.closest(".match-item");
+      if(selectedImage && matchItemEl && !e.target.closest("input,textarea,button,select,.x")){
+        const q = findQ(id);
+        const side = matchItemEl.dataset.side, idx = Number(matchItemEl.dataset.idx);
+        const item = q && q.matching && q.matching[side] && q.matching[side][idx];
+        if(item){
+          _undoSnapshot(`assign image ${selectedImage} to Q#${q.number} ${side}[${idx}]`);
+          item.image = selectedImage;
+          annOverrideMatching(q);
+          setDirty(true);
+          renderCards(); renderImageBay();
+          selectedImage = null; updateAssignMode();
+        }
         return;
       }
       // Image assignment next (highest priority among the rest)
@@ -1673,6 +1779,28 @@ function bindCardEvents(){
           const idx = Number(el.dataset.idx);
           q.choices[idx].text = el.value;
           annOverride(q.number, "choices", q.choices);
+        } else if(key === "matchLabel" || key === "matchText"){
+          const side = el.dataset.side, idx = Number(el.dataset.idx);
+          const items = q.matching[side];
+          if(items && items[idx]){
+            items[idx][key === "matchLabel" ? "label" : "text"] = el.value;
+            // Relabeling a left item invalidates any pair keyed by its old
+            // label — simplest correct behavior is to drop stale pair keys
+            // that no longer match any current left label.
+            if(key === "matchLabel" && side === "left"){
+              const validLabels = new Set(items.map(it => it.label));
+              q.matching.pairs = Object.fromEntries(
+                Object.entries(q.matching.pairs || {}).filter(([l]) => validLabels.has(l)));
+            }
+            annOverrideMatching(q);
+            if(key === "matchLabel") renderCards();   // pair dropdowns reference labels
+          }
+        } else if(key === "matchPair"){
+          const leftLabel = el.dataset.leftlabel;
+          q.matching.pairs = q.matching.pairs || {};
+          if(el.value){ q.matching.pairs[leftLabel] = el.value; }
+          else { delete q.matching.pairs[leftLabel]; }
+          annOverrideMatching(q);
         } else if(key === "topic"){
           if(el.value === "__NEW__"){
             const name = prompt("New topic name:");
@@ -1763,6 +1891,34 @@ function bindCardEvents(){
           q.choices.forEach((c,i) => c.letter = String.fromCharCode(65+i));
           annOverride(q.number, "choices", q.choices);
           annUpdateAdded(q.number, q);
+          setDirty(true); renderCards();
+        } else if(act === "addMatchItem"){
+          const side = el.dataset.side;
+          q.matching = q.matching || {left: [], right: [], pairs: {}};
+          const items = q.matching[side];
+          const label = side === "left" ? String(items.length + 1) : String.fromCharCode(65 + items.length);
+          items.push({label, text: "", image: null});
+          annOverrideMatching(q);
+          setDirty(true); renderCards();
+        } else if(act === "delMatchItem"){
+          const side = el.dataset.side, idx = Number(el.dataset.idx);
+          const items = q.matching[side];
+          const removedLabel = items[idx]?.label;
+          items.splice(idx, 1);
+          if(side === "left" && removedLabel){
+            delete q.matching.pairs[removedLabel];
+          } else if(side === "right" && removedLabel){
+            // Drop any pair that pointed at the removed right-column item
+            q.matching.pairs = Object.fromEntries(
+              Object.entries(q.matching.pairs || {}).filter(([, r]) => r !== removedLabel));
+          }
+          annOverrideMatching(q);
+          setDirty(true); renderCards();
+        } else if(act === "detachMatchImg"){
+          const side = el.dataset.side, idx = Number(el.dataset.idx);
+          const items = q.matching[side];
+          if(items && items[idx]) items[idx].image = null;
+          annOverrideMatching(q);
           setDirty(true); renderCards();
         } else if(act === "spanNextPage" || act === "spanPrevPage"){
           // Add an adjacent page to the question's extra_pages list (idempotent).
@@ -2152,7 +2308,9 @@ function startCapture(field, qid){
   const labels = {stem:"the question stem", choices:"the multiple-choice options",
                   answer:"the answer", newQ:"the new question",
                   newContext:"the shared context (passage, intro, table)",
-                  pickImage:"the image you want to attach to this question"};
+                  pickImage:"the image you want to attach to this question",
+                  matchingLeft:"the LEFT column (Column A)",
+                  matchingRight:"the RIGHT column (Column B)"};
   const pdfLabel = (field === "answer") ? "Key PDF (toggle above if needed)"
                                         : (target === "key" ? "Key PDF" : "Test PDF");
   hintTx.textContent = `Drag a rectangle on the ${pdfLabel} around ${labels[field]||field}. `
@@ -2170,6 +2328,9 @@ function cancelCapture(opts){
     LAST_CAPTURE = null;
     const hb = document.getElementById("haikuFallback");
     if(hb) hb.style.display = "none";
+  }
+  if(!(opts && opts.preserveDraft)){
+    MATCHING_DRAFT = null;
   }
 }
 document.getElementById("cancelCapture").addEventListener("click", () => cancelCapture());
@@ -2251,6 +2412,36 @@ document.addEventListener("mousemove", e => {
 // so both entry points behave identically for every capture mode.
 async function performCapture(mode, x, y, w, h){
   mode.rect = { x, y, w, h, page: curPage, target };
+
+  // Matching-question capture path (two drags: left column, then right)
+  if(mode.field === "matchingLeft" || mode.field === "matchingRight"){
+    const labelCharset = mode.field === "matchingLeft" ? "numeric" : "alpha";
+    setStatusHtml(`Extracting ${labelCharset === "numeric" ? "left" : "right"} column... <span class='spinner'></span>`);
+    let r;
+    try{
+      r = await fetch(`${API}/pdf/${PDF}/page/${curPage}/extract-region-column`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({x, y, w, h, dpi: 120, target, label_charset: labelCharset}),
+      });
+    } catch(err){ setStatus("Extract failed: " + err.message, "err"); cancelCapture(); return; }
+    if(!r.ok){ setStatus("Extract failed: HTTP " + r.status, "err"); cancelCapture(); return; }
+    const j = await r.json();
+    LAST_CAPTURE = { mode: {...mode}, x, y, w, h, page: curPage, target };
+    MATCHING_DRAFT = MATCHING_DRAFT || { left: [], right: [] };
+    if(labelCharset === "numeric"){ MATCHING_DRAFT.left = j.items || []; }
+    else { MATCHING_DRAFT.right = j.items || []; }
+    const hb = document.getElementById("haikuFallback");
+    if(hb) hb.style.display = "";
+    if(mode.field === "matchingLeft"){
+      // Auto-advance to the right-column drag — no second toolbar click needed.
+      cancelCapture({preserveLast: true, preserveDraft: true});
+      startCapture("matchingRight");
+      setStatus(`Left column captured (${(j.items||[]).length} items). Now drag the RIGHT column.`, "ok");
+    } else {
+      finalizeMatchingDraft();
+    }
+    return;
+  }
 
   // Math capture path
   if(mode.field.startsWith("math:")){
@@ -2337,6 +2528,29 @@ document.addEventListener("mouseup", async e => {
 document.getElementById("haikuFallback").addEventListener("click", async () => {
   if(!LAST_CAPTURE){ return; }
   const c = LAST_CAPTURE;
+  if(c.mode.field === "matchingLeft" || c.mode.field === "matchingRight"){
+    const labelCharset = c.mode.field === "matchingLeft" ? "numeric" : "alpha";
+    setStatusHtml("Re-extracting column via Haiku vision... <span class='spinner'></span>");
+    let r;
+    try {
+      r = await fetch(`${API}/pdf/${PDF}/page/${c.page}/extract-region-column-vision`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({x: c.x, y: c.y, w: c.w, h: c.h, dpi: 120, target: c.target, label_charset: labelCharset}),
+      });
+    } catch(err){ setStatus("Haiku call failed: " + err.message, "err"); return; }
+    const j = await r.json();
+    if(j.error){ setStatus("Haiku error: " + j.error, "err"); return; }
+    MATCHING_DRAFT = MATCHING_DRAFT || { left: [], right: [] };
+    if(labelCharset === "numeric"){ MATCHING_DRAFT.left = j.items || []; }
+    else { MATCHING_DRAFT.right = j.items || []; }
+    // If the draft already has both sides (this is a Haiku re-try on an
+    // already-finalized question's column), re-finalize would create a
+    // duplicate — only auto-finalize while the draft hasn't been committed
+    // to STATE.questions yet (i.e. we're still mid-capture-sequence).
+    setStatus("Re-extracted column via Haiku.", "ok");
+    document.getElementById("haikuFallback").style.display = "none";
+    return;
+  }
   setStatusHtml("Re-extracting via Haiku vision... <span class='spinner'></span>");
   let r;
   try {
@@ -2452,8 +2666,48 @@ function applyCapture(mode, j, text){
   setStatus(`Captured into ${mode.field}.`);
 }
 
+// Both columns are captured (MATCHING_DRAFT.left/right both set) — turn the
+// draft into a real question, the same way applyCapture's "newQ" branch
+// does for a single-region capture.
+function finalizeMatchingDraft(){
+  const draft = MATCHING_DRAFT;
+  cancelCapture();
+  if(!draft || !(draft.left||[]).length || !(draft.right||[]).length){
+    setStatus("Matching capture incomplete — need at least one item in each column.", "err");
+    return;
+  }
+  let maxN = 0;
+  STATE.questions.forEach(q => {
+    const m = String(q.number || "").match(/^([0-9]+)/);
+    if(m){ const n = parseInt(m[1]); if(n > maxN) maxN = n; }
+  });
+  const num = String(maxN + 1);
+  const q = {
+    _id: nextLocalId++,
+    number: num,
+    topic: "Other / General",
+    text: "Match each item in Column A to its match in Column B.",
+    choices: [], answer: "", images: [],
+    qtype: "matching",
+    matching: { left: draft.left, right: draft.right, pairs: {} },
+    source: STATE.questions[0]?.source || "",
+    year: STATE.questions[0]?.year || "",
+    division: STATE.questions[0]?.division || "",
+    page: curPage,
+  };
+  STATE.questions.push(q);
+  focusedId = q._id;
+  annAddQuestion(q);
+  setDirty(true); renderCards();
+  setStatus(`Captured matching Q#${num} (${draft.left.length} × ${draft.right.length} items). Fix up any mis-split rows and set the correct pairs below.`, "ok");
+}
+
 document.getElementById("addRegion").addEventListener("click", ()=>{
   startCapture("newQ");
+});
+
+document.getElementById("addMatching").addEventListener("click", ()=>{
+  startCapture("matchingLeft");
 });
 
 document.getElementById("addContext").addEventListener("click", ()=>{

@@ -22,6 +22,17 @@
 .quiz-choice.correct{background:#e3f4e9;border-color:var(--ok);color:#1f6f3a}
 .quiz-choice.wrong{background:#fde7e6;border-color:var(--bad);color:#a02020}
 .quiz-frq-input{width:100%;padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:4px;font:inherit}
+.quiz-match-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:18px;align-items:start}
+.quiz-match-col-head{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:4px}
+.quiz-match-left,.quiz-match-right{padding:8px 10px;border:1px solid var(--line);border-radius:4px;
+  font-size:13px;margin-bottom:6px;display:flex;gap:8px;align-items:center}
+.quiz-match-left select{flex:0 0 auto;padding:3px 6px;border:1px solid var(--line);border-radius:4px;font:inherit}
+.quiz-match-left img,.quiz-match-right img{max-width:60px;max-height:60px;border-radius:3px}
+.quiz-match-left.correct,.quiz-match-right.correct{background:#e3f4e9;border-color:var(--ok)}
+.quiz-match-left.wrong{background:#fde7e6;border-color:var(--bad)}
+.quiz-mistake-pairs{font-size:12px;margin-top:4px}
+.quiz-mistake-pairs .pair-ok{color:var(--ok)}
+.quiz-mistake-pairs .pair-bad{color:var(--bad)}
 .quiz-progress{display:flex;justify-content:space-between;align-items:center;
   font-size:12px;color:var(--muted);margin-bottom:14px}
 .quiz-timer{font-variant-numeric:tabular-nums;font-weight:600;color:var(--fg)}
@@ -79,10 +90,11 @@
       </select>
 
       <label for="qc_type">Type</label>
-      <select id="qc_type" title="Multiple choice, free response, or both">
+      <select id="qc_type" title="Multiple choice, free response, matching, or any">
         <option value="">(any)</option>
         <option value="mcq">MCQ only</option>
         <option value="frq">FRQ only</option>
+        <option value="matching">Matching only</option>
       </select>
 
       <label for="qc_timer">Per-Q timer</label>
@@ -124,6 +136,7 @@
     <div class="quiz-q" id="q_text"></div>
     <div class="quiz-choices" id="q_choices"></div>
     <input id="q_frq" class="quiz-frq-input" style="display:none" placeholder="Type your answer…">
+    <div id="q_matching" style="display:none"></div>
     <div id="q_feedback" class="quiz-feedback" style="display:none"></div>
     <div style="text-align:right">
       <button id="btn_skip" title="Skip this question (counted as wrong)">Skip</button>
@@ -185,16 +198,24 @@ function filteredPool(){
   return POOL.filter(q => {
     if(CONFIG.topic && q.topic !== CONFIG.topic) return false;
     const isMcq = q.choices && q.choices.length;
+    const isMatching = !!q._is_matching;
     if(CONFIG.type === "mcq" && !isMcq) return false;
-    if(CONFIG.type === "frq" &&  isMcq) return false;
+    if(CONFIG.type === "frq" && (isMcq || isMatching)) return false;
+    if(CONFIG.type === "matching" && !isMatching) return false;
     if(CONFIG.bucket){
       const b = q._bucket || "";
       if(CONFIG.bucket === "pdf"       && b.startsWith("_")) return false;
       if(CONFIG.bucket === "generated" && !b.startsWith("_generated_")) return false;
       if(CONFIG.bucket === "scioly"    && !b.startsWith("_scioly_"))    return false;
     }
-    // Must have a correct answer recorded
-    if(!q.answer || !String(q.answer).trim()) return false;
+    // Must have a recorded correct answer — for matching that means at
+    // least one filled-in pair (the top-level `answer` field stays "" for
+    // matching questions by design, see spec.md).
+    if(isMatching){
+      if(!q.matching || !Object.keys(q.matching.pairs || {}).length) return false;
+    } else if(!q.answer || !String(q.answer).trim()){
+      return false;
+    }
     return true;
   });
 }
@@ -316,7 +337,7 @@ function renderContextBanner(q){
 function presentQuestion(){
   const q = QUIZ[IDX];
   document.getElementById("q_idx").textContent = IDX + 1;
-  document.getElementById("q_score_run").textContent = SCORE;
+  document.getElementById("q_score_run").textContent = formatScore(SCORE);
   document.getElementById("q_meta").textContent = `${q.topic || "Other"} · ${q.source || q._bucket}`;
   document.getElementById("q_text").textContent = q.text || "";
   renderContextBanner(q);
@@ -326,7 +347,14 @@ function presentQuestion(){
   document.getElementById("btn_skip").disabled = false;
   document.getElementById("btn_submit").disabled = false;
   const isMcq = q.choices && q.choices.length;
-  if(isMcq){
+  const isMatching = !!q._is_matching;
+  document.getElementById("q_matching").style.display = "none";
+  if(isMatching){
+    document.getElementById("q_choices").style.display = "none";
+    document.getElementById("q_frq").style.display = "none";
+    document.getElementById("q_matching").style.display = "";
+    renderMatchingQuestion(q);
+  } else if(isMcq){
     document.getElementById("q_choices").style.display = "";
     document.getElementById("q_frq").style.display = "none";
     document.getElementById("q_choices").innerHTML = q.choices.map((c, i) =>
@@ -346,6 +374,42 @@ function presentQuestion(){
     document.getElementById("q_frq").focus();
   }
   startTimer();
+}
+
+// Matching quiz UI: each left item gets a dropdown listing every right-
+// column label (plus a blank default); the right column is shown alongside,
+// read-only, so the student can see every option's full text/image while
+// choosing. Chosen over drag-and-drop for accessibility/mobile-friendliness
+// and because this codebase has no existing drag-and-drop precedent.
+function renderMatchingQuestion(q){
+  const m = q.matching || {left: [], right: [], pairs: {}};
+  const left = m.left || [], right = m.right || [];
+  const cellHtml = (item) => item.image
+    ? `<img src="${IMG_BASE}/${esc(item.image)}" alt="figure">`
+    : `<span>${esc(item.text)}</span>`;
+  const rightHtml = right.map(r => `
+    <div class="quiz-match-right" data-label="${esc(r.label)}">
+      <b>${esc(r.label)}.</b> ${cellHtml(r)}
+    </div>`).join("");
+  const leftHtml = left.map(l => `
+    <div class="quiz-match-left" data-label="${esc(l.label)}">
+      <b>${esc(l.label)}.</b> ${cellHtml(l)}
+      <select class="q-match-pick" data-leftlabel="${esc(l.label)}">
+        <option value="">—</option>
+        ${right.map(r => `<option value="${esc(r.label)}">${esc(r.label)}</option>`).join("")}
+      </select>
+    </div>`).join("");
+  document.getElementById("q_matching").innerHTML = `
+    <div class="quiz-match-grid">
+      <div>
+        <div class="quiz-match-col-head">Column A — pick a match</div>
+        ${leftHtml}
+      </div>
+      <div>
+        <div class="quiz-match-col-head">Column B</div>
+        ${rightHtml}
+      </div>
+    </div>`;
 }
 
 function startTimer(){
@@ -369,6 +433,10 @@ function submitAnswer(timedOut){
   clearInterval(TIMER_ID);
   const q = QUIZ[IDX];
   const isMcq = q.choices && q.choices.length;
+  const isMatching = !!q._is_matching;
+
+  if(isMatching){ submitMatchingAnswer(q, timedOut); return; }
+
   let picked;
   if(isMcq){
     const sel = document.querySelector(".quiz-choice.picked");
@@ -408,8 +476,63 @@ function submitAnswer(timedOut){
   document.getElementById("btn_submit").style.display = "none";
   document.getElementById("btn_skip").disabled = true;
   document.getElementById("btn_next").style.display = "";
-  document.getElementById("q_score_run").textContent = SCORE;
+  document.getElementById("q_score_run").textContent = formatScore(SCORE);
 }
+
+// Matching grading: true partial credit (correctPairs/totalPairs added to
+// SCORE, not all-or-nothing) per product decision — a matching question is
+// N independent left-right judgments, so fractional credit reflects partial
+// understanding better than a single pass/fail. The "correct" flag used for
+// feedback color / the mistakes-review bucket stays strict (only a perfect
+// match counts as fully "correct"); the fractional credit is tracked
+// separately on the response so the scoreboard and the mistakes list can
+// disagree without contradicting each other.
+function submitMatchingAnswer(q, timedOut){
+  const m = q.matching || {left: [], right: [], pairs: {}};
+  const left = m.left || [], correctPairs = m.pairs || {};
+  const picks = {};
+  document.querySelectorAll(".q-match-pick").forEach(sel => {
+    if(sel.value) picks[sel.dataset.leftlabel] = sel.value;
+  });
+  const totalPairs = Object.keys(correctPairs).length;
+  if(Object.keys(picks).length === 0 && !timedOut){
+    toast("Pick at least one match (or click Skip).", "warn");
+    return;
+  }
+  const perPair = left.map(l => {
+    const expected = correctPairs[l.label];
+    if(expected == null) return null;   // no recorded answer for this row — not gradable
+    const given = picks[l.label] || null;
+    return {label: l.label, given, expected, ok: given === expected};
+  }).filter(Boolean);
+  const numCorrect = perPair.filter(p => p.ok).length;
+  const creditFraction = totalPairs ? numCorrect / totalPairs : 0;
+  const allCorrect = totalPairs > 0 && numCorrect === totalPairs;
+  SCORE += creditFraction;
+  RESPONSES.push({q, picked: picks, correct: allCorrect, creditFraction, perPair, timedOut});
+
+  const fb = document.getElementById("q_feedback");
+  fb.style.display = "";
+  fb.className = "quiz-feedback " + (allCorrect ? "correct" : "wrong");
+  fb.innerHTML = allCorrect
+    ? `✓ Correct — all ${totalPairs} matches right`
+    : `${timedOut ? "Out of time" : "Not quite"} — ${numCorrect} of ${totalPairs} matches correct`;
+  perPair.forEach(p => {
+    const leftEl = document.querySelector(`.quiz-match-left[data-label="${p.label}"]`);
+    const rightEl = p.expected ? document.querySelector(`.quiz-match-right[data-label="${p.expected}"]`) : null;
+    if(leftEl) leftEl.classList.add(p.ok ? "correct" : "wrong");
+    if(rightEl) rightEl.classList.add("correct");
+  });
+  document.querySelectorAll(".q-match-pick").forEach(sel => sel.disabled = true);
+  document.getElementById("btn_submit").style.display = "none";
+  document.getElementById("btn_skip").disabled = true;
+  document.getElementById("btn_next").style.display = "";
+  document.getElementById("q_score_run").textContent = formatScore(SCORE);
+}
+
+// Fractional SCORE only ever comes from matching questions' partial credit
+// — show as a clean integer for an all-MCQ/FRQ run, one decimal otherwise.
+function formatScore(s){ return Number.isInteger(s) ? String(s) : s.toFixed(1); }
 
 document.getElementById("btn_submit").addEventListener("click", () => submitAnswer(false));
 document.getElementById("btn_skip").addEventListener("click", () => {
@@ -440,7 +563,7 @@ function renderResult(){
   document.getElementById("quiz_section").style.display = "none";
   document.getElementById("result_section").style.display = "";
   const pct = Math.round(100 * SCORE / QUIZ.length);
-  document.getElementById("r_score").textContent = `${SCORE} / ${QUIZ.length}`;
+  document.getElementById("r_score").textContent = `${formatScore(SCORE)} / ${QUIZ.length}`;
   document.getElementById("r_detail").textContent = `${pct}% — ${pct >= 80 ? "great work!" : pct >= 60 ? "solid effort." : "more practice helps."}`;
   const mistakes = RESPONSES.filter(r => !r.correct);
   document.getElementById("r_mistakes_hdr").textContent =
@@ -448,6 +571,17 @@ function renderResult(){
   document.getElementById("r_mistakes").innerHTML = mistakes.map(r => {
     const q = r.q;
     const isMcq = q.choices && q.choices.length;
+    if(r.perPair){
+      // Matching mistake — per-pair breakdown instead of a single you/correct line.
+      const pairsHtml = r.perPair.map(p =>
+        `<div class="${p.ok ? 'pair-ok' : 'pair-bad'}">${esc(p.label)} → ${esc(p.given || '(blank)')}`
+        + `${p.ok ? '' : ` (correct: ${esc(p.expected)})`}</div>`).join("");
+      return `<div class="quiz-mistake">
+        <div class="quiz-mistake-meta">${esc(q.topic || "")} · ${esc(q.source || q._bucket)}</div>
+        <div class="quiz-mistake-q">${esc(q.text || "")}</div>
+        <div class="quiz-mistake-pairs">${pairsHtml}</div>
+      </div>`;
+    }
     const choicesHtml = isMcq ? "<br>" + q.choices.map(c =>
         `<span style="margin-right:8px"><b>${esc(c.letter)}.</b> ${esc(c.text)}</span>`).join("") : "";
     return `<div class="quiz-mistake">

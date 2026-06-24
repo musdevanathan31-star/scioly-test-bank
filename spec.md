@@ -52,7 +52,12 @@ Per-event configuration (slug, display name, topic taxonomy, keyword weights, fi
    - `_strip_points` removes parenthetical point markers like `(2 points)`, `[1 pt]`, `(½ pt each)` from every text field
    - `classify_topic` assigns a topic by keyword scoring (see §6)
 4. **Vision OCR** for image-only PDFs (`vision_extract_text_page`) — only when text extraction yielded nothing for the entire PDF. Renders each page at 96 DPI, sends to `claude-haiku-4-5-20251001`, gets back a JSON list of questions.
-5. **Image extraction and association** (`associate_images`)
+4b. **Matching-question structuring** (`detect_matching_questions`) — runs *before* image association (step 5), since a matching table's images need to land in the correct cell rather than be claimed as the question's top-level images. A cheap textual pre-filter (`_looks_like_matching`) flags candidates inside `extract_questions`'s `flush()` whenever `split_choices` rejects a body that also has a matching-instruction cue ("match... following/column/...") and an unusually large/doubled run of numbered+lettered markers. For each flagged candidate, `detect_matching_questions` re-walks the source page(s) with bbox-aware `page.get_text("blocks")` (unlike the flat text `extract_questions` sees) and either:
+   - asks Haiku vision (`vision_extract_matching`, only when the pipeline's vision toggle is on for this run) for a high-confidence `{left, right, pairs}` split, or
+   - falls back to **x-position column clustering**: bucket blocks into two columns by the largest gap among their `x0` values, sort each column top-to-bottom, extract labeled items (`_split_column_items`, a generalization of `split_choices_by_lines` with no 5-item ceiling and no ascending-from-A requirement).
+
+   If neither path is confident (e.g. the columns don't cleanly separate), the question still becomes `qtype: "matching"` with empty `left`/`right` — strictly better than the old opaque single-FRQ behavior — and the original flattened text is preserved as `matching.raw_text` for the reviewer to work from in the review UI. Embedded images inside the matching table's bbox are saved and filed into the cell whose row y-span contains them (heuristic path only — vision doesn't attempt per-cell image assignment, see §10). A conservative key-page parser (`extract_matching_answers`) additionally fills in `matching.pairs` when a key line lists exactly as many right-column letters as the question has left items (e.g. `"5. A,C,B,D"`) — anything ambiguous is left for the reviewer to fill in via the pairs dropdown, by design (a wrong auto-filled answer key silently grading students incorrectly is worse than an empty one). See §7 for the full splitting heuristic and §9 for the manual two-drag capture flow.
+5. **Image extraction and association** (`associate_images`) — skips any question with `qtype == "matching"` (its images were already filed per-cell by step 4b)
    - Walk every page, extract embedded images via `doc.extract_image(xref)` (skip <2 KB — they're logos and bullets)
    - Save under `<event>/images/<topic_slug>_<src>_p<n>_i<idx>_<hash>.<ext>`
    - For each page with images, ask Haiku vision: *"Which question (or PREV) does each figure illustrate?"* — pass the rendered page + the question numbers visible on it
@@ -100,6 +105,12 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
   "text":     "What is ... ?",      // the stem; MC options live in `choices`
   "choices":  [ { "letter": "A", "text": "..." }, ... ],
   "answer":   "10V",
+  "qtype":    "matching",           // optional discriminator; absent = legacy inference (bool(choices) -> mcq, else frq)
+  "matching": {                     // present only when qtype=="matching"
+    "left":  [ { "label": "1", "text": "Resistor", "image": null }, ... ],
+    "right": [ { "label": "A", "text": "Limits current flow", "image": null }, ... ],
+    "pairs": { "1": "A" }           // left label -> right label; missing keys = unanswered
+  },
   "images":   [ "filename.png", ... ],
   "source":   "2020 Div-C: duke",
   "year":     "2020",
@@ -112,6 +123,8 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
 }
 ```
 
+**Matching questions** (`qtype: "matching"`) deliberately leave `answer: ""` and `choices: []` — every code path that treats `answer` as a plain string (`validate_answer`'s `(q.get("answer") or "").strip()`, both inline editors' answer field) would otherwise need to handle it being a dict for this one type. The actual correct-pairing data lives entirely in `matching.pairs`, nested where only matching-aware code looks for it. `qtype` is the single explicit discriminator (`isMcq = !!choices.length`, `isMatching = qtype === "matching"`, `isFrq = neither`) — existing MCQ/FRQ questions simply have no `qtype` key, so every pre-existing `bool(choices)`-based check anywhere in the codebase is unaffected by this addition. Cell images (`matching.left[i].image`/`right[i].image`) are filenames from the same `images/` directory as everything else, just referenced per-cell instead of via the question's top-level `images[]` — `associate_images()` explicitly excludes matching questions so it never double-claims those files.
+
 `lastEditedBy`/`lastEditedDateTime` are set by `api_patch_question` (`review_app.py`) on every edit made through the Browse page's always-editable cards — including a validation change, since setting/overriding a verdict is itself an edit. Pre-existing questions (from before these fields existed) were backfilled once via `backfill_last_edited.py` (idempotent, safe to re-run) with `lastEditedBy="srikanth"` and `lastEditedDateTime` taken from that bucket's existing `manual[bucket].edited_at` where available.
 
 ### Annotations
@@ -122,7 +135,8 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
 {
   "field_overrides": {
     "5": { "text": "...", "choices": [...], "answer": "...", "topic": "...",
-           "validation": Validation, "lastEditedBy": "...", "lastEditedDateTime": "..." }
+           "validation": Validation, "lastEditedBy": "...", "lastEditedDateTime": "...",
+           "qtype": "matching", "matching": Question.matching }
   },
   "added": [ Question, ... ],          // user-created questions
   "deleted": [ "12", "13" ],           // qnums to drop
@@ -139,6 +153,8 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
   "contexts": [ Context, ... ]          // shared case-study blocks captured on this PDF
 }
 ```
+
+`field_overrides` and the `"added"` question-defaults logic both thread `qtype`/`matching` through alongside every other field — editing a matching question's items/pairs (or per-cell images) in review.html or browse.html always overrides both fields together, so a saved edit survives even if a later reprocess's auto-detection pass doesn't re-flag the same question as a matching candidate.
 
 ### Context
 
@@ -172,6 +188,8 @@ A question opts in via its `context_id`; review.html then renders the context ab
   "stale":          false              // set true if text/answer changed since
 }
 ```
+
+For matching questions, `validate_answer()` dispatches to `_validate_matching_answer()` instead — same top-level shape (`status`/`rationale`/`source`/`validated_at`/`model`), but with an additional `per_pair: [{"left":"1","ok":true,"correct_answer":"B"|null}]` array instead of `correct_answer`/`answer_at_validation` (which don't make sense for a multi-pair answer). `status` is `"correct"` only if every pair checks out. **Known limitation**: this is a text-based LLM check, not OCR — an image-only matching cell's content is invisible to the validator (no vision call in this path), so a pairing resting entirely on a figure's content can't be verified this way.
 
 The Browse page (`templates/browse.html`) can set this two ways, both through `PATCH /event/<slug>/api/q/<bucket>/<num>`'s `validation` field (`review_app.py`'s `api_patch_question`, which validates `status` against `{correct, incorrect, uncertain, unavailable}` and rejects anything else with a 400):
 - **AI Validate button** — calls the existing stateless `POST /event/<slug>/api/validate-question` (same Haiku check `review.html` already used), then immediately PATCHes the result with `validated_by: "ai"` so it's persisted right away (unlike `review.html`, which only persists via its page-level Save button).
@@ -241,6 +259,16 @@ Guards (the regex finds too many false positives without these):
 - Average option length must be < 80 chars (longer means it's a multi-part question with `a) ... b) ...`, not MC)
 - Stem must contain an interrogative cue (`?`, `____`, `:`, or a word like *which/what/who/how/calculate*) — without this, what looks like the stem is probably the body of an option whose marker was lost
 
+### Matching-column splitting
+
+A "match the entries" question (left column matched 1:1 to a right column) has far more than 5 items with uneven lengths — `split_choices` correctly rejects it, which is exactly what used to make it fall through as one opaque free-response question with the whole table glommed into `text`. Detection/splitting now happens in three layers:
+
+1. **`_looks_like_matching(body)`** — cheap pre-filter inside `extract_questions`'s `flush()`. Requires a matching-instruction cue (`match... following/each/column/...`, or `column A`/`column B`) AND either a marker count well above `split_choices`'s 5-item ceiling, or both a digit-marker run and a letter-marker run present in the same body (the clearest plain-text signature of two columns collapsed into one stream).
+2. **`detect_matching_questions`** — for each flagged candidate, re-walks the source page with bbox-aware `page.get_text("blocks")` (the flat text `extract_questions` sees has no x/y position at all). Vision-assisted (`vision_extract_matching`, when the pipeline's vision toggle is on) is preferred; the heuristic fallback (`_cluster_matching_columns`) buckets blocks into two columns by the largest gap among their `x0` values, sorts each column top-to-bottom, and extracts labeled items via `_split_column_items` — a generalization of `split_choices_by_lines`'s marker-per-line strategy, but with no 5-item ceiling (matching columns commonly run 6-10+ rows) and no ascending-from-A requirement (order is positional via array index, not validated against the label string).
+3. **`split_column_items`** (raw-text entry point, used by the manual two-drag capture flow — see §9) — same row-segmentation idea applied to a drag-captured region's newline-preserving text instead of PDF blocks.
+
+If column clustering can't confidently split a candidate, it still becomes `qtype: "matching"` with empty `left`/`right` (better than the old single-blob behavior) and the original text is preserved as `matching.raw_text` for the reviewer.
+
 ## 8. Markdown output
 
 `build_markdown(all_questions)` groups by topic in the order listed in §6. Within a topic, questions sharing a `context_id` are clustered together (`_cluster_by_context`, anchored at the earliest member's sort position) instead of rendering wherever each one individually sorts to — the shared Context's text/images render once as a `**Case study[: title]**` block immediately before that cluster's questions, which then render with no divider between them (one divider after the whole cluster). `build_markdown` derives the lookup itself via `_all_contexts()` (reads `state["annotations"][*].contexts`, namespaced `bucket::id`) — callers don't need to pass anything, just make sure each question dict carries `_bucket` (both call sites — the CLI's `main()` and `review_app.py`'s `api_regenerate` — tag it before calling). The PDF/CSV/JSON exports (`review_app.py`'s `_export_pdf`/`api_export`) do the same clustering for their own outputs; CSV instead adds a plain `context_id` column (no natural place for a shared passage in flat rows) and JSON wraps the question array as `{"questions": [...], "_contexts": {...}}` instead of a bare array. Each question renders as:
@@ -262,6 +290,8 @@ Guards (the regex finds too many false positives without these):
 ```
 
 Math markers (`$...$`, `$$...$$`) pass through verbatim — GitHub-flavored markdown renders them. Validation blockquote omitted when no verdict exists.
+
+Matching questions (`qtype: "matching"`) render their own block in place of the choices list: a `| # | Column A | | Column B |` markdown table (one row per pair, cell images as inline `![Figure](...)` references) followed by `**Correct matches:** 1→A, 2→C, ...`. The PDF export (`_export_pdf`) renders the same data as a reportlab `Table` flowable; the Anki export (`_export_apkg`) folds it into the FRQ note template's Question/Answer fields (stacked "label. text — label. text" rows as the question side, the pairs string as the answer side) rather than a dedicated card type, since Anki has no native two-column matching template.
 
 ## 9. Flask review UI
 
@@ -325,6 +355,8 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>.png?dpi=…&target=test\|key\|<supplementary filename>` | Page render — `target` resolved by the shared `_open_target_pdf()` (§9b). |
 | `GET /event/<slug>/api/pdf/<pdf>/images` | Image inventory + current assignments |
 | `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-region` | Plain-text extract from a rectangle (PyMuPDF `clip=`). With `parse_choices: true`, runs `split_choices` and returns `stem` + `choices`. |
+| `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-region-column` | One column of a manual matching capture: `split_column_items(raw, label_charset)` ("numeric" or "alpha") → `{items: [{label, text}]}`. Sibling to `extract-region`, same rect/target plumbing. |
+| `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-region-column-vision` | Haiku-vision fallback for `extract-region-column`, analogous to `extract-region-vision`. |
 | `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-math` | LaTeX extraction from a rectangle (Haiku vision) |
 | `POST /event/<slug>/api/pdf/<pdf>/page/<n>/ocr` | Full-page OCR (Haiku vision) — refresh image-based PDFs |
 | `POST /event/<slug>/api/validate-question` | LLM check of one question's answer |
@@ -444,6 +476,18 @@ When the user clicks **+ Add question from region** and drags a rectangle, the f
 
 This means dragging a region that covers a stem plus its `A. ... B. ... C. ...` options produces a fully-structured question card in one drag.
 
+### Add-matching-question UX
+
+**+ Add matching question** kicks off a guided two-drag sequence instead of a single drag, since reliably separating two columns from a freeform whole-table capture is exactly the unreliable problem the automatic pipeline already has to solve heuristically — letting the human draw two boxes (one per column) sidesteps it entirely for the manual path:
+
+1. Click the button → `startCapture("matchingLeft")`. User drags the left column.
+2. On mouseup, POSTs to `extract-region-column` with `label_charset: "numeric"`; result held in a transient draft (not yet added to `STATE.questions`). Capture mode auto-advances to `startCapture("matchingRight")` — no second click needed.
+3. User drags the right column; same call with `label_charset: "alpha"` appends to the draft.
+4. Once both columns are captured, the draft becomes a real `qtype: "matching"` question card with the two-column editor ready for row fixups, per-cell image assignment (reusing the existing image-bay click-to-assign pattern, generalized to target a specific cell instead of only a whole question), and the pairs dropdown.
+5. Escape at any point cancels the whole draft.
+
+The same "Try Haiku" fallback affordance shown after every capture re-extracts the in-progress column via `extract-region-column-vision` when the text-clip heuristic mis-splits a tricky layout (merged cells, image-only rows).
+
 ### Region-coordinate convention
 
 The frontend sends `(x, y, w, h)` in **natural image pixels** at the requested DPI. The backend converts:
@@ -465,6 +509,8 @@ Stable prompts kept in `build_question_bank.py`:
 - **Key OCR** — for image-based key PDFs. Asks for `{"1":"B","2":"14 Ω", ...}`.
 - **Math → LaTeX** — sends a high-DPI crop. Asks for the LaTeX with no delimiters; reply `NONE` if no math.
 - **Answer validation** — sends question + choices + recorded answer. Asks for a JSON verdict with status, correct answer, rationale, primary source.
+- **Matching-question structuring** (`vision_extract_matching`) — gives Haiku the rendered page and the candidate question's number. Asks for `{"left":[...], "right":[...], "pairs":{}}`, empty `text` for image-only cells, `null` if no matching question is actually visible on the page. Cached per page+question under a `match_p<N>_q<num>` key, following the `assoc_p<N>`/`ocr_p<N>`/`key_ocr_p<N>` convention. Does not attempt per-cell image assignment — that still comes from the heuristic bbox-intersection pass regardless of whether vision supplied the column structure.
+- **Matching-column capture** (`vision_extract_column`) — manual-capture fallback for one column; asks for `{"items":[{"label","text"}]}`.
 
 All vision calls go through `_vision_call(b64, prompt, max_tokens)` and are cacheable: callers store results in `state.vision[<pdf>][<key>]` and check the cache before paying again.
 
@@ -479,8 +525,9 @@ Haiku 4.5 pricing roughly 1¢ per ≈100 vision calls. Numbers below are for the
 | Math capture | per equation, opt-in | $0.005 each |
 | Answer validation | per question, opt-in | $0.003 each |
 | Question generation | per Generate-button click (~5 candidates) | $0.01 each |
+| Matching-question detection | per detected candidate, cached per page+question | ~$0.003 each |
 
-Bulk-validating the whole 800-question bank ≈ $2.40. The UI shows a per-page cost estimate before running.
+Bulk-validating the whole 800-question bank ≈ $2.40. The UI shows a per-page cost estimate before running. Matching-detection only spends anything when the cheap text pre-filter actually flags a candidate, and only once per question (cached) — zero cost for events with no matching-type questions, and zero calls at all when the pipeline's vision toggle is off (heuristic-only fallback, see §7).
 
 ## 11b. scioly.org bot bypass (`download_event.py`)
 

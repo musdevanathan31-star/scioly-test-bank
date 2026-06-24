@@ -189,3 +189,138 @@ def test_filename_prefix_falls_back_to_slug_when_no_event_match():
               event_match=(),
               topics=("Other / General",), topic_keywords={})
     assert e.filename_prefix == "my_local_event"
+
+
+# ---------------------------------------------------------------------------
+# Matching-question detection/splitting
+# ---------------------------------------------------------------------------
+
+def test_looks_like_matching_positive():
+    body = ("Match each term in Column A to its definition in Column B. "
+             "1. Resistor 2. Capacitor 3. Inductor 4. Diode 5. Transistor "
+             "A. Stores charge B. Limits current C. One-way valve "
+             "D. Amplifies signal E. Stores magnetic energy")
+    assert bqb._looks_like_matching(body)
+
+
+def test_looks_like_matching_negative_plain_frq():
+    body = "Explain why current flows through a resistor when a voltage is applied."
+    assert not bqb._looks_like_matching(body)
+
+
+def test_looks_like_matching_negative_plain_mc():
+    body = "What is the unit of resistance? A. Ohm B. Volt C. Amp D. Watt"
+    assert not bqb._looks_like_matching(body)
+
+
+def test_split_column_items_numeric_with_markers():
+    raw = "1. Resistor\n2. Capacitor\n3. Inductor"
+    items = bqb.split_column_items(raw, "numeric")
+    assert [it["label"] for it in items] == ["1", "2", "3"]
+    assert items[1]["text"] == "Capacitor"
+    assert all(it["image"] is None for it in items)
+
+
+def test_split_column_items_alpha_with_markers():
+    raw = "A. Limits current\nB. Stores charge\nC. Stores magnetic energy"
+    items = bqb.split_column_items(raw, "alpha")
+    assert [it["label"] for it in items] == ["A", "B", "C"]
+    assert items[2]["text"] == "Stores magnetic energy"
+
+
+def test_split_column_items_no_markers_positional_fallback():
+    raw = "Resistor\nCapacitor\nInductor"
+    items = bqb.split_column_items(raw, "numeric")
+    assert [it["label"] for it in items] == ["1", "2", "3"]
+    assert [it["text"] for it in items] == ["Resistor", "Capacitor", "Inductor"]
+
+
+def test_split_column_items_no_ceiling_unlike_mc_choices():
+    # Matching columns commonly run well past split_choices's 5-item cap.
+    raw = "\n".join(f"{i}. item {i}" for i in range(1, 9))
+    items = bqb.split_column_items(raw, "numeric")
+    assert len(items) == 8
+
+
+def test_split_column_items_empty_input():
+    assert bqb.split_column_items("", "numeric") == []
+
+
+def test_parse_matching_key_line_exact_length():
+    pairs = bqb._parse_matching_key_line("A,C,B", ["1", "2", "3"])
+    assert pairs == {"1": "A", "2": "C", "3": "B"}
+
+
+def test_parse_matching_key_line_rejects_length_mismatch():
+    assert bqb._parse_matching_key_line("A,C", ["1", "2", "3"]) is None
+
+
+def test_parse_matching_key_line_rejects_no_letters():
+    assert bqb._parse_matching_key_line("see diagram", ["1", "2"]) is None
+
+
+# ---------------------------------------------------------------------------
+# apply_annotations threading qtype/matching through field_overrides and
+# the "added" question-defaults path (Part 1 of the matching-question plan)
+# ---------------------------------------------------------------------------
+
+def _matching_question(number="5"):
+    return {
+        "number": number, "topic": "Other / General", "text": "Match each item.",
+        "choices": [], "answer": "", "images": [],
+        "source": "2024 Div-C: test", "year": "2024", "division": "C",
+        "qtype": "matching",
+        "matching": {
+            "left":  [{"label": "1", "text": "Resistor", "image": None}],
+            "right": [{"label": "A", "text": "Limits current", "image": None}],
+            "pairs": {"1": "A"},
+        },
+    }
+
+
+def test_apply_annotations_field_override_persists_matching_edit():
+    questions = [_matching_question()]
+    edited = {**_matching_question()["matching"]}
+    edited["pairs"] = {}   # simulate the reviewer clearing the answer key
+    ann = {"field_overrides": {"5": {"matching": edited, "qtype": "matching"}}}
+    out = bqb.apply_annotations(questions, ann)
+    assert out[0]["qtype"] == "matching"
+    assert out[0]["matching"]["pairs"] == {}
+
+
+def test_apply_annotations_added_question_keeps_matching_fields():
+    added = _matching_question(number="7")
+    ann = {"added": [added]}
+    out = bqb.apply_annotations([], ann)
+    assert len(out) == 1
+    assert out[0]["qtype"] == "matching"
+    assert out[0]["matching"]["pairs"] == {"1": "A"}
+
+
+def test_apply_annotations_added_question_defaults_qtype_to_frq():
+    # A plain (non-matching) manually-added question shouldn't pick up a
+    # stray qtype/matching from the defaulting logic.
+    added = {"number": "9", "text": "Free response", "choices": [], "answer": "x"}
+    out = bqb.apply_annotations([], {"added": [added]})
+    assert out[0]["qtype"] == "frq"
+    assert out[0]["matching"] is None
+
+
+# ---------------------------------------------------------------------------
+# Markdown export renders a matching question's two columns + answer key
+# instead of silently dropping it (Part 1.3 export audit)
+# ---------------------------------------------------------------------------
+
+def test_render_matching_block_renders_table_and_pairs():
+    lines: list[str] = []
+    bqb._render_matching_block(lines, _matching_question()["matching"])
+    rendered = "\n".join(lines)
+    assert "Resistor" in rendered
+    assert "Limits current" in rendered
+    assert "1→A" in rendered
+
+
+def test_render_matching_block_empty_shell_is_noop():
+    lines: list[str] = []
+    bqb._render_matching_block(lines, {"left": [], "right": [], "pairs": {}})
+    assert lines == []

@@ -112,6 +112,11 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .inline-editor .ce-choice .lt{width:18px;text-align:center;font-weight:bold}
 .inline-editor .ce-c{flex:1}
 .inline-editor .ie-actions{display:flex;gap:8px;margin-top:10px;align-items:center}
+.inline-editor .ie-match-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 8px;margin-bottom:6px}
+.inline-editor .ie-match-item{display:flex;gap:4px;align-items:center;margin-bottom:3px;min-width:0}
+.inline-editor .ie-match-item .lt{width:24px;text-align:center;font-weight:bold;font-size:11px}
+.inline-editor .ie-match-item img{width:32px;height:32px;object-fit:contain;border:1px solid var(--line);border-radius:3px}
+.inline-editor .ie-match-pairs .row{display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:2px}
 .qcard .pending-img-note{margin-top:8px;padding:6px 8px;background:#fff8e1;
   border-left:3px solid var(--warn);font-size:11px;color:#7a5a00;border-radius:4px}
 .save-status{font-size:11px;color:var(--muted)}
@@ -198,6 +203,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
         <option value="">All</option>
         <option value="mcq">Multiple choice</option>
         <option value="frq">Short / free response</option>
+        <option value="matching">Matching</option>
       </select>
     </section>
     <section>
@@ -426,7 +432,8 @@ function rerender(){
     if(fv === "unvalidated" && q._validation_status) return false;
     if(fv && fv !== "unvalidated" && q._validation_status !== fv) return false;
     if(fy === "mcq" && !q._is_mcq) return false;
-    if(fy === "frq" && q._is_mcq) return false;
+    if(fy === "frq" && (q._is_mcq || q._is_matching)) return false;
+    if(fy === "matching" && !q._is_matching) return false;
     if(fi === "yes" && !q._has_image) return false;
     if(fi === "no"  &&  q._has_image) return false;
     if(recent){
@@ -498,8 +505,73 @@ function topicChipStyle(t){
   const hue = topicHue(t);
   return `background:hsl(${hue},70%,93%);color:hsl(${hue},55%,32%)`;
 }
-const TYPE_ICON = {mcq: "🔘", frq: "📝", num: "🧮"};
+const TYPE_ICON = {mcq: "🔘", frq: "📝", num: "🧮", matching: "🔗"};
 const VALIDATION_ICONS = {correct: "✓", incorrect: "⚠", uncertain: "?", unavailable: "·"};
+
+// Browse-page matching editor: label+text per item (images are read-only
+// here, same as the rest of browse.html's image handling — no PDF-page
+// context to pick a new region from), plus a dropdown pairs editor mirroring
+// review.html's matchingHTML(). Reads/writes the whole `matching` object as
+// one PATCH field, same idiom as choicesHtml/_readChoicesFromCard for `choices`.
+function matchingEditorHtml(q){
+  const m = q.matching || {left: [], right: [], pairs: {}};
+  const left = m.left || [], right = m.right || [];
+  const itemHtml = (side, i, item) => `
+    <div class="ie-match-item" data-side="${side}" data-idx="${i}">
+      <input type="text" class="lt qf" data-field="matching" data-match-part="label" value="${esc(item.label)}" style="width:28px">
+      ${item.image
+        ? `<img src="${APP_ROOT}/event/${EVENT_SLUG}/images/${esc(item.image)}" alt="figure">`
+        : `<input type="text" class="qf" data-field="matching" data-match-part="text" value="${esc(item.text)}">`}
+    </div>`;
+  const rows = Math.max(left.length, right.length);
+  let grid = "";
+  for(let i = 0; i < rows; i++){
+    grid += i < left.length  ? itemHtml("left", i, left[i])   : "<div></div>";
+    grid += i < right.length ? itemHtml("right", i, right[i]) : "<div></div>";
+  }
+  const pairs = m.pairs || {};
+  const pairRows = left.map(l => `
+    <div class="row">
+      <span>${esc(l.label)}.</span> →
+      <select class="qf" data-field="matching" data-match-part="pair" data-leftlabel="${esc(l.label)}">
+        <option value="">(unanswered)</option>
+        ${right.map(r => `<option value="${esc(r.label)}" ${pairs[l.label]===r.label?"selected":""}>${esc(r.label)}</option>`).join("")}
+      </select>
+    </div>`).join("");
+  return `
+    <div class="ie-row">
+      <label class="ie-lbl">Matching</label>
+      <div style="flex:1">
+        <div class="ie-match-grid">${grid}</div>
+        <div class="ie-match-pairs">${pairRows}</div>
+      </div>
+    </div>`;
+}
+
+// Reads the whole matching object back out of the DOM, mirroring
+// _readChoicesFromCard's pattern for the `choices` field — called once per
+// edit on any .qf[data-field=matching] input, sending the full structure as
+// one PATCH payload value (api_patch_question replaces the whole field, same
+// as it already does for `choices`).
+function _readMatchingFromCard(card, q){
+  const m = {left: [], right: [], pairs: {...((q.matching||{}).pairs||{})}};
+  card.querySelectorAll(".ie-match-item").forEach(el => {
+    const side = el.dataset.side, idx = Number(el.dataset.idx);
+    const orig = (q.matching && q.matching[side] && q.matching[side][idx]) || {label:"", text:"", image:null};
+    const labelEl = el.querySelector('[data-match-part="label"]');
+    const textEl = el.querySelector('[data-match-part="text"]');
+    m[side][idx] = {
+      label: labelEl ? labelEl.value : orig.label,
+      text: textEl ? textEl.value : orig.text,
+      image: orig.image,
+    };
+  });
+  card.querySelectorAll('[data-match-part="pair"]').forEach(el => {
+    if(el.value){ m.pairs[el.dataset.leftlabel] = el.value; }
+    else { delete m.pairs[el.dataset.leftlabel]; }
+  });
+  return m;
+}
 
 function renderCard(q){
   const isReal = !q._synthetic_bucket;
@@ -541,7 +613,7 @@ function renderCard(q){
     ${thumb}
     <div class="head">
       <span class="qnum" title="Question number in its source PDF">Q${esc(q.number)}</span>
-      <span class="badge type" title="${q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
+      <span class="badge type" title="${q._is_matching ? 'Matching' : q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_matching ? TYPE_ICON.matching + " MATCH" : q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
       <span class="badge bucket" title="State-file bucket: ${esc(q._bucket)}">${esc(bucketLabel)}</span>
     </div>
     <div class="inline-editor">
@@ -563,6 +635,7 @@ function renderCard(q){
         <label class="ie-lbl">Stem</label>
         <textarea class="qf" data-field="text">${esc(q.text)}</textarea>
       </div>
+      ${q._is_matching ? matchingEditorHtml(q) : `
       ${(q.choices && q.choices.length) ? `
       <div class="ie-row">
         <label class="ie-lbl">Choices</label>
@@ -571,7 +644,7 @@ function renderCard(q){
       <div class="ie-row">
         <label class="ie-lbl">Answer</label>
         <input type="text" class="qf" data-field="answer" value="${esc(q.answer)}">
-      </div>
+      </div>`}
       <div class="ie-actions">
         <span class="save-status" data-role="save-status"></span>
         <button class="ghost undo-btn" style="display:none" title="Undo the last autosaved change to this question">↺ Undo</button>
@@ -642,6 +715,7 @@ function scheduleAutosave(card, q, field, value){
     st.snapshot = {
       topic: q.topic, focus: q.focus, text: q.text, answer: q.answer,
       choices: (q.choices || []).map(c => ({...c})),
+      matching: q.matching ? JSON.parse(JSON.stringify(q.matching)) : null,
     };
   }
   st.dirty[field] = value;
@@ -718,11 +792,21 @@ document.getElementById("results").addEventListener("input", e => {
   const field = e.target.dataset.field;
   if(field === "choices"){
     scheduleAutosave(card, q, "choices", _readChoicesFromCard(card));
+  } else if(field === "matching"){
+    scheduleAutosave(card, q, "matching", _readMatchingFromCard(card, q));
   } else {
     scheduleAutosave(card, q, field, e.target.value);
   }
 });
 document.getElementById("results").addEventListener("change", e => {
+  if(e.target.classList.contains("qf") && e.target.dataset.field === "matching"){
+    // Pairs <select> uses "change", not "input" — same full-object PATCH as above.
+    const card = e.target.closest(".qcard");
+    const bucket = card.dataset.bucket, num = card.dataset.qid;
+    const q = _findQ(bucket, num);
+    if(q) scheduleAutosave(card, q, "matching", _readMatchingFromCard(card, q));
+    return;
+  }
   if(e.target.classList.contains("qf") && e.target.tagName === "SELECT"){
     // Topic/Focus selects — same debounce path as typed fields (consistent
     // single Undo snapshot regardless of which field changed first).

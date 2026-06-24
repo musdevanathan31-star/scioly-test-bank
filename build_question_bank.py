@@ -558,6 +558,117 @@ def split_choices(text: str) -> tuple[str, list[dict]]:
     return stem, choices
 
 
+# ---------------------------------------------------------------------------
+# Matching-question detection ("match the entries" — a left column matched
+# 1:1 to a right column). split_choices() above already rejects these (too
+# many items, uneven lengths) and they'd otherwise fall through as one
+# opaque free-response question with the whole table glommed into `text`.
+# ---------------------------------------------------------------------------
+
+# Cue that the stem is asking for a matching exercise, independent of
+# whether the table itself uses the word "match" anywhere in its rows.
+_MATCHING_CUE = re.compile(
+    r"\bmatch\b[^.?]{0,60}\b(following|each|column|item|term|choice|description)\b"
+    r"|\bcolumn\s+[ab]\b",
+    re.IGNORECASE,
+)
+_DIGIT_MARKER = re.compile(r"(?:^|\s)(\d{1,2})[\.\)]\s")
+_ALPHA_MARKER = re.compile(r"(?:^|\s)([A-Za-z])[\.\)]\s")
+
+
+def _looks_like_matching(body: str) -> bool:
+    """Cheap, vision-free signal that a question body is a matching table
+    rather than a free-response question. Only called after split_choices()
+    has already rejected `body` as MC. Gates the expensive positional-
+    clustering pass (detect_matching_questions) so it only runs on real
+    candidates.
+
+    Requires the matching-instruction cue AND either:
+      - many more numbered/lettered markers than split_choices's 5-item
+        ceiling allows (a two-column table collapsed into one line reads
+        as a long run of markers), or
+      - both a digit-marker run and a letter-marker run present — the
+        clearest plain-text signature of two interleaved columns.
+    """
+    if not _MATCHING_CUE.search(body):
+        return False
+    digit_markers = _DIGIT_MARKER.findall(body)
+    alpha_markers = _ALPHA_MARKER.findall(body)
+    if len(digit_markers) + len(alpha_markers) > 6:
+        return True
+    return bool(digit_markers) and bool(alpha_markers)
+
+
+def _split_column_items(rows: list[str], label_charset: str) -> list[dict]:
+    """Extract a {label, text} dict per already-segmented row (continuation
+    lines already merged by the caller). Strips a leading numeric ("1.",
+    "1)") or alpha ("A.", "A)") marker matching `label_charset`; falls back
+    to positional numbering (1,2,3.../A,B,C...) for any row with no marker.
+    Generalizes split_choices_by_lines()'s marker-per-line strategy without
+    its 5-item ceiling or ascending-from-A requirement — matching columns
+    commonly run 6-10+ rows and the right column need not start at A."""
+    if label_charset == "numeric":
+        marker_re = re.compile(r"^\(?(\d{1,2})[\.\)]\s*(.*)$")
+    else:
+        marker_re = re.compile(r"^\(?([A-Za-z])[\.\)]\s*(.*)$")
+
+    items: list[dict] = []
+    for row in rows:
+        row = row.strip()
+        if not row:
+            continue
+        m = marker_re.match(row)
+        if m:
+            label = m.group(1).upper() if label_charset == "alpha" else m.group(1)
+            items.append({"label": label, "text": (m.group(2) or "").strip(), "image": None})
+        else:
+            items.append({"label": None, "text": row, "image": None})
+    for i, it in enumerate(items):
+        if it["label"] is None:
+            it["label"] = str(i + 1) if label_charset == "numeric" else chr(ord("A") + i)
+    return items
+
+
+def split_column_items(raw: str, label_charset: str) -> list[dict]:
+    """Split a drag-captured column region's raw (newline-preserving) text
+    into one item per row, merging wrapped continuation lines onto the
+    previous marked row. Used by the manual "add matching question" capture
+    flow (review_app.py's /extract-region-column). `label_charset` is
+    "numeric" for a left-column capture, "alpha" for a right-column one."""
+    if not raw:
+        return []
+    lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n")]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return []
+    marker_re = (re.compile(r"^\(?(\d{1,2})[\.\)]\s") if label_charset == "numeric"
+                 else re.compile(r"^\(?([A-Za-z])[\.\)]\s"))
+    rows: list[str] = []
+    seen_marker = False
+    for ln in lines:
+        if marker_re.match(ln):
+            seen_marker = True
+            rows.append(ln)
+        elif seen_marker and rows:
+            rows[-1] = rows[-1] + " " + ln
+        else:
+            rows.append(ln)
+    return _split_column_items(rows, label_charset)
+
+
+def _parse_matching_key_line(text: str, left_labels: list[str]) -> dict | None:
+    """Recognize a key-page line listing right-column letters for a
+    matching question, e.g. "5. A,C,B,D" or "5) A B C D" — only fires when
+    the number of letters found exactly equals len(left_labels), zipped
+    positionally into a {left_label: right_label} pairs dict. Deliberately
+    conservative (per product decision): anything ambiguous returns None
+    rather than guessing, leaving `pairs` empty for manual fill-in."""
+    letters = re.findall(r"[A-Za-z]", text)
+    if len(letters) != len(left_labels) or not letters:
+        return None
+    return {left: letter.upper() for left, letter in zip(left_labels, letters)}
+
+
 def _is_cover_page(text: str) -> bool:
     """True if the page looks like a cover/instructions page rather than
     a real test page.
@@ -634,9 +745,14 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
     cur_num: str | None = None
     cur_lines: list[str] = []
     in_key = False
+    # Tracks the highest left-column row number absorbed into the current
+    # question's body since a matching-instruction cue appeared in it — see
+    # the Q_START handling below for why this exists.
+    matching_col_max = 0
 
     def flush():
-        nonlocal cur_num, cur_lines
+        nonlocal cur_num, cur_lines, matching_col_max
+        matching_col_max = 0
         if cur_num and cur_lines and not in_key:
             body = " ".join(cur_lines).strip()
             if len(body) > 8:
@@ -644,10 +760,11 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
                 seen_nums[cur_num] = count + 1
                 display = cur_num if count == 0 else f"{cur_num}{_section_suffix(count)}"
                 stem, choices = split_choices(body)
+                is_matching_candidate = (not choices) and _looks_like_matching(body)
                 stem = _strip_points(stem)
                 choices = [{"letter": c["letter"], "text": _strip_points(c["text"])}
                            for c in choices]
-                questions.append({
+                q = {
                     "number":   display,
                     "topic":    classify_topic(body),
                     "text":     stem,
@@ -657,7 +774,14 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
                     "source":   source,
                     "year":     year,
                     "division": division,
-                })
+                }
+                if is_matching_candidate:
+                    # Flagged for the positional-clustering pass
+                    # (detect_matching_questions, called from process_pair
+                    # before associate_images). Stripped before output if
+                    # that pass can't confirm/restructure it.
+                    q["_matching_candidate"] = True
+                questions.append(q)
         cur_num = None
         cur_lines.clear()
 
@@ -708,6 +832,22 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
                 continue
             m = Q_START.match(line)
             if m:
+                n = int(m.group(1))
+                # A matching table's left column is itself numbered "1.",
+                # "2.", ... — indistinguishable from a new top-level
+                # question to Q_START on its own. Once the currently-open
+                # question's body already contains a matching-instruction
+                # cue, absorb a STRICTLY ascending continuation (1, 2, 3,
+                # ...) as body lines instead of flushing a spurious new
+                # "question" for each row. A real next top-level question
+                # breaks the ascending run (it's essentially never exactly
+                # matching_col_max+1) and falls through to the normal flush
+                # below, so this only ever suppresses genuine column rows.
+                if (cur_num is not None and n == matching_col_max + 1
+                        and n <= 25 and _MATCHING_CUE.search(" ".join(cur_lines))):
+                    matching_col_max = n
+                    cur_lines.append(line)
+                    continue
                 flush()
                 cur_num = m.group(1)
                 rest = line[m.end():].strip()
@@ -762,6 +902,41 @@ def extract_answers(pages: list[str]) -> dict[str, str]:
                 continue
             answers[num] = ans_text
     return answers
+
+
+def extract_matching_answers(pages: list[str], questions: list[dict]) -> None:
+    """Conservative answer-key population for matching questions (mutates
+    q["matching"]["pairs"] in place for any question with qtype=="matching").
+    Kept separate from extract_answers() since that function's flat
+    dict[str,str] return shape doesn't fit a nested pairs mapping.
+
+    Only fires when a key-page line for the question's number contains
+    exactly as many letters as the question has left-column items — see
+    _parse_matching_key_line. Anything ambiguous is left as pairs={} for
+    manual fill-in via the review UI, per product decision (false-positive
+    risk of a silently-wrong auto-filled answer key outweighs the
+    convenience of guessing)."""
+    matching_qs = {q["number"]: q for q in questions if q.get("qtype") == "matching"}
+    if not matching_qs:
+        return
+    for page_text in pages:
+        if not page_text.strip() or not _is_key_page(page_text):
+            continue
+        for line in page_text.split("\n"):
+            line = line.strip()
+            m = ANS_LINE.match(line)
+            if not m:
+                continue
+            num, ans_text = m.group(1), m.group(2).strip()
+            q = matching_qs.get(num)
+            if not q or (q.get("matching") or {}).get("pairs"):
+                continue
+            left_labels = [it["label"] for it in (q.get("matching") or {}).get("left") or []]
+            if not left_labels:
+                continue
+            pairs = _parse_matching_key_line(ans_text, left_labels)
+            if pairs:
+                q["matching"]["pairs"] = pairs
 
 # ---------------------------------------------------------------------------
 # Image utilities
@@ -844,6 +1019,34 @@ def vision_extract_region(b64: str) -> dict:
         "answer": parsed.get("answer"),
         "raw":    (raw or "")[:300],
     }
+
+
+def vision_extract_column(b64: str, label_charset: str) -> dict:
+    """OCR a single drag-captured column (one side of a matching table) and
+    split it into labeled items. Haiku fallback for the manual matching-
+    capture flow (review_app.py's /extract-region-column-vision), used when
+    split_column_items()'s text-based heuristic struggles (merged cells,
+    image-only rows, unusual spacing). Returns {"items": [{"label","text"}, ...]}."""
+    charset_hint = ("numbered 1, 2, 3, ..." if label_charset == "numeric"
+                    else "lettered A, B, C, ...")
+    prompt = (
+        "This image is one column from a Science Olympiad matching-type "
+        f"question — a list of {charset_hint} items.\n"
+        "Extract each item's label and text, top to bottom. If an item is a "
+        "figure/diagram rather than text, set its text to ''.\n"
+        'Return JSON only: {"items": [{"label": "1", "text": "..."}]}\n'
+        "Reply with ONLY the JSON object, no markdown fences, no prose."
+    )
+    try:
+        raw = _vision_call(b64, prompt, max_tokens=800)
+    except Exception as e:
+        return {"items": [], "error": str(e)}
+    parsed = _parse_json(raw)
+    if not isinstance(parsed, dict):
+        return {"items": [], "error": "Could not parse vision response", "raw": (raw or "")[:300]}
+    items = [{"label": str(it.get("label", "")), "text": (it.get("text") or "").strip(), "image": None}
+             for it in (parsed.get("items") or []) if isinstance(it, dict)]
+    return {"items": items}
 
 
 def _vision_call(b64: str, prompt: str, max_tokens: int = 512) -> str:
@@ -1087,6 +1290,42 @@ def vision_extract_key_page(page: fitz.Page) -> dict[str, str]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def vision_extract_matching(page: fitz.Page, q_num: str) -> dict | None:
+    """Ask Haiku to identify and structure a matching-table question (#q_num)
+    visible on this page: left-column items, right-column items, and the
+    correct pairing if visibly indicated. Used as the high-confidence path
+    in detect_matching_questions() — preferred over the x-position heuristic
+    when available, since vision handles layouts (merged cells, non-
+    rectangular columns) the heuristic can't. Does not attempt image-cell
+    association — filenames still come from the caller's own embedded-image
+    extraction, intersected against row/column bboxes; this keeps the
+    prompt simple and avoids asking the LLM to invent filenames."""
+    if not _vision_available():
+        return None
+    prompt = (
+        f"This is a Science Olympiad {_ev().name} test page containing a "
+        f"matching-type question (#{q_num}): a left column of items matched "
+        "1:1 to a right column.\n"
+        "Identify the left-column items and right-column items (their visible "
+        "label and text), and the correct pairing ONLY if an answer is "
+        "visibly indicated on this page (leave pairs empty otherwise).\n"
+        'Return JSON only: {"left":[{"label":"1","text":"..."}], '
+        '"right":[{"label":"A","text":"..."}], "pairs":{}}\n'
+        "If a cell is a figure/diagram rather than text, set its text to ''.\n"
+        "Return null if no matching question is visible on this page."
+    )
+    raw = _vision_call(page_image_b64(page), prompt, max_tokens=768)
+    parsed = _parse_json(raw)
+    if not isinstance(parsed, dict) or not parsed.get("left") or not parsed.get("right"):
+        return None
+    left = [{"label": str(it.get("label", "")), "text": (it.get("text") or "").strip(), "image": None}
+            for it in parsed.get("left") or []]
+    right = [{"label": str(it.get("label", "")), "text": (it.get("text") or "").strip(), "image": None}
+             for it in parsed.get("right") or []]
+    pairs = {str(k): str(v) for k, v in (parsed.get("pairs") or {}).items()}
+    return {"left": left, "right": right, "pairs": pairs}
+
+
 def vision_to_latex(b64: str) -> str:
     """
     Send a cropped equation image to Haiku, get back LaTeX.
@@ -1126,6 +1365,9 @@ def validate_answer(q: dict, keys: dict | None = None) -> dict:
     keys = keys or llm_providers.default_keys()
     if not llm_providers.available_providers(keys):
         return {"status": "unavailable", "rationale": "No LLM API key configured"}
+
+    if q.get("qtype") == "matching":
+        return _validate_matching_answer(q, keys)
 
     text = (q.get("text") or "").strip()
     answer = (q.get("answer") or "").strip()
@@ -1228,6 +1470,298 @@ def validate_answer(q: dict, keys: dict | None = None) -> dict:
         "answer_at_validation": answer,
     }
 
+
+def _validate_matching_answer(q: dict, keys: dict) -> dict:
+    """Matching-question branch of validate_answer(): presents both columns
+    plus the recorded pairs mapping, asks the LLM to verify each pairing,
+    and returns a per-pair breakdown nested under the same top-level shape
+    every other question type uses (status/rationale/source/validated_at/
+    model) so review.html's existing validate-bar rendering needs only one
+    additional conditional to also show `per_pair` when present — the
+    aggregate status/badge logic is unchanged.
+
+    Known limitation: this is a text-based check, not OCR — an image-only
+    cell's content is invisible to the validator (no vision call here).
+    Documented in spec.md rather than silently overclaiming accuracy."""
+    from datetime import datetime as _dt
+    m = q.get("matching") or {}
+    left, right, pairs = m.get("left") or [], m.get("right") or [], m.get("pairs") or {}
+    if not left or not right:
+        return {"status": "unavailable", "rationale": "matching question has no items"}
+    if not pairs:
+        return {"status": "unavailable", "rationale": "no recorded matches to check"}
+
+    def _cell(item):
+        return item.get("text") or ("[figure, no text — not visible to this text-based check]"
+                                     if item.get("image") else "(empty)")
+
+    left_str = "\n".join(f"  {it['label']}. {_cell(it)}" for it in left)
+    right_str = "\n".join(f"  {it['label']}. {_cell(it)}" for it in right)
+    pairs_str = ", ".join(f"{l}→{r}" for l, r in pairs.items())
+
+    prompt = (
+        f"You are checking a Science Olympiad {_ev().name} matching question for correctness.\n"
+        "Be careful: this is a physics test for grades 6-9.\n\n"
+        f"Question: {q.get('text','')}\n"
+        f"Column A:\n{left_str}\n"
+        f"Column B:\n{right_str}\n\n"
+        f"Recorded matches (A→B): {pairs_str}\n\n"
+        "For each recorded match, decide if it's correct. "
+        "Reply with ONLY valid JSON, no markdown, no prose. Schema:\n"
+        '{"per_pair": [{"left":"1","ok":true|false,"correct_answer":"B"|null}], '
+        '"rationale":string, "source":string}\n'
+        "correct_answer is the right-column label that SHOULD be matched to this "
+        "left item — null when ok is true or genuinely unknown."
+    )
+    model_overrides = {"anthropic": VISION_MODEL}
+    try:
+        result = llm_providers.chat(
+            keys=keys, system=None,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=700, model_overrides=model_overrides,
+        )
+        if result["provider"] == "anthropic":
+            _track_usage_tokens(result["input_tokens"], result["output_tokens"])
+        raw = result["text"]
+        used_model = result["model"]
+    except llm_providers.LLMError as e:
+        return {"status": "unavailable", "rationale": f"LLM error: {e}"}
+
+    parsed = _parse_json(raw)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("per_pair"), list):
+        return {
+            "status": "uncertain",
+            "rationale": "Could not parse validator response (LLM replied with non-JSON; click the raw response to inspect).",
+            "raw": (raw or "")[:400],
+            "validated_at": _dt.now().isoformat(timespec="seconds"),
+            "model": used_model,
+        }
+
+    per_pair = []
+    for p in parsed["per_pair"]:
+        if not isinstance(p, dict) or not p.get("left"):
+            continue
+        per_pair.append({
+            "left": str(p["left"]),
+            "given": pairs.get(str(p["left"])),
+            "ok": bool(p.get("ok")),
+            "correct_answer": p.get("correct_answer"),
+        })
+    status = "correct" if per_pair and all(p["ok"] for p in per_pair) else "incorrect"
+    if not per_pair:
+        status = "uncertain"
+
+    return {
+        "status":       status,
+        "per_pair":     per_pair,
+        "rationale":    (parsed.get("rationale") or "").strip(),
+        "source":       (parsed.get("source") or "").strip(),
+        "validated_at": _dt.now().isoformat(timespec="seconds"),
+        "model":        used_model,
+        "text_at_validation": q.get("text", "")[:300],
+    }
+
+# ---------------------------------------------------------------------------
+# Matching-question structuring (positional clustering + vision-assist)
+# ---------------------------------------------------------------------------
+
+def detect_matching_questions(doc: fitz.Document, questions: list[dict],
+                              src_slug: str, use_vision: bool,
+                              vision_cache: dict) -> None:
+    """
+    For every question flagged `_matching_candidate` by extract_questions(),
+    replace it in-place with a structured matching question: locate the
+    page it starts on (re-walking the same Q_START anchors, this time via
+    bbox-aware "blocks" instead of flat text), then either ask Haiku vision
+    (preferred, when `use_vision`) or fall back to x-position column
+    clustering to split it into left/right items.
+
+    MUST run before associate_images() — see that function's docstring for
+    why (matching-table images need to land in the correct cell, not the
+    question's top-level images[]).
+
+    Mutates `questions` in-place; strips the transient `_matching_candidate`
+    marker from every question regardless of outcome.
+    """
+    candidates: dict[str, dict] = {}
+    for q in questions:
+        if q.pop("_matching_candidate", None):
+            candidates[q["number"]] = q
+    if not candidates:
+        return
+
+    # Re-walk pages to find (a) which page each candidate starts on, and
+    # (b) the y-extent of its block on that page, bounded by the next
+    # Q_START anchor on the same page (or the page bottom). Applies the same
+    # ascending-continuation suppression extract_questions() uses (see its
+    # comment) — without it, a matching table's own "1.", "2." column rows
+    # would each look like a fresh anchor and chop the window down to just
+    # the instruction line, excluding every row from clustering.
+    for pno, page in enumerate(doc, 1):
+        anchors: list[tuple[str, float, float]] = []   # (qnum, anchor_y0, anchor_block_bottom)
+        cur_anchor_text = ""
+        matching_col_max = 0
+        for block in page.get_text("blocks"):
+            if block[6] != 0:
+                continue
+            for ln in block[4].split("\n"):
+                ln = ln.strip()
+                if not ln:
+                    continue
+                m = Q_START.match(ln)
+                if not m:
+                    continue
+                n = int(m.group(1))
+                if (n == matching_col_max + 1 and n <= 25
+                        and _MATCHING_CUE.search(cur_anchor_text)):
+                    matching_col_max = n
+                    continue   # column row, not a new anchor
+                anchors.append((m.group(1), block[1], block[3]))
+                cur_anchor_text = ln
+                matching_col_max = 0
+        if not anchors:
+            continue
+        anchors.sort(key=lambda a: a[1])
+        page_bottom = float(page.rect.height)
+        for i, (qnum, y0, anchor_bottom) in enumerate(anchors):
+            q = candidates.get(qnum)
+            if q is None or q.get("matching"):
+                continue  # not a candidate, or already resolved on an earlier page
+            y1 = anchors[i + 1][1] if i + 1 < len(anchors) else page_bottom
+            # Cluster strictly below the anchor's own stem block, so the
+            # instruction line ("Match each item...") doesn't get swept into
+            # whichever column its x0 happens to land in.
+            cluster_y0 = anchor_bottom
+
+            result = None
+            from_vision = False
+            if use_vision and _vision_available():
+                cache_key = f"match_p{pno}_q{qnum}"
+                if cache_key in vision_cache:
+                    result = vision_cache[cache_key] or None
+                else:
+                    result = vision_extract_matching(page, qnum)
+                    vision_cache[cache_key] = result
+                    time.sleep(0.05)
+                from_vision = result is not None
+            if not result:
+                result = _cluster_matching_columns(doc, page, pno, src_slug, cluster_y0, y1)
+
+            q["qtype"] = "matching"
+            if result:
+                if from_vision:
+                    # Known limitation: vision returns items with no bbox,
+                    # so precise per-cell image assignment (only possible
+                    # when we have the heuristic pass's block<->item
+                    # correspondence) is skipped here. Cell images stay
+                    # unset for vision-sourced matching questions until a
+                    # reviewer attaches them manually.
+                    pass
+                q["matching"] = result
+                # q["text"] still holds extract_questions()'s flattened blob
+                # (instruction sentence + every column row run together,
+                # since split_choices found no choices and left it as-is) —
+                # take just the leading instructional portion, up to the
+                # first absorbed column-row marker, as the clean stem.
+                lead = re.split(r"\s\d{1,2}[\.\)]\s", q.get("text") or "", maxsplit=1)[0].strip()
+                q["text"] = lead if len(lead) >= 8 else "Match each item in Column A to its match in Column B."
+            else:
+                # Couldn't confidently split — still flip the type (strictly
+                # better than the opaque-FRQ status quo) but leave empty
+                # columns and preserve the original text as a manual-entry
+                # aid in the review UI.
+                q["matching"] = {"left": [], "right": [], "pairs": {},
+                                 "raw_text": q.get("text", "")}
+            q["choices"] = []
+
+
+def _cluster_matching_columns(doc: fitz.Document, page: fitz.Page, pno: int,
+                              src_slug: str, y0: float, y1: float) -> dict | None:
+    """Heuristic, vision-free column split: within the page's [y0, y1) band
+    (this question's vertical extent), bucket text blocks into two columns
+    by the largest gap among their x0 values, sort each bucket top-to-
+    bottom, and extract labeled items via _split_column_items(). Returns
+    None (caller falls back to an empty matching shell) when the split
+    isn't confident — fewer than 2 confident column blocks is a much
+    stronger signal of "not actually two clean columns" than a clustering
+    error worth forcing.
+
+    Image-to-cell association happens here (not in a separate pass) because
+    this is the only place a column's text *blocks* and the resulting
+    labeled *items* are still in the same 1:1, same-order correspondence
+    (one row -> one item, via _split_column_items, which never merges or
+    drops rows) — once the items list is handed back to the caller that
+    correspondence is gone."""
+    blocks = [b for b in page.get_text("blocks")
+              if b[6] == 0 and y0 <= b[1] < y1 and b[4].strip()]
+    if len(blocks) < 4:
+        return None
+    xs = sorted({round(b[0], 1) for b in blocks})
+    if len(xs) < 2:
+        return None
+    gap, split_x = max((xs[i + 1] - xs[i], xs[i]) for i in range(len(xs) - 1))
+    if gap < 20:   # no confident two-column signal
+        return None
+
+    left_blocks  = sorted((b for b in blocks if b[0] <= split_x), key=lambda b: b[1])
+    right_blocks = sorted((b for b in blocks if b[0] > split_x),  key=lambda b: b[1])
+    if len(left_blocks) < 2 or len(right_blocks) < 2:
+        return None
+
+    def _rows_for(blocks_):
+        return [" ".join(ln.strip() for ln in b[4].split("\n") if ln.strip())
+                for b in blocks_]
+
+    left_items  = _split_column_items(_rows_for(left_blocks), "numeric")
+    right_items = _split_column_items(_rows_for(right_blocks), "alpha")
+    if len(left_items) < 2 or len(right_items) < 2:
+        return None
+
+    _assign_column_images(doc, page, pno, src_slug, left_blocks, left_items, y0, y1)
+    _assign_column_images(doc, page, pno, src_slug, right_blocks, right_items, y0, y1)
+    return {"left": left_items, "right": right_items, "pairs": {}}
+
+
+def _assign_column_images(doc: fitz.Document, page: fitz.Page, pno: int, src_slug: str,
+                          blocks: list, items: list[dict], y0: float, y1: float) -> None:
+    """Mutates `items[i]["image"]` in place for any embedded image whose
+    render rect's y0 falls within `blocks[i]`'s row span (that block's y0
+    up to either the next block's y0 or this question's y1) — relies on
+    `blocks` and `items` being the same length, in the same top-to-bottom
+    order (true by construction: both come from the same _rows_for() pass
+    immediately before _split_column_items() in _cluster_matching_columns,
+    one row in, one item out, never merged/dropped)."""
+    if not blocks or len(blocks) != len(items):
+        return
+    seen: set[int] = set()
+    for idx, info in enumerate(page.get_images(full=True)):
+        xref = info[0]
+        if xref in seen:
+            continue
+        seen.add(xref)
+        try:
+            rects = page.get_image_rects(xref)
+        except Exception:
+            rects = []
+        if not rects:
+            continue
+        img_y0 = float(rects[0].y0)
+        if not (y0 <= img_y0 < y1):
+            continue
+        # Which row does this image's top edge fall into?
+        row_i = None
+        for i, b in enumerate(blocks):
+            row_bottom = blocks[i + 1][1] if i + 1 < len(blocks) else y1
+            if b[1] <= img_y0 < row_bottom:
+                row_i = i
+                break
+        if row_i is None or items[row_i].get("image"):
+            continue
+        fname = _save_image(doc, xref, src_slug, pno, idx)
+        if fname:
+            items[row_i]["image"] = fname
+
+
 # ---------------------------------------------------------------------------
 # Spatial + vision image→question association
 # ---------------------------------------------------------------------------
@@ -1245,8 +1779,16 @@ def associate_images(doc: fitz.Document, questions: list[dict],
 
     Mutates `questions[*]["images"]` in-place.
     Also renames saved files to include the topic slug.
+
+    Matching questions (qtype=="matching") are excluded from `q_by_num` —
+    detect_matching_questions() (called earlier in process_pair, before this
+    function) already files any images inside a matching table's bbox into
+    the correct cell (matching.left[i]["image"]/right[i]["image"]); without
+    this exclusion, the y-coordinate fallback below would additionally (and
+    wrongly) claim those same images as the question's own top-level images.
     """
-    q_by_num: dict[str, dict] = {q["number"]: q for q in questions}
+    q_by_num: dict[str, dict] = {q["number"]: q for q in questions
+                                  if q.get("qtype") != "matching"}
     last_q_num: str | None = None   # persists across pages
 
     for pno, page in enumerate(doc, 1):
@@ -1474,6 +2016,12 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
     else:
         print("    [SKIP] image-based PDF — re-run without --text-only to OCR")
 
+    # ---- matching-question structuring (must run before image association
+    # — see associate_images()'s docstring for why) ----
+    detect_matching_questions(doc, questions, src_slug, use_vision, vision_cache)
+    # Inline key, now that any matching candidates have been structured
+    extract_matching_answers(page_texts, questions)
+
     # ---- image association ----
     associate_images(doc, questions, src_slug, use_vision, vision_cache)
     doc.close()
@@ -1487,6 +2035,7 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
             if has_key_text:
                 # Key text found — extract answers page-by-page
                 answers.update(extract_answers(kpage_texts))
+                extract_matching_answers(kpage_texts, questions)
             if (not has_key_text or os.environ.get("VISION_KEY_OCR", "").lower() in ("1", "true", "yes")) and use_vision:
                 # Either image-only key, OR opt-in vision pass on text keys
                 # (set VISION_KEY_OCR=1) — many keys have structured tables
@@ -1531,6 +2080,8 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
         print(f"    [INFO] multi-section numbering detected — skipping text key match")
     else:
         for q in questions:
+            if q.get("qtype") == "matching":
+                continue   # pairs already populated by extract_matching_answers; answer stays ""
             q["answer"] = answers.get(q["number"], "")
 
     # Apply any user annotations saved from the review UI
@@ -1562,7 +2113,8 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
     Annotation shape:
       {
         "field_overrides": {qnum: {text?, choices?, answer?, topic?, page?,
-                                    validation?, lastEditedBy?, lastEditedDateTime?}},
+                                    validation?, lastEditedBy?, lastEditedDateTime?,
+                                    qtype?, matching?}},
         "added":           [full question dicts],
         "deleted":         [qnum, ...],
         "image_overrides": {
@@ -1605,6 +2157,8 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
                 "year":     added.get("year", ""),
                 "division": added.get("division", ""),
                 "page":     added.get("page", 1),
+                "qtype":    added.get("qtype") or "frq",
+                "matching": added.get("matching"),
             }
             questions.append(q)
             existing.add(num)
@@ -1616,7 +2170,8 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
         if ov:
             for k in ("text", "choices", "answer", "topic", "focus", "page",
                       "extra_pages", "context_id", "image_descriptions",
-                      "lastEditedBy", "lastEditedDateTime", "validation"):
+                      "lastEditedBy", "lastEditedDateTime", "validation",
+                      "qtype", "matching"):
                 if k in ov:
                     q[k] = ov[k]
 
@@ -1665,6 +2220,42 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
 # Markdown generation — clean, no HTML
 # ---------------------------------------------------------------------------
 
+def _render_matching_block(lines: list[str], matching: dict) -> None:
+    """Render a matching question's two columns as a markdown table, plus
+    the correct-pairing answer key. Cell images render as a markdown image
+    reference inline in the cell (no separate figure block, since a
+    matching cell's image IS the cell content, not a question-level figure)."""
+    left = matching.get("left") or []
+    right = matching.get("right") or []
+    if not left and not right:
+        return
+
+    def _cell(item: dict) -> str:
+        text = (item.get("text") or "").strip()
+        img = item.get("image")
+        if img:
+            text = (text + " " if text else "") + f"![Figure](images/{img})"
+        return text or "*(empty)*"
+
+    lines.append("| # | Column A | | Column B |")
+    lines.append("|---|---|---|---|")
+    for i in range(max(len(left), len(right))):
+        l = left[i] if i < len(left) else None
+        r = right[i] if i < len(right) else None
+        l_label = l.get("label", "") if l else ""
+        r_label = r.get("label", "") if r else ""
+        l_cell = _cell(l) if l else ""
+        r_cell = _cell(r) if r else ""
+        lines.append(f"| {i + 1} | **{l_label}.** {l_cell} | | **{r_label}.** {r_cell} |")
+    lines.append("")
+
+    pairs = matching.get("pairs") or {}
+    if pairs:
+        pair_strs = [f"{l}→{r}" for l, r in pairs.items()]
+        lines.append(f"**Correct matches:** {', '.join(pair_strs)}")
+        lines.append("")
+
+
 def _render_question_block(lines: list[str], q: dict, i: int) -> None:
     """Render one question's heading/meta/text/choices/images/answer/validation
     block. Shared by clustered (case-study) and standalone rendering — does
@@ -1683,6 +2274,8 @@ def _render_question_block(lines: list[str], q: dict, i: int) -> None:
         lines.append(f"- **{c['letter']}.** {c['text']}")
     if q.get("choices"):
         lines.append("")
+    if q.get("qtype") == "matching":
+        _render_matching_block(lines, q.get("matching") or {})
     for img in q.get("images", []):
         lines.append(f"![Figure](images/{img})")
         lines.append("")

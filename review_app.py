@@ -52,7 +52,7 @@ from build_question_bank import (  # noqa: E402
     _vision_available, vision_extract_text_page,
     vision_to_latex, validate_answer, region_image_b64,
     classify_topic, split_choices, split_choices_by_lines, _strip_points,
-    vision_extract_region,
+    vision_extract_region, split_column_items, vision_extract_column,
     process_pair, apply_annotations,
 )
 from events import EVENTS, get_event, add_custom_event, is_builtin, DATA_ROOT, relative_data_path  # noqa: E402
@@ -1807,6 +1807,71 @@ def api_extract_region_vision(event_slug, pdfname, pno):
     })
 
 
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/extract-region-column",
+           methods=["POST"])
+def api_extract_region_column(event_slug, pdfname, pno):
+    """One side of the manual matching-question capture flow: crop a
+    drag-selected column (left or right) and split it into labeled items.
+    Sibling to api_extract_region — same fitz.Rect/_open_target_pdf
+    plumbing, only the post-extraction parsing differs (split_column_items
+    instead of split_choices, no item-count ceiling)."""
+    _select_event(event_slug)
+    data = request.get_json() or {}
+    try:
+        x = float(data["x"]); y = float(data["y"])
+        w = float(data["w"]); h = float(data["h"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "bad region"}), 400
+    if w < 4 or h < 4:
+        return jsonify({"error": "region too small"}), 400
+    label_charset = data.get("label_charset")
+    if label_charset not in ("numeric", "alpha"):
+        return jsonify({"error": "label_charset must be 'numeric' or 'alpha'"}), 400
+    dpi = float(data.get("dpi", 120))
+    target = data.get("target", "test")
+    doc = _open_target_pdf(pdfname, target)
+    if pno < 1 or pno > doc.page_count:
+        abort(404)
+    page = doc[pno - 1]
+    f = 72.0 / dpi
+    rect = fitz.Rect(x * f, y * f, (x + w) * f, (y + h) * f)
+    raw = page.get_text("text", clip=rect) or ""
+    items = split_column_items(raw, label_charset)
+    return jsonify({"items": items})
+
+
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/extract-region-column-vision",
+           methods=["POST"])
+def api_extract_region_column_vision(event_slug, pdfname, pno):
+    """Haiku-vision fallback for one column of a matching-question capture,
+    analogous to api_extract_region_vision."""
+    _select_event(event_slug)
+    if not _vision_available():
+        return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 400
+    data = request.get_json() or {}
+    try:
+        x = float(data["x"]); y = float(data["y"])
+        w = float(data["w"]); h = float(data["h"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "bad region"}), 400
+    if w < 8 or h < 8:
+        return jsonify({"error": "region too small"}), 400
+    label_charset = data.get("label_charset")
+    if label_charset not in ("numeric", "alpha"):
+        return jsonify({"error": "label_charset must be 'numeric' or 'alpha'"}), 400
+    dpi = float(data.get("dpi", 120))
+    target = data.get("target", "test")
+    doc = _open_target_pdf(pdfname, target)
+    if pno < 1 or pno > doc.page_count:
+        abort(404)
+    page = doc[pno - 1]
+    f = 72.0 / dpi
+    rect = fitz.Rect(x * f, y * f, (x + w) * f, (y + h) * f)
+    b64 = region_image_b64(page, rect, dpi=200)
+    result = vision_extract_column(b64, label_charset)
+    return jsonify({"items": result.get("items", []), "via": "haiku", "error": result.get("error")})
+
+
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/extract-math",
            methods=["POST"])
 def api_extract_math(event_slug, pdfname, pno):
@@ -1927,7 +1992,8 @@ def api_all_questions(event_slug):
             qcopy["_bucket"] = bucket
             qcopy["_synthetic_bucket"] = bucket.startswith("_")  # generated/scraped
             qcopy["_has_image"] = bool(qcopy.get("images"))
-            qcopy["_is_mcq"]    = bool(qcopy.get("choices"))
+            qcopy["_is_mcq"]      = bool(qcopy.get("choices"))
+            qcopy["_is_matching"] = qcopy.get("qtype") == "matching"
             qcopy["_edited_at"] = bucket_edited_at
             v = qcopy.get("validation") or {}
             qcopy["_validation_status"] = v.get("status") if v else None
@@ -2000,6 +2066,26 @@ def api_patch_question(event_slug, bucket, num):
         for i, c in enumerate(q["choices"]):
             c["letter"] = chr(ord("A") + i)
         edited_fields.append("choices")
+    if "matching" in data:
+        m = data["matching"]
+        if m is None:
+            q.pop("matching", None)
+            q.pop("qtype", None)
+        elif isinstance(m, dict):
+            q["matching"] = {
+                "left":  [{"label": str(it.get("label") or ""),
+                           "text": (it.get("text") or "").strip(),
+                           "image": it.get("image") or None}
+                          for it in (m.get("left") or [])],
+                "right": [{"label": str(it.get("label") or ""),
+                           "text": (it.get("text") or "").strip(),
+                           "image": it.get("image") or None}
+                          for it in (m.get("right") or [])],
+                "pairs": {str(k): str(v) for k, v in (m.get("pairs") or {}).items()},
+            }
+            q["qtype"] = "matching"
+        edited_fields.append("matching")
+        edited_fields.append("qtype")
     if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
         cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
                    if str(d or "").strip()}
@@ -2462,8 +2548,9 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Resp
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
+    from reportlab.lib import colors
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepTogether,
+        SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepTogether, Table, TableStyle,
     )
     import io as _io
 
@@ -2530,6 +2617,32 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Resp
                         f"<b>{_e(c.get('letter','?'))}.</b> {_e(c.get('text',''))}",
                         choice_style,
                     ))
+                pairs_str = "—"
+                if q.get("qtype") == "matching":
+                    m = q.get("matching") or {}
+                    left, right = m.get("left") or [], m.get("right") or []
+
+                    def _e_cell(item: dict) -> str:
+                        txt = _e(item.get("text") or "")
+                        if item.get("image"):
+                            txt = (txt + " " if txt else "") + "[figure]"
+                        return txt or "—"
+
+                    rows = [["#", "Column A", "#", "Column B"]]
+                    for i in range(max(len(left), len(right))):
+                        l = left[i] if i < len(left) else {}
+                        r = right[i] if i < len(right) else {}
+                        rows.append([l.get("label", ""), _e_cell(l),
+                                     r.get("label", ""), _e_cell(r)])
+                    tbl = Table(rows, colWidths=[0.3 * inch, 2.6 * inch, 0.3 * inch, 2.6 * inch])
+                    tbl.setStyle(TableStyle([
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                    ]))
+                    block.append(tbl)
+                    pairs = m.get("pairs") or {}
+                    pairs_str = ", ".join(f"{l}→{r}" for l, r in pairs.items()) or "—"
                 meta_bits = []
                 if q.get("source"):  meta_bits.append(_e(q["source"]))
                 if q.get("focus"):   meta_bits.append(f"focus: {_e(q['focus'])}")
@@ -2537,7 +2650,10 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Resp
                     block.append(Paragraph(" · ".join(meta_bits), meta_style))
                 block.append(Spacer(1, 6))
                 story.append(KeepTogether(block))
-                answer_lines.append(f"Q{n}: {_e(q.get('answer') or '—')}")
+                if q.get("qtype") == "matching":
+                    answer_lines.append(f"Q{n}: {pairs_str}")
+                else:
+                    answer_lines.append(f"Q{n}: {_e(q.get('answer') or '—')}")
 
     # Answer key page
     story.append(PageBreak())
@@ -2628,7 +2744,36 @@ def _export_apkg(all_qs: list[dict]) -> "Response":
         if q.get("quality_flag"):
             tags.append("flag_" + str(q["quality_flag"]))
         note_text = (q.get("reviewer_note") or "").strip()
-        if (q.get("choices") or []):
+        if q.get("qtype") == "matching":
+            m = q.get("matching") or {}
+
+            def _cell_html(item: dict) -> str:
+                txt = _esc(item.get("text") or "")
+                img = item.get("image")
+                if img:
+                    txt = (txt + " " if txt else "") + f"[figure: {_esc(img)}]"
+                return txt or "(empty)"
+
+            rows_html = "<br>".join(
+                f"<b>{_esc(l.get('label',''))}.</b> {_cell_html(l)} &mdash; "
+                f"<b>{_esc(r.get('label',''))}.</b> {_cell_html(r)}"
+                for l, r in zip(m.get("left") or [], m.get("right") or [])
+            )
+            pairs = m.get("pairs") or {}
+            pairs_str = ", ".join(f"{l}→{r}" for l, r in pairs.items()) or "—"
+            note = genanki.Note(
+                model=frq_model,
+                fields=[
+                    _esc(q.get("text", "")) + ("<br>" + rows_html if rows_html else ""),
+                    pairs_str,
+                    _esc(q.get("topic", "")),
+                    _esc(q.get("focus", "")),
+                    _esc(q.get("source", "")),
+                    _esc(note_text),
+                ],
+                tags=tags,
+            )
+        elif (q.get("choices") or []):
             choices_html = "<br>".join(
                 f"<b>{_esc(c.get('letter','?'))}.</b> {_esc(c.get('text',''))}"
                 for c in q["choices"])
