@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import collections
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -179,6 +180,70 @@ def _clear_login_failures(ip: str) -> None:
         _login_attempts.pop(ip, None)
 
 
+# ---------------------------------------------------------------------------
+# Step-up password confirmation for redeploy/restart/rollback/threads.
+#
+# These actions already require a valid session (the operator is logged
+# in), but that alone means a stolen session cookie could trigger them
+# silently. Re-checking the admin password at the moment of the action adds
+# a second factor the cookie alone doesn't carry — without introducing a
+# new credential: this reuses the exact same ADMIN_PASSWORD_HASH check
+# login() already does, never a literal Unix/sudo password (qbank-admin and
+# qbank-deploy are nologin service accounts with no real password set
+# today; piping one through a web request would be a new, harder-to-rotate
+# secret with a much bigger blast radius for no extra benefit here).
+#
+# Separate rate-limit bucket from the login one above — without this, an
+# attacker who already has a valid session (e.g. via a stolen cookie) could
+# brute-force the password against these endpoints with no limit at all,
+# since they'd never need to touch the actual /login route.
+# ---------------------------------------------------------------------------
+
+_STEPUP_ATTEMPT_WINDOW_SECONDS = _LOGIN_ATTEMPT_WINDOW_SECONDS
+_STEPUP_MAX_ATTEMPTS = _LOGIN_MAX_ATTEMPTS
+_stepup_attempts: dict[str, list[float]] = collections.defaultdict(list)
+_stepup_attempts_lock = threading.Lock()
+
+
+def _stepup_rate_limited(ip: str) -> bool:
+    now = time.time()
+    with _stepup_attempts_lock:
+        attempts = _stepup_attempts[ip]
+        attempts[:] = [t for t in attempts if now - t < _STEPUP_ATTEMPT_WINDOW_SECONDS]
+        return len(attempts) >= _STEPUP_MAX_ATTEMPTS
+
+
+def _record_stepup_failure(ip: str) -> None:
+    with _stepup_attempts_lock:
+        _stepup_attempts[ip].append(time.time())
+
+
+def _clear_stepup_failures(ip: str) -> None:
+    with _stepup_attempts_lock:
+        _stepup_attempts.pop(ip, None)
+
+
+def _check_admin_password(password: str) -> bool:
+    return check_password_hash(ADMIN_PASSWORD_HASH, password or "")
+
+
+def _require_password_or_403(data: dict):
+    """Call as the first line of any gated route, passing the parsed
+    request body. Returns a Flask response to return immediately on
+    failure (429 rate-limited, 403 wrong/missing password), or None if the
+    password checked out — the caller proceeds exactly as before."""
+    ip = request.remote_addr or "unknown"
+    if _stepup_rate_limited(ip):
+        return jsonify({"error": "Too many failed confirmations. Try again in a while."}), 429
+    password = (data or {}).get("password") or ""
+    if not _check_admin_password(password):
+        _record_stepup_failure(ip)
+        audit(f"{request.endpoint}.confirm", request.path, "DENIED: bad password")
+        return jsonify({"error": "Incorrect password"}), 403
+    _clear_stepup_failures(ip)
+    return None
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -228,6 +293,7 @@ INSTANCES_CONF = REPO_ROOT / "deploy" / "instances.conf"
 BACKUP_ROOT = Path(os.environ.get("QBANK_BACKUP_ROOT", "/opt/qbank-backups"))
 SERVICE_CTL_SCRIPT = "/usr/local/sbin/qbank-service-ctl.sh"
 ROLLBACK_SCRIPT = "/usr/local/sbin/qbank-rollback.sh"
+SET_THREADS_SCRIPT = "/usr/local/sbin/qbank-set-threads.sh"
 UPDATE_SCRIPT = "/opt/qbank-deploy/update-from-github.sh"
 AUDIT_LOG = Path(os.environ.get("ADMIN_AUDIT_LOG", "/var/log/qbank-admin-actions.log"))
 
@@ -290,26 +356,56 @@ def service_status(service: str) -> str:
         return f"error: {e}"
 
 
+_THREADS_RE = re.compile(r"--threads\s+(\d+)")
+_WORKERS_RE = re.compile(r"--workers\s+(\d+)")
+
+
+def instance_resource_config(service: str) -> dict:
+    """Reads the *live, currently-in-effect* --threads/--workers off the
+    running unit (systemd merges any drop-in override at parse time, so
+    this always reflects reality — never a cached file that could drift
+    from it; see qbank-set-threads.sh's header comment for why no file
+    under deploy/ or an instance's app_dir is used to store this).
+
+    Read-only unit introspection needs no privilege, same as
+    service_status()'s `systemctl is-active` above."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", service, "--property=ExecStart", "--value"],
+            capture_output=True, text=True, timeout=10,
+        )
+        line = result.stdout or result.stderr or ""
+    except Exception:
+        line = ""
+    threads_m = _THREADS_RE.search(line)
+    workers_m = _WORKERS_RE.search(line)
+    return {
+        "threads": int(threads_m.group(1)) if threads_m else None,
+        "workers": int(workers_m.group(1)) if workers_m else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
 
+def _instance_rows() -> list[dict]:
+    rows = []
+    for inst in load_instances():
+        row = {**inst.__dict__, "status": service_status(inst.service)}
+        row.update(instance_resource_config(inst.service))
+        rows.append(row)
+    return rows
+
+
 @app.route("/")
 def dashboard():
-    instances = [
-        {**inst.__dict__, "status": service_status(inst.service)}
-        for inst in load_instances()
-    ]
-    return render_template("admin/dashboard.html", instances=instances)
+    return render_template("admin/dashboard.html", instances=_instance_rows())
 
 
 @app.route("/api/status")
 def api_status():
-    instances = [
-        {**inst.__dict__, "status": service_status(inst.service)}
-        for inst in load_instances()
-    ]
-    return jsonify({"instances": instances})
+    return jsonify({"instances": _instance_rows()})
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +419,14 @@ def api_service_ctl(instance_name, verb):
     inst = get_instance(instance_name)
     if inst is None:
         return jsonify({"error": f"unknown instance: {instance_name}"}), 404
+    # Only "restart" is password-gated (and the same gate covers Set
+    # threads below, which also restarts) — stop/start are lower-risk
+    # (no code change, frequently used for quick triage) and stay as they
+    # were.
+    if verb == "restart":
+        resp = _require_password_or_403(request.get_json(silent=True) or {})
+        if resp:
+            return resp
     try:
         result = subprocess.run(
             ["sudo", SERVICE_CTL_SCRIPT, verb, instance_name],
@@ -337,6 +441,45 @@ def api_service_ctl(instance_name, verb):
 
 
 # ---------------------------------------------------------------------------
+# Threads — gunicorn --threads is configurable per instance via a systemd
+# drop-in (see qbank-set-threads.sh's header comment for why instances.conf
+# itself is never used to store this). --workers stays hardcoded at 1 in
+# that script, independent of anything validated here — see
+# build_question_bank.py's per-event state lock and jobs.py's single-
+# worker-process job queue for why.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/instance/<instance_name>/threads", methods=["POST"])
+def api_set_threads(instance_name):
+    inst = get_instance(instance_name)
+    if inst is None:
+        return jsonify({"error": f"unknown instance: {instance_name}"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        threads = int(data.get("threads"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "threads must be an integer"}), 400
+    if not (1 <= threads <= 64):
+        return jsonify({"error": "threads must be between 1 and 64"}), 400
+    # Restarts the instance, same blast radius as a standalone Restart —
+    # gated the same way.
+    resp = _require_password_or_403(data)
+    if resp:
+        return resp
+    try:
+        result = subprocess.run(
+            ["sudo", SET_THREADS_SCRIPT, instance_name, str(threads)],
+            capture_output=True, text=True, timeout=30,
+        )
+        ok = result.returncode == 0
+        audit("threads.set", f"{instance_name}={threads}", "OK" if ok else f"FAILED: {result.stderr.strip()}")
+        return jsonify({"ok": ok, "output": (result.stdout + result.stderr).strip()}), (200 if ok else 500)
+    except Exception as e:
+        audit("threads.set", f"{instance_name}={threads}", f"ERROR: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Update from GitHub — background job, mirrors review_app.py's
 # _DOWNLOAD_JOBS pattern (api_download_start/api_download_status) but drives
 # a subprocess instead of an in-process function.
@@ -347,6 +490,9 @@ _UPDATE_JOBS: dict = {}
 
 @app.route("/api/update/start", methods=["POST"])
 def api_update_start():
+    resp = _require_password_or_403(request.get_json(silent=True) or {})
+    if resp:
+        return resp
     for jid, job in _UPDATE_JOBS.items():
         if not job.get("finished"):
             return jsonify({"error": "an update is already in progress", "job_id": jid}), 409
@@ -432,6 +578,9 @@ def api_rollback():
         return jsonify({"error": f"unknown instance: {instance_name}"}), 404
     if not ts:
         return jsonify({"error": "missing timestamp"}), 400
+    resp = _require_password_or_403(data)
+    if resp:
+        return resp
     try:
         result = subprocess.run(
             ["sudo", ROLLBACK_SCRIPT, instance_name, ts],

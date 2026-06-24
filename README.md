@@ -417,7 +417,7 @@ venv/bin/python auth.py --create-coach
 
 Then install [`deploy/qbank.service`](deploy/qbank.service) as a systemd unit (`gunicorn`, bound to `127.0.0.1:5000`) and [`deploy/Caddyfile`](deploy/Caddyfile) as a reverse proxy in front of it — both files have install steps in their header comments.
 
-**`--workers 1` is load-bearing** — `build_question_bank.py`'s per-event state lock is an in-process `threading.RLock`, which only serialises writes correctly within a single worker process. `--threads 8` gives real request concurrency for the I/O-bound LLM calls without that risk. Don't raise `--workers` above 1 without first replacing that lock with a file-based one (each worker process gets its own copy of an in-process lock, so it would silently stop protecting anything).
+**`--workers 1` is load-bearing** — `build_question_bank.py`'s per-event state lock is an in-process `threading.RLock`, which only serialises writes correctly within a single worker process. `--threads 8` gives real request concurrency for the I/O-bound LLM calls without that risk. Don't raise `--workers` above 1 without first replacing that lock with a file-based one (each worker process gets its own copy of an in-process lock, so it would silently stop protecting anything) **and** redesigning `jobs.py`'s background-job queue, which is explicitly single-process by design — see that module's docstring. **`--threads` is the one safe to tune** if you move to a more powerful box, and is now adjustable per instance from the admin app's "Threads" control (see below) instead of hand-editing the unit file — it writes a systemd drop-in, never `instances.conf` (which gets overwritten from the git-tracked source on every Update).
 
 Redeploy flow: `git pull && venv/bin/pip install -r requirements.txt && sudo systemctl restart qbank`.
 
@@ -492,13 +492,16 @@ Both qbank/qbank-chs units' `ExecStart` point at the same shared venv, `/opt/qba
 - **Stop / start / restart** any instance listed in [`deploy/instances.conf`](deploy/instances.conf) — shells out to `sudo /usr/local/sbin/qbank-service-ctl.sh <verb> <instance>`.
 - **Update from GitHub** — runs `update-from-github.sh` as `qbank-deploy` (same low-privilege fetch step as the manual command below), streaming its output live. `_apply-update.sh` now backs up each instance's current code to `/opt/qbank-backups/<instance>/<timestamp>/` *before* overwriting it — a fast, local, code-only safety net, distinct in purpose from the offsite S3/databank data backups described below.
 - **Roll back** any instance to one of its last 10 local code backups — `sudo /usr/local/sbin/qbank-rollback.sh <instance> <timestamp>`.
+- **Set threads** — change an instance's gunicorn `--threads` count (e.g. after moving to a more powerful box) without SSH: `sudo /usr/local/sbin/qbank-set-threads.sh <instance> <count>` writes a systemd drop-in and restarts. `--workers` is shown read-only (always 1, with an explanation) — see `spec.md` §16 for why raising it needs a lock redesign first, and why the configured thread count is deliberately never stored in `instances.conf` (it would be silently overwritten on the next Update).
 - **View console** — the last 200 `journalctl` lines for an instance's systemd unit, refreshable on demand. No sudo needed for this: the `qbank-admin` system user is a member of the `systemd-journal` group, which grants read-only journal access by default.
 
 Single hardcoded username (`admin`); the password's hash (never the plaintext) lives in `/opt/qbank-admin/.env` as `ADMIN_PASSWORD_HASH`, generated with:
 ```
 python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('your-password'))"
 ```
-Every action is appended to `/var/log/qbank-admin-actions.log` (who/when/what/outcome) — see `spec.md` for why the rollback/service-ctl scripts validate their own arguments against `instances.conf` rather than following `_apply-update.sh`'s fixed-path-no-arguments rule.
+**Update / standalone Restart / Rollback / Set threads all re-prompt for this password** immediately before running, even though the operator is already logged in — a stolen session cookie alone isn't enough to trigger any of the four. This re-checks the same hash `/login` already does (rate-limited separately from the login form), not a literal Unix `sudo` password — see `spec.md` §16 for why. Stop/Start stay unprompted.
+
+Every action is appended to `/var/log/qbank-admin-actions.log` (who/when/what/outcome, including password-rejected attempts) — see `spec.md` for why the rollback/service-ctl scripts validate their own arguments against `instances.conf` rather than following `_apply-update.sh`'s fixed-path-no-arguments rule.
 
 **Backup destinations** (NCMS only as of this writing — CHS doesn't have its own yet):
 - Credentials for both backup scripts live in `/opt/qbank/backup/.env` (mode 600, `qbank`-owned, never read by the app itself).

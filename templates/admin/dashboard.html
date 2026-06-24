@@ -45,13 +45,20 @@ pre.console{background:#1e1e1e;color:#ddd;padding:10px;border-radius:6px;max-hei
   <section>
     <h2>Instances</h2>
     <table>
-      <thead><tr><th>Instance</th><th>Status</th><th>Port</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Instance</th><th>Status</th><th>Port</th><th>Workers</th><th>Threads</th><th>Actions</th></tr></thead>
       <tbody id="instance-rows">
         {% for inst in instances %}
         <tr data-instance="{{ inst.name }}">
           <td>{{ inst.label }}</td>
           <td><span class="badge {{ 'active' if inst.status == 'active' else ('failed' if inst.status == 'failed' else 'inactive') }}">{{ inst.status }}</span></td>
           <td>{{ inst.port }}</td>
+          <td class="workers-cell" title="Locked at 1 — raising it needs build_question_bank.py's state lock and jobs.py's job queue redesigned for multiple processes first. See spec.md."><span class="workers-value">{{ inst.workers if inst.workers is not none else "?" }}</span> 🔒</td>
+          <td>
+            <span class="threads-cell">{{ inst.threads if inst.threads is not none else "?" }}</span>
+            <input type="number" min="1" max="64" class="threads-input"
+                   value="{{ inst.threads if inst.threads is not none else 8 }}" style="width:48px">
+            <button onclick="setThreads('{{ inst.name }}')">Apply</button>
+          </td>
           <td>
             <button onclick="serviceCtl('{{ inst.name }}','stop')">Stop</button>
             <button onclick="serviceCtl('{{ inst.name }}','start')">Start</button>
@@ -100,6 +107,26 @@ pre.console{background:#1e1e1e;color:#ddd;padding:10px;border-radius:6px;max-hei
   </section>
 
 </main>
+
+<!-- Shared password-confirmation modal — re-checks the admin login password
+     (not a literal Unix/sudo password — see spec.md §16) immediately before
+     Update / standalone Restart / Rollback / Set threads, so a stolen
+     session cookie alone can't trigger any of them. -->
+<div id="pwd-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+     align-items:center;justify-content:center;z-index:50">
+  <div style="background:var(--bg-card);border-radius:8px;padding:20px;width:340px;
+       box-shadow:0 8px 24px rgba(0,0,0,.3)">
+    <h3 style="margin:0 0 4px 0;font-size:14px">Confirm: <span id="pwd-modal-label"></span></h3>
+    <p class="muted" style="margin:4px 0 10px 0">Re-enter your admin password to proceed.</p>
+    <input type="password" id="pwd-modal-input" style="width:100%;padding:6px 8px;
+           border:1px solid var(--line);border-radius:4px;font:inherit" autocomplete="current-password">
+    <div class="msg err" id="pwd-modal-err" style="min-height:16px"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:8px">
+      <button onclick="closePasswordConfirm()">Cancel</button>
+      <button class="primary" id="pwd-modal-submit">Confirm</button>
+    </div>
+  </div>
+</div>
 <script>
 const APP_ROOT = {{ request.script_root|tojson }};
 function csrfToken(){
@@ -116,6 +143,41 @@ async function postJSON(url, body){
   return {ok: resp.ok, data};
 }
 
+// ---- shared password-confirmation modal ----
+// Re-checks the admin login password immediately before a gated action.
+// showPasswordConfirm() shows the modal and remembers onConfirm; the
+// Confirm button (wired once, below) reads the typed password, closes the
+// modal, then calls onConfirm(password) — the caller folds {password} into
+// whatever it was already about to POST. A wrong password just shows up
+// through the action's own existing error-display element, same as any
+// other failure — no special retry-in-modal logic.
+let _pwdModalConfirm = null;
+function showPasswordConfirm(actionLabel, onConfirm){
+  document.getElementById("pwd-modal-label").textContent = actionLabel;
+  document.getElementById("pwd-modal-input").value = "";
+  document.getElementById("pwd-modal-err").textContent = "";
+  document.getElementById("pwd-modal").style.display = "flex";
+  document.getElementById("pwd-modal-input").focus();
+  _pwdModalConfirm = onConfirm;
+}
+function closePasswordConfirm(){
+  document.getElementById("pwd-modal").style.display = "none";
+  _pwdModalConfirm = null;
+}
+document.getElementById("pwd-modal-submit").addEventListener("click", async () => {
+  const pwd = document.getElementById("pwd-modal-input").value;
+  if(!pwd){
+    document.getElementById("pwd-modal-err").textContent = "Enter your password.";
+    return;
+  }
+  const cb = _pwdModalConfirm;
+  closePasswordConfirm();
+  if(cb) await cb(pwd);
+});
+document.getElementById("pwd-modal-input").addEventListener("keydown", e => {
+  if(e.key === "Enter") document.getElementById("pwd-modal-submit").click();
+});
+
 function statusBadgeClass(status){
   if(status === "active") return "active";
   if(status === "failed") return "failed";
@@ -131,27 +193,59 @@ async function refreshStatus(){
     const badge = row.querySelector(".badge");
     badge.textContent = inst.status;
     badge.className = "badge " + statusBadgeClass(inst.status);
+    const workersValue = row.querySelector(".workers-value");
+    if(workersValue) workersValue.textContent = inst.workers ?? "?";
+    const threadsCell = row.querySelector(".threads-cell");
+    if(threadsCell) threadsCell.textContent = inst.threads ?? "?";
   }
 }
 setInterval(refreshStatus, 10000);
 
 async function serviceCtl(name, verb){
+  if(verb === "restart"){
+    showPasswordConfirm(`Restart ${name}`, password => doServiceCtl(name, verb, password));
+    return;
+  }
+  return doServiceCtl(name, verb, null);
+}
+async function doServiceCtl(name, verb, password){
   const msg = document.getElementById("service-msg");
   msg.textContent = `${verb}ing ${name}…`;
-  const {ok, data} = await postJSON(`${APP_ROOT}/api/service/${name}/${verb}`);
+  const body = password ? {password} : {};
+  const {ok, data} = await postJSON(`${APP_ROOT}/api/service/${name}/${verb}`, body);
   msg.textContent = ok ? `${name}: ${verb} OK` : `${name}: ${verb} failed — ${data.error || data.output || "see logs"}`;
   refreshStatus();
 }
 
+function setThreads(name){
+  const row = document.querySelector(`tr[data-instance="${name}"]`);
+  const input = row.querySelector(".threads-input");
+  const val = parseInt(input.value, 10);
+  const msg = document.getElementById("service-msg");
+  if(!Number.isFinite(val) || val < 1 || val > 64){
+    msg.textContent = `${name}: threads must be between 1 and 64.`;
+    return;
+  }
+  showPasswordConfirm(`Set ${name} threads to ${val}`, async password => {
+    msg.textContent = `Setting ${name} threads to ${val}…`;
+    const {ok, data} = await postJSON(`${APP_ROOT}/api/instance/${name}/threads`, {threads: val, password});
+    msg.textContent = ok ? `${name}: threads set to ${val}` : `${name}: failed — ${data.error || data.output || "see logs"}`;
+    refreshStatus();
+  });
+}
+
 let updatePollTimer = null;
-async function startUpdate(){
+function startUpdate(){
+  showPasswordConfirm("Update from GitHub", password => doStartUpdate(password));
+}
+async function doStartUpdate(password){
   const btn = document.getElementById("update-btn");
   const log = document.getElementById("update-log");
   const elapsed = document.getElementById("update-elapsed");
   btn.disabled = true;
   log.style.display = "block";
   log.textContent = "Starting…";
-  const {ok, data} = await postJSON(`${APP_ROOT}/api/update/start`);
+  const {ok, data} = await postJSON(`${APP_ROOT}/api/update/start`, {password});
   if(!ok){
     log.textContent = "Failed to start: " + (data.error || "unknown error");
     btn.disabled = false;
@@ -188,7 +282,7 @@ async function loadBackups(){
   }
 }
 
-async function doRollback(){
+function doRollback(){
   const name = document.getElementById("rollback-instance").value;
   const ts = document.getElementById("rollback-timestamp").value;
   const msg = document.getElementById("rollback-msg");
@@ -198,9 +292,13 @@ async function doRollback(){
     return;
   }
   if(!confirm(`Roll back ${name} to backup ${ts}? This restarts the service.`)) return;
+  showPasswordConfirm(`Roll back ${name} to ${ts}`, password => doRollbackConfirmed(name, ts, password));
+}
+async function doRollbackConfirmed(name, ts, password){
+  const msg = document.getElementById("rollback-msg");
   msg.className = "msg";
   msg.textContent = "Rolling back…";
-  const {ok, data} = await postJSON(`${APP_ROOT}/api/rollback`, {instance: name, timestamp: ts});
+  const {ok, data} = await postJSON(`${APP_ROOT}/api/rollback`, {instance: name, timestamp: ts, password});
   msg.className = "msg " + (ok ? "ok" : "err");
   msg.textContent = ok ? `Rolled back ${name} to ${ts}.` : `Rollback failed: ${data.error || data.output || "see logs"}`;
   refreshStatus();
