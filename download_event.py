@@ -75,6 +75,29 @@ def _save_cookies(cookies: list[dict]) -> None:
     COOKIE_FILE.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
 
 
+def cookie_expiry_status() -> dict | None:
+    """Soonest expiry across saved Anubis cookies, for a UI freshness badge.
+
+    Returns None if there's no cookie file (e.g. a server that only ever
+    downloads with `--no-bypass-bot` using cookies scp'd in from elsewhere
+    still wants to know when the *next* scp is due) or it's unreadable.
+    Otherwise {"soonest_expires": <epoch seconds, possibly None for a
+    session-only cookie>, "expired": bool}. `expired` is True once every
+    cookie with a real expiry has already lapsed (mirrors _load_cookies()'s
+    own freshness filter so the two never disagree)."""
+    if not COOKIE_FILE.exists():
+        return None
+    try:
+        cookies = json.loads(COOKIE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    expiries = [c["expires"] for c in cookies if c.get("expires", -1) != -1]
+    if not expiries:
+        return {"soonest_expires": None, "expired": False}
+    soonest = min(expiries)
+    return {"soonest_expires": soonest, "expired": soonest <= time.time()}
+
+
 def _apply_cookies(session: requests.Session, cookies: list[dict]) -> None:
     for c in cookies:
         session.cookies.set(

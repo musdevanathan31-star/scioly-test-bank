@@ -3,6 +3,10 @@
 <a id="jobs_badge" href="{{ url_for('admin_jobs_page') if current_user.role == 'coach' else '#' }}"
    class="badge edited" style="display:none;text-decoration:none"
    title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
+{% if current_user.role == "coach" %}
+<span id="cookie_badge" class="badge edited" style="display:none"
+      title="scioly.org bot-bypass cookies — scp a fresh .scioly_cookies.json from a machine that can run Playwright"></span>
+{% endif %}
 <span class="muted" style="font-size:12px;margin-left:auto;display:flex;align-items:center;gap:8px">
   Signed in as <b>{{ current_user.username }}</b> ({{ current_user.role }})
   {% if current_user.role == "coach" %}
@@ -42,6 +46,34 @@
   }
   refreshJobsBadge();
   setInterval(refreshJobsBadge, 20000);
+
+  // Cookie-freshness badge (coach-only — element doesn't exist for others).
+  // Checked far less often than the jobs badge: cookie expiry moves in days,
+  // not seconds, so there's no benefit to polling this aggressively.
+  async function refreshCookieBadge(){
+    const el = document.getElementById("cookie_badge");
+    if(!el) return;
+    try {
+      const r = await fetch(`${APP_ROOT}/api/cookies/status`);
+      const j = await r.json();
+      if(j.soonest_expires == null){
+        el.style.display = "none";
+        return;
+      }
+      const hoursLeft = (j.soonest_expires * 1000 - Date.now()) / 3600000;
+      if(j.expired || hoursLeft <= 48){
+        el.textContent = j.expired
+          ? "🍪 scioly.org cookies expired"
+          : `🍪 scioly.org cookies expire in ${Math.max(0, Math.round(hoursLeft))}h`;
+        el.className = "badge " + (j.expired ? "fresh" : "edited");
+        el.style.display = "";
+      } else {
+        el.style.display = "none";
+      }
+    } catch(e){ /* badge just stays at its last known state */ }
+  }
+  refreshCookieBadge();
+  setInterval(refreshCookieBadge, 600000);
 })();
 </script>
 {% endif %}

@@ -64,6 +64,7 @@ import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import archive  # noqa: E402
 import pdf_safety  # noqa: E402
+import doc_convert  # noqa: E402
 import jobs  # noqa: E402
 
 app = Flask(__name__)
@@ -409,9 +410,189 @@ def _list_test_pdfs() -> list[Path]:
     return sorted(bqb.BASE_DIR.glob(f"{bqb.EVENT.filename_prefix}_*_test.pdf"))
 
 
+def _supplementary_docs(test_pdf: Path) -> list[Path]:
+    """Sibling PDFs sharing this test's filename prefix that aren't the
+    test PDF or its key — e.g. `_sheet.pdf`, `_notes.pdf`, `_notes1.pdf`,
+    whatever scioly.org happened to attach via `other_links`. No hardcoded
+    suffix list, so any such file already sitting in the event directory
+    (downloaded but never surfaced anywhere) is picked up automatically."""
+    if not test_pdf.name.endswith("_test.pdf"):
+        return []
+    prefix = test_pdf.name[: -len("_test.pdf")]
+    key = _key_path(test_pdf)
+    exclude = {test_pdf.name} | ({key.name} if key else set())
+    return [p for p in sorted(test_pdf.parent.glob(f"{prefix}_*.pdf"))
+            if p.name not in exclude]
+
+
+def _open_target_pdf(pdfname: str, target: str) -> fitz.Document:
+    """Single resolution+cache point for the `target` param used by
+    page-render, region/math extraction, and pick-image routes — replaces
+    5 near-identical `if target == "key": ... else: ...` blocks. `target`
+    is "test" (default) for the main test PDF, "key" for the answer key, or
+    any filename from _supplementary_docs() for a sheet/notes/etc. document
+    attached to this test. A filename that exists on disk but isn't
+    actually one of *this* test's supplementary docs still 404s — the
+    membership check, not just _safe_join's containment check, is what
+    prevents that."""
+    test_pdf = bqb.BASE_DIR / pdfname
+    if not target or target == "test":
+        return _open_pdf(pdfname)
+    if target == "key":
+        path = _key_path(test_pdf)
+        if not path:
+            abort(404, "No key PDF")
+    else:
+        candidate = _safe_join(bqb.BASE_DIR, target)
+        if candidate not in _supplementary_docs(test_pdf):
+            abort(404, "Not a supplementary document for this test")
+        path = candidate
+    cache_key = (bqb.EVENT.slug, path.name)
+    if cache_key not in _pdf_cache:
+        _pdf_cache[cache_key] = fitz.open(str(path))
+        _pdf_cache_evict_excess()
+    else:
+        _pdf_cache.move_to_end(cache_key)
+    return _pdf_cache[cache_key]
+
+
 def _key_path(test_pdf: Path) -> Path | None:
     k = test_pdf.parent / test_pdf.name.replace("_test.pdf", "_key.pdf")
-    return k if k.exists() else None
+    if k.exists():
+        return k
+    # Fallback: a .docx/.doc key with no converted PDF sibling yet. Unlike
+    # the test PDF's conversion (job-queued — see api_upload_test_pdf and
+    # _pending_doc_conversions — since it's the primary, often-larger
+    # document), this converts inline: it's a one-time cost (the next call
+    # finds the cached PDF and skips straight past this branch), the key is
+    # usually small, and key lookups already happen inside hot page-render
+    # paths where a job round-trip would be awkward to thread through. A
+    # failure here just means "no key available yet," not a broken request.
+    for ext in (".docx", ".doc"):
+        src = test_pdf.parent / test_pdf.name.replace("_test.pdf", f"_key{ext}")
+        if src.exists():
+            try:
+                return doc_convert.convert_to_pdf(src, src.parent)
+            except doc_convert.DocConvertError:
+                return None
+    return None
+
+
+def _pending_doc_conversions() -> list[Path]:
+    """.docx/.doc test files discovered alongside this event's PDFs that
+    don't have a converted PDF sibling yet — surfaced by the scan page
+    (Part 4) with a one-click job-queued "Convert" action, since converting
+    on every page load (like _key_path's lazy fallback above) would be too
+    slow/unpredictable for the primary test document."""
+    pending = []
+    for ext in ("docx", "doc"):
+        for src in bqb.BASE_DIR.glob(f"{bqb.EVENT.filename_prefix}_*_test.{ext}"):
+            if not src.with_suffix(".pdf").exists():
+                pending.append(src)
+    return sorted(pending)
+
+
+_FILENAME_ROLE_RE = re.compile(r"^.+_(test|key)\.(pdf|docx|doc)$", re.IGNORECASE)
+
+
+def _explained_filenames(base_dir: Path) -> tuple[set[str], list[Path]]:
+    """Every filename in `base_dir` already accounted for by a recognized
+    role (test/key/supplementary), plus the list of `_test.*` files found —
+    shared by _scan_event_files() (full bucketed view) and
+    _count_unrecognized() (landing-page count) so the two never disagree
+    about what counts as "explained"."""
+    explained: set[str] = set()
+    test_files: list[Path] = []
+    if not base_dir.exists():
+        return explained, test_files
+    for f in sorted(base_dir.iterdir()):
+        if not f.is_file():
+            continue
+        m = _FILENAME_ROLE_RE.match(f.name)
+        if not m:
+            continue
+        explained.add(f.name)
+        if m.group(1).lower() == "test":
+            test_files.append(f)
+    for f in test_files:
+        pdf_form = f if f.suffix.lower() == ".pdf" else f.with_suffix(".pdf")
+        for sup in _supplementary_docs(pdf_form):
+            explained.add(sup.name)
+    return explained, test_files
+
+
+def _guess_test_metadata(filename: str) -> dict:
+    """Best-effort year/division guess from a non-conforming filename, to
+    pre-fill the scan page's rename form — never authoritative, always
+    user-editable before the rename actually happens."""
+    year_m = re.search(r"(19|20)\d{2}", filename)
+    div_m = re.search(r"(?<![a-zA-Z])(BC|B|C)(?![a-zA-Z])", filename)
+    return {"year": year_m.group(0) if year_m else "",
+            "division": div_m.group(0).upper() if div_m else ""}
+
+
+def _scan_event_files() -> dict:
+    """Bucket every file in this event's base_dir for the manual file-drop
+    onboarding page: files copied straight into the directory (e.g. scp'd
+    in from another machine) rather than coming through the upload form or
+    the scioly.org scrape won't be discovered by anything else in the
+    pipeline until they're either already-conforming or get renamed into
+    convention here.
+
+    Returns {"ready": [...], "needs_conversion": [...], "unrecognized": [...]}
+      - ready: conforming test PDFs (including already-converted .docx/.doc)
+        with no entry in state["questions"] yet — one-click bulk-processable.
+      - needs_conversion: conforming .docx/.doc test files with no PDF
+        sibling yet — surfaced separately since they need api_convert_doc
+        run first (see _pending_doc_conversions).
+      - unrecognized: .pdf/.docx/.doc files that don't match the naming
+        convention and aren't a known test's supplementary document either —
+        candidates for the rename-onboarding form."""
+    base_dir = bqb.BASE_DIR
+    state = bqb._load_state()
+    processed = set(state.get("questions", {}).keys())
+    explained, test_files = _explained_filenames(base_dir)
+
+    ready, needs_conversion = [], []
+    for f in test_files:
+        ext = f.suffix.lower()
+        if ext in (".docx", ".doc"):
+            pdf_sibling = f.with_suffix(".pdf")
+            if pdf_sibling.exists():
+                if pdf_sibling.name not in processed:
+                    ready.append({"filename": pdf_sibling.name})
+            else:
+                needs_conversion.append({"filename": f.name})
+        elif f.name not in processed:
+            ready.append({"filename": f.name})
+
+    unrecognized = []
+    for f in sorted(base_dir.iterdir()) if base_dir.exists() else []:
+        if not f.is_file() or f.name in explained:
+            continue
+        if f.suffix.lower() not in (".pdf", ".docx", ".doc"):
+            continue
+        unrecognized.append({"filename": f.name, "size": f.stat().st_size,
+                             "guess": _guess_test_metadata(f.name)})
+
+    return {
+        "ready": sorted(ready, key=lambda r: r["filename"]),
+        "needs_conversion": sorted(needs_conversion, key=lambda r: r["filename"]),
+        "unrecognized": unrecognized,
+    }
+
+
+def _count_unrecognized(ev) -> int:
+    """Count-only version of _scan_event_files()'s "unrecognized" bucket
+    for an arbitrary Event object, used by the landing page to show a count
+    per event without switching the "current event" ContextVar for each row
+    the way _select_event()/_scan_event_files() do."""
+    explained, _ = _explained_filenames(ev.base_dir)
+    if not ev.base_dir.exists():
+        return 0
+    return sum(1 for f in ev.base_dir.iterdir()
+              if f.is_file() and f.suffix.lower() in (".pdf", ".docx", ".doc")
+              and f.name not in explained)
 
 
 def _compute_pages(pdfname: str, questions: list[dict]) -> None:
@@ -487,6 +668,7 @@ def index():
             "n_processed_pdfs": n_processed_pdfs,
             "base_dir": str(ev.base_dir),
             "is_builtin": is_builtin(slug),
+            "n_unrecognized": _count_unrecognized(ev),
         })
     return render_template("events.html", rows=rows, archived_rows=archived_rows)
 
@@ -678,6 +860,7 @@ def api_pdf(event_slug, pdfname):
         bqb._save_state(state)
     doc = _open_pdf(pdfname)
     ann = state.get("annotations", {}).get(pdfname, {})
+    key_path = _key_path(bqb.BASE_DIR / pdfname)
     return jsonify({
         "name": pdfname,
         "page_count": doc.page_count,
@@ -685,7 +868,12 @@ def api_pdf(event_slug, pdfname):
         "topics": bqb.TOPICS,
         "foci":   list(bqb.EVENT.foci),
         "vision_available": _vision_available(),
-        "has_key": _key_path(bqb.BASE_DIR / pdfname) is not None,
+        "has_key": key_path is not None,
+        # Key PDF can have a different page count than the test PDF (and a
+        # supplementary doc's, fetched separately via /supplementary, almost
+        # always does) — the frontend keys its thumbnail/page-nav bounds off
+        # a per-target map built from these, not a single shared page_count.
+        "key_page_count": (fitz.open(str(key_path)).page_count if key_path else None),
         "annotations": ann,
     })
 
@@ -780,24 +968,31 @@ def api_pdf_outline(event_slug, pdfname):
     return jsonify({"outline": items})
 
 
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/supplementary")
+def api_pdf_supplementary(event_slug, pdfname):
+    """Backs review.html's dynamically-added target-toggle buttons (one per
+    discovered sheet/notes/etc. document) — see _supplementary_docs()."""
+    _select_event(event_slug)
+    test_pdf = bqb.BASE_DIR / pdfname
+    docs = []
+    for p in _supplementary_docs(test_pdf):
+        prefix_len = len(pdfname) - len("_test.pdf")
+        label = p.name[prefix_len + 1:-4] if prefix_len >= 0 else p.stem
+        try:
+            page_count = fitz.open(str(p)).page_count
+        except Exception:
+            page_count = None
+        docs.append({"filename": p.name, "label": label.replace("_", " ").title(),
+                     "page_count": page_count})
+    return jsonify({"docs": docs})
+
+
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>.png")
 def api_render(event_slug, pdfname, pno):
     _select_event(event_slug)
     dpi = int(request.args.get("dpi", "120"))
     target = request.args.get("target", "test")
-    if target == "key":
-        kp = _key_path(bqb.BASE_DIR / pdfname)
-        if not kp:
-            abort(404, "No key PDF")
-        key = (bqb.EVENT.slug, kp.name)
-        if key not in _pdf_cache:
-            _pdf_cache[key] = fitz.open(str(kp))
-            _pdf_cache_evict_excess()
-        else:
-            _pdf_cache.move_to_end(key)
-        doc = _pdf_cache[key]
-    else:
-        doc = _open_pdf(pdfname)
+    doc = _open_target_pdf(pdfname, target)
     if pno < 1 or pno > doc.page_count:
         abort(404)
     page = doc[pno - 1]
@@ -989,6 +1184,17 @@ def admin_jobs_page():
     return render_template("admin_jobs.html")
 
 
+@app.route("/api/cookies/status")
+@coach_required
+def api_cookies_status():
+    """Backs the header's Anubis-cookie freshness badge (coach-only — it's
+    an operational/server concern, not something a volunteer needs surfaced).
+    Lets the coach scp a fresh `.scioly_cookies.json` from a Playwright-capable
+    machine before a scioly.org download run silently starts failing
+    mid-batch on a headless server that can't launch a browser itself."""
+    return jsonify(download_event.cookie_expiry_status() or {})
+
+
 @app.route("/admin/jobs/api/list")
 @coach_required
 def admin_jobs_list():
@@ -1053,67 +1259,220 @@ def api_upload_test_pdf(event_slug):
     needing a separate manual Reprocess click."""
     from werkzeug.utils import secure_filename
     _select_event(event_slug)
+    ALLOWED_EXTS = (".pdf", ".docx", ".doc")
     if "test_file" not in request.files:
         return jsonify({"error": "no test PDF provided"}), 400
     test_f = request.files["test_file"]
     test_raw = (test_f.filename or "").strip()
-    if not test_raw or not test_raw.lower().endswith(".pdf"):
-        return jsonify({"error": "test file must be a PDF"}), 400
+    test_ext = Path(test_raw).suffix.lower()
+    if not test_raw or test_ext not in ALLOWED_EXTS:
+        return jsonify({"error": "test file must be a PDF, .docx, or .doc"}), 400
 
     base_dir = bqb.BASE_DIR
     prefix = bqb.EVENT.filename_prefix
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    def normalized_name(raw: str, suffix: str) -> str:
+    def normalized_name(raw: str, suffix: str, ext: str) -> str:
         stem = secure_filename(Path(raw).stem) or "upload"
         if stem.lower().endswith(f"_{suffix}"):
             stem = stem[: -(len(suffix) + 1)]
         base = stem if stem.lower().startswith(prefix.lower()) else f"{prefix}_{stem}"
-        name = f"{base}_{suffix}.pdf"
+        name = f"{base}_{suffix}{ext}"
         n = 1
         while (base_dir / name).exists():
-            name = f"{base}_{n}_{suffix}.pdf"
+            name = f"{base}_{n}_{suffix}{ext}"
             n += 1
         return name
 
-    test_name = normalized_name(test_raw, "test")
+    def _validate_saved(dest: Path, ext: str, label: str) -> str | None:
+        """Magic-byte check matching `ext` — returns an error string, or
+        None if the file looks legitimate."""
+        ok = (pdf_safety.looks_like_pdf(dest) if ext == ".pdf"
+              else doc_convert.looks_like_docx(dest) if ext == ".docx"
+              else doc_convert.looks_like_doc(dest))
+        if not ok:
+            dest.unlink(missing_ok=True)
+            return f"{label} isn't a valid {ext} file (bad header)"
+        return None
+
+    test_name = normalized_name(test_raw, "test", test_ext)
     test_dest = base_dir / test_name
     test_f.save(str(test_dest))
-    if not pdf_safety.looks_like_pdf(test_dest):
-        test_dest.unlink(missing_ok=True)
-        return jsonify({"error": "test file isn't a valid PDF (bad header)"}), 400
+    err = _validate_saved(test_dest, test_ext, "test file")
+    if err:
+        return jsonify({"error": err}), 400
 
     key_dest = None
+    key_ext = None
     key_f = request.files.get("key_file")
     if key_f and (key_f.filename or "").strip():
-        if not key_f.filename.lower().endswith(".pdf"):
-            return jsonify({"error": "answer key must be a PDF"}), 400
+        key_ext = Path(key_f.filename).suffix.lower()
+        if key_ext not in ALLOWED_EXTS:
+            return jsonify({"error": "answer key must be a PDF, .docx, or .doc"}), 400
         # Share the test file's exact (already de-duped) base so the
         # existing _key_path() string-replace lookup finds it automatically.
-        key_dest = base_dir / test_name.replace("_test.pdf", "_key.pdf")
+        key_dest = base_dir / test_name.replace(f"_test{test_ext}", f"_key{key_ext}")
         key_f.save(str(key_dest))
-        if not pdf_safety.looks_like_pdf(key_dest):
-            key_dest.unlink(missing_ok=True)
-            return jsonify({"error": "answer key isn't a valid PDF (bad header)"}), 400
+        err = _validate_saved(key_dest, key_ext, "answer key")
+        if err:
+            return jsonify({"error": err}), 400
+
+    # If the upload is a Word doc, it gets converted to a real PDF inside
+    # the job below (so a slow LibreOffice conversion doesn't block this
+    # request) — but the frontend already expects the *final* pdf_name in
+    # this immediate response (it titles the progress bar and the eventual
+    # success message with it), so compute that name now since
+    # doc_convert.convert_to_pdf()'s output naming (`stem + ".pdf"`) is
+    # deterministic and doesn't depend on the conversion having happened yet.
+    final_test_name = test_name if test_ext == ".pdf" else f"{Path(test_name).stem}.pdf"
 
     def _target(should_cancel, on_progress):
         _job_target_setup(event_slug)
+        pdf_test = test_dest
+        if test_ext != ".pdf":
+            on_progress(phase="converting test document to PDF")
+            pdf_test = doc_convert.convert_to_pdf(test_dest, test_dest.parent)
+        pdf_key = key_dest
+        if key_dest is not None and key_ext != ".pdf":
+            on_progress(phase="converting answer key to PDF")
+            pdf_key = doc_convert.convert_to_pdf(key_dest, key_dest.parent)
         job_state = bqb._load_state()
-        qs = process_pair(test_dest, key_dest, job_state, _vision_available(),
+        qs = process_pair(pdf_test, pdf_key, job_state, _vision_available(),
                           should_cancel=should_cancel, on_progress=on_progress)
-        _compute_pages(test_name, qs)
-        job_state.setdefault("questions", {})[test_name] = qs
+        _compute_pages(pdf_test.name, qs)
+        job_state.setdefault("questions", {})[pdf_test.name] = qs
         bqb._save_state(job_state)
-        return {"pdf_name": test_name, "n_questions": len(qs),
-                "has_key": key_dest is not None}
+        return {"pdf_name": pdf_test.name, "n_questions": len(qs),
+                "has_key": pdf_key is not None}
 
     try:
-        job_id = jobs.submit_job(event_slug, "upload_extract", f"Extract {test_name}",
+        job_id = jobs.submit_job(event_slug, "upload_extract", f"Extract {final_test_name}",
                                  g.user.username, _target)
     except jobs.JobQueueFull as e:
         return jsonify({"error": str(e)}), 429
-    return jsonify({"ok": True, "pdf_name": test_name, "has_key": key_dest is not None,
+    return jsonify({"ok": True, "pdf_name": final_test_name, "has_key": key_dest is not None,
                     "job_id": job_id})
+
+
+@app.route("/event/<event_slug>/api/doc/<docname>/convert", methods=["POST"])
+def api_convert_doc(event_slug, docname):
+    """Job-queued conversion of a discovered .docx/.doc test file (see
+    _pending_doc_conversions, surfaced by the scan page) into a real PDF —
+    after this, it's an ordinary `_test.pdf` to every other route, no
+    different from a test scioly.org served as a PDF to begin with."""
+    _select_event(event_slug)
+    src = _safe_join(bqb.BASE_DIR, docname)
+    if src.suffix.lower() not in (".docx", ".doc") or not src.exists():
+        abort(404, "no such pending document")
+
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        pdf = doc_convert.convert_to_pdf(src, src.parent)
+        return {"pdf_name": pdf.name}
+
+    try:
+        job_id = jobs.submit_job(event_slug, "doc_convert", f"Convert {docname}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/event/<event_slug>/scan")
+def event_scan_page(event_slug):
+    """Manual file-drop onboarding page — see _scan_event_files(). Deliberately
+    on-demand (a "Scan now" button on the page, not a periodic background
+    check), matching this codebase's existing manual-trigger stance for
+    infrequent, operator-initiated actions (the GitHub-update mechanism is
+    explicitly manual for the same reason — see spec.md)."""
+    _select_event(event_slug)
+    return render_template("event_scan.html", event_slug=event_slug,
+                           event_name=bqb.EVENT.name)
+
+
+@app.route("/event/<event_slug>/api/scan")
+def api_scan(event_slug):
+    _select_event(event_slug)
+    return jsonify(_scan_event_files())
+
+
+@app.route("/event/<event_slug>/api/scan/rename", methods=["POST"])
+def api_scan_rename(event_slug):
+    """Bring a manually-dropped, non-conforming file under this event's
+    naming convention via a plain filesystem rename (no content change) —
+    after which it's indistinguishable from anything scioly.org-sourced and
+    is picked up by every existing discovery path (this module's
+    _list_test_pdfs/_key_path/_supplementary_docs, build_question_bank's
+    CLI) with no further code involved."""
+    from werkzeug.utils import secure_filename
+    _select_event(event_slug)
+    data = request.get_json() or {}
+    role = (data.get("role") or "").strip().lower()
+    if role not in ("test", "key", "supplementary"):
+        return jsonify({"error": "role must be test, key, or supplementary"}), 400
+    src = _safe_join(bqb.BASE_DIR, data.get("filename") or "")
+    if not src.exists():
+        return jsonify({"error": "file not found"}), 404
+    ext = src.suffix.lower()
+    if ext not in (".pdf", ".docx", ".doc"):
+        return jsonify({"error": "only .pdf/.docx/.doc files can be onboarded here"}), 400
+
+    if role == "supplementary":
+        # Attach to an existing test by sharing its exact stem prefix — that's
+        # the only thing _supplementary_docs() actually keys off of, so this
+        # is more reliable than asking the user to retype year/division/submitter.
+        test_pdf = _safe_join(bqb.BASE_DIR, data.get("attach_to") or "")
+        if not test_pdf.name.endswith("_test.pdf") or not test_pdf.exists():
+            return jsonify({"error": "pick a valid existing test to attach this to"}), 400
+        label = secure_filename((data.get("label") or "").strip()) or "sheet"
+        stem_prefix = test_pdf.name[: -len("_test.pdf")]
+        new_name = f"{stem_prefix}_{label}{ext}"
+    else:
+        prefix = bqb.EVENT.filename_prefix
+        year = secure_filename((data.get("year") or "").strip()) or "unk"
+        division = secure_filename((data.get("division") or "").strip()).lower() or "x"
+        submitter = secure_filename((data.get("submitter") or "").strip()).lower() or "unknown"
+        new_name = f"{prefix}_{year}_{division}_{submitter}_{role}{ext}"
+
+    dest = bqb.BASE_DIR / new_name
+    if dest.exists():
+        return jsonify({"error": f"{new_name} already exists"}), 409
+    src.rename(dest)
+    return jsonify({"ok": True, "new_filename": new_name})
+
+
+@app.route("/event/<event_slug>/api/scan/process-all", methods=["POST"])
+def api_scan_process_all(event_slug):
+    """Bulk version of the per-PDF reprocess job, for files the scan found
+    already conforming but never processed — e.g. a batch scp'd straight
+    into the event directory. One job per file, same job-queue pattern as
+    upload/reprocess, so progress/cancellation work identically."""
+    _select_event(event_slug)
+    scan = _scan_event_files()
+
+    def _make_target(pdfname: str, test_pdf: Path):
+        def _target(should_cancel, on_progress):
+            _job_target_setup(event_slug)
+            job_state = bqb._load_state()
+            qs = process_pair(test_pdf, _key_path(test_pdf), job_state, _vision_available(),
+                              should_cancel=should_cancel, on_progress=on_progress)
+            _compute_pages(pdfname, qs)
+            job_state.setdefault("questions", {})[pdfname] = qs
+            bqb._save_state(job_state)
+            return {"n_questions": len(qs)}
+        return _target
+
+    job_ids = []
+    for entry in scan["ready"]:
+        pdfname = entry["filename"]
+        try:
+            job_id = jobs.submit_job(event_slug, "scan_process", f"Process {pdfname}",
+                                     g.user.username,
+                                     _make_target(pdfname, bqb.BASE_DIR / pdfname))
+            job_ids.append(job_id)
+        except jobs.JobQueueFull:
+            break
+    return jsonify({"ok": True, "job_ids": job_ids})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/reprocess", methods=["POST"])
@@ -1264,19 +1623,7 @@ def api_extract_region(event_slug, pdfname, pno):
         return jsonify({"error": "region too small"}), 400
     dpi = float(data.get("dpi", 120))
     target = data.get("target", "test")
-    if target == "key":
-        kp = _key_path(bqb.BASE_DIR / pdfname)
-        if not kp:
-            return jsonify({"error": "no key PDF"}), 404
-        key = (bqb.EVENT.slug, kp.name)
-        if key not in _pdf_cache:
-            _pdf_cache[key] = fitz.open(str(kp))
-            _pdf_cache_evict_excess()
-        else:
-            _pdf_cache.move_to_end(key)
-        doc = _pdf_cache[key]
-    else:
-        doc = _open_pdf(pdfname)
+    doc = _open_target_pdf(pdfname, target)
     if pno < 1 or pno > doc.page_count:
         abort(404)
     page = doc[pno - 1]
@@ -1319,19 +1666,7 @@ def api_extract_region_vision(event_slug, pdfname, pno):
         return jsonify({"error": "region too small"}), 400
     dpi = float(data.get("dpi", 120))
     target = data.get("target", "test")
-    if target == "key":
-        kp = _key_path(bqb.BASE_DIR / pdfname)
-        if not kp:
-            return jsonify({"error": "no key PDF"}), 404
-        key = (bqb.EVENT.slug, kp.name)
-        if key not in _pdf_cache:
-            _pdf_cache[key] = fitz.open(str(kp))
-            _pdf_cache_evict_excess()
-        else:
-            _pdf_cache.move_to_end(key)
-        doc = _pdf_cache[key]
-    else:
-        doc = _open_pdf(pdfname)
+    doc = _open_target_pdf(pdfname, target)
     if pno < 1 or pno > doc.page_count:
         abort(404)
     page = doc[pno - 1]
@@ -1366,19 +1701,7 @@ def api_extract_math(event_slug, pdfname, pno):
         return jsonify({"error": "region too small"}), 400
     dpi = float(data.get("dpi", 120))
     target = data.get("target", "test")
-    if target == "key":
-        kp = _key_path(bqb.BASE_DIR / pdfname)
-        if not kp:
-            return jsonify({"error": "no key PDF"}), 404
-        key = (bqb.EVENT.slug, kp.name)
-        if key not in _pdf_cache:
-            _pdf_cache[key] = fitz.open(str(kp))
-            _pdf_cache_evict_excess()
-        else:
-            _pdf_cache.move_to_end(key)
-        doc = _pdf_cache[key]
-    else:
-        doc = _open_pdf(pdfname)
+    doc = _open_target_pdf(pdfname, target)
     if pno < 1 or pno > doc.page_count:
         abort(404)
     page = doc[pno - 1]
@@ -1751,19 +2074,7 @@ def api_q_pick_image(event_slug, bucket, num):
         return jsonify({"error": "region too small"}), 400
     dpi = float(data.get("dpi", 120))
     target = data.get("target", "test")
-    if target == "key":
-        kp = _key_path(bqb.BASE_DIR / pdfname)
-        if not kp:
-            return jsonify({"error": "no key PDF"}), 404
-        key = (bqb.EVENT.slug, kp.name)
-        if key not in _pdf_cache:
-            _pdf_cache[key] = fitz.open(str(kp))
-            _pdf_cache_evict_excess()
-        else:
-            _pdf_cache.move_to_end(key)
-        doc = _pdf_cache[key]
-    else:
-        doc = _open_pdf(pdfname)
+    doc = _open_target_pdf(pdfname, target)
     if pno < 1 or pno > doc.page_count:
         abort(404)
     page = doc[pno - 1]

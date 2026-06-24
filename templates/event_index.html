@@ -31,6 +31,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/jobs"><button title="View running/queued/recent background jobs for this event (reprocess, scio.ly, generation, …)">Jobs</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">Scan files</button></a>
   {% include "_user_badge.html" %}
 </header>
 <div class="list-wrap">
@@ -40,13 +41,13 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
           style="display:flex;gap:8px;align-items:center;margin-left:18px">
       <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
         Upload test
-        <input type="file" name="test_file" accept=".pdf" required
-               title="The test / question-paper PDF to add to this event">
+        <input type="file" name="test_file" accept=".pdf,.docx,.doc" required
+               title="The test / question-paper file to add to this event (PDF, .docx, or .doc — Word docs are converted to PDF automatically)">
       </label>
       <label class="muted" style="font-size:12px;display:inline-flex;gap:4px;align-items:center">
         + key (optional)
-        <input type="file" name="key_file" accept=".pdf"
-               title="The matching answer-key PDF, if you have one">
+        <input type="file" name="key_file" accept=".pdf,.docx,.doc"
+               title="The matching answer-key file, if you have one (PDF, .docx, or .doc)">
       </label>
       <button type="submit"
               title="Upload this test (and key, if provided) and extract its questions immediately">

@@ -57,6 +57,11 @@
             {%- if r.n_pdfs != 0 %}
             <span class="muted" style="font-size:11px"> · {{ r.n_processed_pdfs }}/{{ r.n_pdfs }} processed</span>
             {%- endif %}
+            {%- if r.n_unrecognized %}
+            <a href="{{ request.script_root }}/event/{{ r.slug }}/scan" class="badge fresh"
+               style="margin-left:6px;text-decoration:none"
+               title="{{ r.n_unrecognized }} file(s) in this event's directory don't match the naming convention yet — e.g. dropped in via scp">{{ r.n_unrecognized }} unrecognized</a>
+            {%- endif %}
         </td>
         <td class="num">{{ r.n_pdfs }}</td>
         <td class="num">{{ r.n_questions }}</td>

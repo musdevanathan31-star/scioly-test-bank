@@ -176,6 +176,23 @@ To force a fresh bypass (e.g. cookies expired):
 python download_event.py --event <slug> --reauth
 ```
 
+#### Running on a headless server (no X11, no Playwright)
+
+Playwright/Chromium needs a baseline of shared libraries that Playwright's
+`--with-deps` installer doesn't reliably cover outside Ubuntu/Debian (e.g.
+RHEL). Rather than fighting that on the server, never run Playwright there
+at all:
+
+1. On any machine that *can* run Playwright (your dev laptop, anywhere),
+   solve the bot challenge once: `python download_event.py --event <slug> --reauth --bypass-bot-headless`. This writes a fresh `.scioly_cookies.json`.
+2. `scp` that one file to the server, into the app's working directory.
+3. Downloads on the server now work via `requests` alone — Playwright is
+   never imported, so it doesn't need to be installed there at all.
+
+Cookies last ~7 days. The header badge (coach login, "🍪 scioly.org cookies
+expire in …") warns once the saved cookie is within 48 hours of expiring,
+so the next `scp` happens before a download run starts failing mid-batch.
+
 ## Files
 
 | File | Purpose |
@@ -184,11 +201,12 @@ python download_event.py --event <slug> --reauth
 | `download_event.py` | Generic PDF downloader; takes `--event <slug>` (required). Auto-bypasses scioly.org's Anubis bot challenge via Playwright. |
 | `build_question_bank.py` | The extraction pipeline (CLI). Run after downloading. `--event <slug>` (required). |
 | `texts.py` | Scrapes the scioly.org wiki for an event into markdown; converts user-supplied source PDFs to markdown |
+| `doc_convert.py` | Normalizes `.docx`/`.doc` test/key files to PDF via headless LibreOffice (`soffice`) so the rest of the pipeline only ever deals with PDFs |
 | `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
 | `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape |
 | `review_app.py` | Flask review UI — single server, multi-event, with a Generate page (sources + LLM generation) per event |
 | `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
-| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`) |
+| `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`, `event_scan`) |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
 | `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
 | `.env.example` | Template for the Anthropic API key |
@@ -200,7 +218,9 @@ python download_event.py --event <slug> --reauth
 
 ## Workflow
 
-1. **Download** — `download_event.py --event <slug>` pulls every test and key PDF for the chosen event from scioly.org. It uses a Chrome User-Agent and auto-bypasses Anubis bot protection via Playwright on the first challenge (saving cookies to `.scioly_cookies.json` for subsequent runs). Already have a test on disk? The event index page (`/event/<slug>/`) has an **upload test PDF + key** form — drop in a test (and optionally its key), and it's saved with the correct `_test.pdf`/`_key.pdf` naming and run through the extraction pipeline immediately, no separate Reprocess step needed.
+1. **Download** — `download_event.py --event <slug>` pulls every test and key PDF for the chosen event from scioly.org. It uses a Chrome User-Agent and auto-bypasses Anubis bot protection via Playwright on the first challenge (saving cookies to `.scioly_cookies.json` for subsequent runs — see [running on a headless server](#running-on-a-headless-server-no-x11-no-playwright) if Playwright can't be installed where this runs). Already have a test on disk? The event index page (`/event/<slug>/`) has an **upload test PDF + key** form — drop in a test (and optionally its key) as a **PDF, `.docx`, or `.doc`**, and it's saved with the correct `_test.pdf`/`_key.pdf` naming, converted to PDF via headless LibreOffice if it wasn't one already, and run through the extraction pipeline immediately, no separate Reprocess step needed.
+
+   **Files copied directly onto the server** (e.g. `scp`'d in from another machine where you're assembling question banks) aren't picked up by any of the above on their own unless they already match the `{prefix}_{year}_{division}_{submitter}_test.pdf` naming convention. The event's **Scan files** page (`/event/<slug>/scan`) finds them: a **Ready to process** bucket for already-conforming files never run through extraction (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files awaiting LibreOffice conversion, and an **Unrecognized** bucket for anything else — each gets a small inline form (best-effort year/division guessed from the filename, editable) to rename it as a Test, Key, or supplementary document, after which it's indistinguishable from anything scioly.org-sourced. This is an on-demand page, not a background scan — reload it (or click Refresh) after dropping in new files.
 
 2. **Extract** — `build_question_bank.py` runs three stages per PDF:
    - PyMuPDF text extraction → topic-classified questions, choices, answers
@@ -216,6 +236,7 @@ python download_event.py --event <slug> --reauth
    PDF-sourced questions keep a persistent **"Open source ↗"** link to jump to that PDF's review page with the question pre-focused (absent for LLM-generated/scio.ly-imported questions, which have no source PDF).
 
 4. **Review** (`review_app.py`) — a browser UI shows each PDF page next to its extracted questions. You can:
+   - **Pull figures from a supplementary document** — some scioly.org submissions ship diagrams in a separate file alongside the test (e.g. `_sheet.pdf`, `_notes.pdf`) rather than embedded in the test PDF itself; the extraction pipeline never looks at these automatically (left as-is, by design — auto-guessing which figure belongs to which question across two documents isn't reliable). Instead, a toggle button appears next to **Test PDF** / **Key PDF** for each such file found alongside the current test, so you can flip over to it and use **📌 Pick image** (or any other capture tool) against it exactly as you would the test PDF.
    - **Drag a rectangle on the PDF** to capture stem, choices, or answer text directly from the source
    - **+ Add question from region** — drag once; the next available Q# is auto-assigned, MC options are auto-split into the choices list when present
    - **Capture math** — drag around an equation; Haiku converts it to LaTeX (`$...$`) and inserts at your cursor. KaTeX live-preview shows the rendered formula as you type.
@@ -411,7 +432,9 @@ For a small team sharing one workspace, bare metal + a reverse proxy is enough �
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 # (requirements-dev.txt's playwright is only needed if you'll run
-#  download_event.py --reauth from this machine)
+#  download_event.py --reauth from this machine — see "running on a
+#  headless server" above for why production servers typically skip it)
+sudo dnf install libreoffice-headless   # only needed for .docx/.doc test/key ingestion
 venv/bin/python auth.py --create-coach
 ```
 
@@ -530,6 +553,7 @@ This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant 
 - Skim `/var/log/qbank-backup.log` for failures.
 - `restic snapshots` (after sourcing `/opt/qbank/backup/.env`) to confirm the nightly bulk backup is actually landing, not silently failing.
 - Check the databank repo's commit history on GitHub for recent activity matching actual usage.
+- Refresh `.scioly_cookies.json` if the header's cookie-expiry badge is showing (cookies last ~7 days) — see ["running on a headless server"](#running-on-a-headless-server-no-x11-no-playwright). Same trip works for dropping in any new question-bank files via `scp`, picked up by each event's [Scan files](#workflow) page.
 
 **Monthly-ish**:
 - `sudo dnf update -y` on the box for security patches.
@@ -561,7 +585,7 @@ Every "delete" action in the UI is reversible — including for coaches. The onl
 
 ### Upload & request hardening
 
-- Every uploaded PDF is checked for a `%PDF-` magic header before PyMuPDF ever touches it, capped at 2000 pages, and parsed with a 30s timeout (`pdf_safety.py`) — closes off a renamed-non-PDF or a hostile/malformed PDF hanging or OOMing the process.
+- Every uploaded PDF is checked for a `%PDF-` magic header before PyMuPDF ever touches it, capped at 2000 pages, and parsed with a 30s timeout (`pdf_safety.py`) — closes off a renamed-non-PDF or a hostile/malformed PDF hanging or OOMing the process. Uploaded `.docx`/`.doc` get the equivalent magic-byte check (`doc_convert.py`) before being handed to LibreOffice for conversion, which itself runs with a 60s timeout under a scratch `$HOME` (so a hung/malformed document can't wedge the conversion or leak across requests via a shared profile dir).
 - Uploaded SVG question images have `<script>` tags and `on*=` event-handler attributes stripped before being saved (`_sanitize_svg` in `review_app.py`).
 - File-serving routes that build a path from a user-supplied filename (`serve_image`, source `process`/`raw`) go through a containment check (`_safe_join`) so a crafted filename can't resolve outside its intended directory.
 - All state-changing requests (`POST`/`PATCH`/`DELETE`) require a matching CSRF double-submit-cookie token, issued on login and auto-attached by the frontend's existing fetch-patch pattern — no per-call-site changes needed.

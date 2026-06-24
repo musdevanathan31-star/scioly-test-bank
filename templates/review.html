@@ -459,6 +459,13 @@ let STATE = { questions: [], page_count: 1, topics: [], vision_available: false,
 let IMAGES = { images: [], used_by: {} };
 let curPage = 1;
 let target = "test";
+// Page count per render target ("test" / "key" / a supplementary doc's
+// filename) — a sheet/notes/key PDF almost always has a different page
+// count than the test PDF, so thumbnail/page-nav bounds can't just use
+// STATE.page_count (which only ever reflects the test PDF) once a
+// non-test target is active. Populated in load() and refreshSupplementaryDocs().
+let PAGE_COUNTS = {};
+function currentPageCount(){ return PAGE_COUNTS[target] ?? STATE.page_count; }
 let dirty = false;
 let selectedImage = null;     // filename in the bay user clicked
 let LAST_CAPTURE = null;      // remembered drag region for Haiku fallback re-extract
@@ -858,11 +865,12 @@ window.toggleOutline = async function(){
 // ---- thumbnail strip ----
 function renderThumbStrip(){
   const root = document.getElementById("thumbStrip");
-  if(!root || !STATE.page_count) return;
+  const pageCount = currentPageCount();
+  if(!root || !pageCount) return;
   // Lazy-render thumbnails using the same render endpoint at low DPI.
   // For large PDFs (50+ pages), cap visible thumbnails and add a scroll hint.
   root.innerHTML = "";
-  for(let p = 1; p <= STATE.page_count; p++){
+  for(let p = 1; p <= pageCount; p++){
     const el = document.createElement("div");
     el.className = "thumb" + (p === curPage ? " on" : "");
     el.dataset.pg = p;
@@ -1038,8 +1046,9 @@ function drawRegionOverlays(){
 async function load(){
   const r = await fetch(`${API}/pdf/${PDF}`);
   STATE = await r.json();
-  document.getElementById("pageCount").textContent = "/ " + STATE.page_count;
-  document.getElementById("pageInput").max = STATE.page_count;
+  PAGE_COUNTS = { test: STATE.page_count, key: STATE.key_page_count };
+  document.getElementById("pageCount").textContent = "/ " + currentPageCount();
+  document.getElementById("pageInput").max = currentPageCount();
   // Init local ids
   STATE.questions.forEach(q=>{ q._id = nextLocalId++; });
   document.getElementById("ocr").disabled = !STATE.vision_available;
@@ -1048,6 +1057,7 @@ async function load(){
   if(!STATE.has_key){
     document.querySelector('#targetToggle [data-target=key]').style.display = "none";
   }
+  loadSupplementaryDocs();
   // Restore saved annotations so further edits accumulate on top
   if(STATE.annotations){
     ANN = {
@@ -1101,6 +1111,42 @@ async function load(){
       if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
     }, 50);
   }
+}
+
+function wireTargetButton(b){
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#targetToggle button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");
+    target = b.dataset.target;
+    const pc = currentPageCount();
+    document.getElementById("pageCount").textContent = "/ " + pc;
+    document.getElementById("pageInput").max = pc;
+    if(curPage > pc) curPage = Math.max(1, pc);
+    renderImage();
+    renderThumbStrip();
+  });
+}
+
+async function loadSupplementaryDocs(){
+  // Sheet/notes/etc. PDFs scioly.org attached alongside this test — see
+  // _supplementary_docs() in review_app.py. Adds one toggle button per doc,
+  // generalizing the same target mechanism already used for the Key PDF.
+  const root = document.getElementById("targetToggle");
+  root.querySelectorAll("button[data-supplementary]").forEach(el => el.remove());
+  try{
+    const r = await fetch(`${API}/pdf/${PDF}/supplementary`);
+    const j = await r.json();
+    for(const doc of (j.docs || [])){
+      PAGE_COUNTS[doc.filename] = doc.page_count;
+      const b = document.createElement("button");
+      b.dataset.target = doc.filename;
+      b.dataset.supplementary = "1";
+      b.title = `Render and capture from ${esc(doc.filename)}`;
+      b.textContent = doc.label || doc.filename;
+      root.appendChild(b);
+      wireTargetButton(b);
+    }
+  } catch(err){ /* no supplementary docs, or fetch failed — toggle just stays as-is */ }
 }
 
 async function loadImages(){
@@ -2373,10 +2419,10 @@ document.getElementById("prev").addEventListener("click", ()=>{
   if(curPage > 1){ curPage--; render(); }
 });
 document.getElementById("next").addEventListener("click", ()=>{
-  if(curPage < STATE.page_count){ curPage++; render(); }
+  if(curPage < currentPageCount()){ curPage++; render(); }
 });
 document.getElementById("pageInput").addEventListener("change", e=>{
-  const n = Math.max(1, Math.min(STATE.page_count, Number(e.target.value)||1));
+  const n = Math.max(1, Math.min(currentPageCount(), Number(e.target.value)||1));
   curPage = n; render();
 });
 
@@ -2385,8 +2431,9 @@ const _origRender = render;
 render = function(){
   _origRender();
   const lbl = document.getElementById("pageProgress");
-  if(lbl && STATE.page_count){
-    const pct = Math.round(curPage / STATE.page_count * 100);
+  const pageCount = currentPageCount();
+  if(lbl && pageCount){
+    const pct = Math.round(curPage / pageCount * 100);
     lbl.textContent = `(${pct}%)`;
   }
   // Update page title to reflect dirty / current PDF
@@ -2427,15 +2474,7 @@ hotkey("/", () => {
   if(gotoEl) gotoEl.focus();
 });
 
-document.querySelectorAll("#targetToggle button").forEach(b => {
-  b.addEventListener("click", () => {
-    document.querySelectorAll("#targetToggle button").forEach(x=>x.classList.remove("on"));
-    b.classList.add("on");
-    target = b.dataset.target;
-    renderImage();
-    renderThumbStrip();
-  });
-});
+document.querySelectorAll("#targetToggle button").forEach(wireTargetButton);
 
 document.getElementById("collapseAll").addEventListener("click", ()=>{
   questionsOnPage(curPage).forEach(q => collapsedIds.add(q._id));

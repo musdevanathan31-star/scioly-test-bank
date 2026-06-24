@@ -18,6 +18,15 @@
 # see requirements-dev.txt. It's never imported by review_app.py at runtime,
 # so the production server doesn't need it installed.
 #
+# doc_convert.py (.docx/.doc -> PDF normalization) shells out to LibreOffice
+# headless rather than using a pip package — install it as a SYSTEM package,
+# not via pip:
+#   RHEL/Fedora:   sudo dnf install libreoffice-headless
+#   Debian/Ubuntu: sudo apt install libreoffice
+# Skippable if this event's tests are all PDF already; .docx/.doc test/key
+# uploads and scrapes will fail loudly (not silently) with install
+# instructions if `soffice` isn't on PATH when one is encountered.
+#
 # No upper bounds — that's the user's choice.
 
 PyMuPDF>=1.24

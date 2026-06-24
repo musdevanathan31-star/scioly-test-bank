@@ -1,0 +1,206 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Scan files · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.list-wrap{padding:18px;max-width:980px;margin:0 auto}
+section{background:#fff;border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:16px}
+section h2{margin:0 0 4px 0;font-size:14px}
+section p.muted{margin:4px 0 10px 0;font-size:12px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;
+  font-size:13px;vertical-align:middle}
+th{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase}
+tr:last-child td{border-bottom:none}
+.empty{color:var(--muted);font-size:12px;padding:6px 0}
+.row-form{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.row-form select,.row-form input{padding:4px 7px;border:1px solid var(--line);
+  border-radius:3px;font:inherit;font-size:12px}
+.row-form input[type=text]{width:90px}
+.fname{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
+  <h1>{{ event_name }} — Scan files</h1>
+  <span id="status" class="muted"></span>
+  {% include "_user_badge.html" %}
+</header>
+<div class="list-wrap">
+  <p class="muted">Files copied directly into this event's directory (e.g. via <code>scp</code>) or downloaded
+    from scioly.org but not yet processed. This page is the only "scan" step needed — there's no background
+    job watching the folder; reload this page (or click Refresh) any time after dropping in new files.</p>
+  <div style="margin-bottom:12px"><button id="refreshBtn">↻ Refresh</button></div>
+
+  <section>
+    <h2>Ready to process</h2>
+    <p class="muted">Already named correctly but never extracted — e.g. a batch of question banks scp'd straight into this event's directory.</p>
+    <div id="readySection"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Needs conversion</h2>
+    <p class="muted">.docx/.doc test files with no converted PDF yet. Conversion runs via LibreOffice headless and is job-queued — after it finishes the file moves to "Ready to process" above.</p>
+    <div id="conversionSection"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Unrecognized</h2>
+    <p class="muted">Files that don't match this event's naming convention and aren't a known test's supplementary document either — likely sourced from somewhere other than scioly.org. Pick a role and (for Test/Key) fill in year/division/submitter, or attach as a supplementary document to an existing test. This only renames the file on disk — no content is changed.</p>
+    <div id="unrecognizedSection"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+<script>
+const EVENT_SLUG = "{{ event_slug }}";
+let TEST_PDFS = [];   // for the "attach to" dropdown, populated from /api/pdfs
+
+function escHtml(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function loadTestPdfs(){
+  try {
+    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdfs`);
+    TEST_PDFS = await r.json();
+  } catch(e){ TEST_PDFS = []; }
+}
+
+function renderReady(rows){
+  const root = document.getElementById("readySection");
+  if(!rows.length){ root.innerHTML = '<div class="empty">Nothing pending.</div>'; return; }
+  root.innerHTML = `
+    <div style="margin-bottom:8px"><button id="processAllBtn" class="primary">Process all (${rows.length})</button></div>
+    <table><thead><tr><th>File</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="fname">${escHtml(r.filename)}</td></tr>`).join("")}
+    </tbody></table>`;
+  document.getElementById("processAllBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("processAllBtn");
+    btn.disabled = true; btn.textContent = "Queuing…";
+    try {
+      const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/scan/process-all`, {method:"POST"});
+      const j = await r.json();
+      toast(`Queued ${(j.job_ids||[]).length} job(s) — see the Jobs page for progress`, "ok");
+      setTimeout(load, 2000);
+    } catch(err){ toast("Failed: " + err.message, "err"); btn.disabled = false; btn.textContent = "Process all"; }
+  });
+}
+
+function renderConversion(rows){
+  const root = document.getElementById("conversionSection");
+  if(!rows.length){ root.innerHTML = '<div class="empty">Nothing pending.</div>'; return; }
+  root.innerHTML = `
+    <table><thead><tr><th>File</th><th></th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="fname">${escHtml(r.filename)}</td>
+        <td><button data-convert="${escHtml(r.filename)}">Convert to PDF</button></td></tr>`).join("")}
+    </tbody></table>`;
+  root.querySelectorAll("[data-convert]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const docname = btn.dataset.convert;
+      btn.disabled = true;
+      try {
+        const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/doc/${encodeURIComponent(docname)}/convert`, {method:"POST"});
+        const j = await r.json();
+        if(!j.ok){ toast("Failed: " + (j.error||""), "err"); btn.disabled = false; return; }
+        const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id, title: `Converting ${docname}`});
+        handle.onDone(job => {
+          toast(job.status === "succeeded" ? `Converted ${docname}` : `Conversion ${job.status}: ${job.error||""}`,
+                job.status === "succeeded" ? "ok" : "err");
+          load();
+        });
+      } catch(err){ toast("Failed: " + err.message, "err"); btn.disabled = false; }
+    });
+  });
+}
+
+function renderUnrecognized(rows){
+  const root = document.getElementById("unrecognizedSection");
+  if(!rows.length){ root.innerHTML = '<div class="empty">Nothing unrecognized.</div>'; return; }
+  const testOptions = TEST_PDFS.map(p => `<option value="${escHtml(p.name)}">${escHtml(p.name)}</option>`).join("");
+  root.innerHTML = `
+    <table><thead><tr><th>File</th><th>Onboard as…</th></tr></thead><tbody>
+      ${rows.map(r => `
+        <tr data-row="${escHtml(r.filename)}">
+          <td class="fname">${escHtml(r.filename)}<div class="muted">${(r.size/1024).toFixed(0)} KB</div></td>
+          <td>
+            <div class="row-form">
+              <select class="role-sel">
+                <option value="test">Test</option>
+                <option value="key">Key</option>
+                <option value="supplementary">Supplementary (sheet/notes/…)</option>
+              </select>
+              <span class="role-fields"></span>
+              <button data-onboard="${escHtml(r.filename)}">Rename</button>
+            </div>
+          </td>
+        </tr>`).join("")}
+    </tbody></table>`;
+
+  function fieldsForRole(role, guess){
+    if(role === "supplementary"){
+      return `<select class="f-attach"><option value="">Attach to test…</option>${testOptions}</select>
+              <input type="text" class="f-label" placeholder="label (e.g. sheet)">`;
+    }
+    return `<input type="text" class="f-year" placeholder="year" value="${escHtml(guess.year||"")}" style="width:50px">
+            <input type="text" class="f-division" placeholder="div" value="${escHtml(guess.division||"")}" style="width:36px">
+            <input type="text" class="f-submitter" placeholder="submitter">`;
+  }
+
+  root.querySelectorAll("tr[data-row]").forEach(tr => {
+    const row = rows.find(r => r.filename === tr.dataset.row);
+    const sel = tr.querySelector(".role-sel");
+    const fieldsEl = tr.querySelector(".role-fields");
+    function refresh(){ fieldsEl.innerHTML = fieldsForRole(sel.value, row.guess || {}); }
+    sel.addEventListener("change", refresh);
+    refresh();
+  });
+
+  root.querySelectorAll("[data-onboard]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const filename = btn.dataset.onboard;
+      const tr = root.querySelector(`tr[data-row="${CSS.escape(filename)}"]`);
+      const role = tr.querySelector(".role-sel").value;
+      const body = {filename, role};
+      if(role === "supplementary"){
+        body.attach_to = tr.querySelector(".f-attach").value;
+        body.label = tr.querySelector(".f-label").value;
+        if(!body.attach_to){ toast("Pick a test to attach this to", "err"); return; }
+      } else {
+        body.year = tr.querySelector(".f-year").value;
+        body.division = tr.querySelector(".f-division").value;
+        body.submitter = tr.querySelector(".f-submitter").value;
+        if(!body.submitter){ toast("Submitter is required", "err"); return; }
+      }
+      btn.disabled = true;
+      try {
+        const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/scan/rename`, {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if(!j.ok){ toast("Failed: " + (j.error||""), "err"); btn.disabled = false; return; }
+        toast(`Renamed to ${j.new_filename}`, "ok");
+        load();
+      } catch(err){ toast("Failed: " + err.message, "err"); btn.disabled = false; }
+    });
+  });
+}
+
+async function load(){
+  await loadTestPdfs();
+  let j;
+  try {
+    const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/scan`);
+    j = await r.json();
+  } catch(e){
+    document.getElementById("readySection").innerHTML =
+      `<div class="empty">Failed to load: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  renderReady(j.ready || []);
+  renderConversion(j.needs_conversion || []);
+  renderUnrecognized(j.unrecognized || []);
+}
+
+document.getElementById("refreshBtn").addEventListener("click", load);
+load();
+</script>
+</body></html>

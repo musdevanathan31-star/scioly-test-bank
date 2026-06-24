@@ -272,7 +272,8 @@ State store and pipeline are the same. The UI is just a graphical front-end that
 - `GET /admin/users` — coach-only user management page.
 - `GET /admin/jobs` — coach-only cross-event background-job dashboard (see §16b).
 - `GET /event/<slug>/jobs` — per-event background-job history/console (see §16b). Linked from the PDF list and from the header's job-count badge.
-- `GET /event/<slug>/` — sortable PDF list for one event. Includes an upload-test-PDF form (test + optional key).
+- `GET /event/<slug>/` — sortable PDF list for one event. Includes an upload-test-PDF form (test + optional key; accepts `.pdf`/`.docx`/`.doc` — see §11e).
+- `GET /event/<slug>/scan` — manual file-drop onboarding page (see §11f). Links to the cross-event "N unrecognized" badge on the landing page.
 - `GET /event/<slug>/review/<pdf>` — single-PDF review (PDF page + question cards). Accepts `?q=<number>` to focus a specific question on load (used by the "Open source ↗" link from the browse page).
 - `GET /event/<slug>/sources` — source-material management + LLM question generation
 - `GET /event/<slug>/browse` — event-wide question browser: every question across every bucket on one filterable/sortable page. Filters: full-text search, topic, focus, source, validation status, MCQ-vs-FRQ, has-image. Sorts: Q#, topic, focus, source, validation, length, bucket-then-Q#. Each card links back to the source PDF's review page with that Q pre-focused.
@@ -313,10 +314,11 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>/qboxes` | Per-page bounding boxes for every question whose text starts on this page. Computed on demand from PyMuPDF text blocks: each `Q_START` match anchors a box that spans down to the next anchor (or page bottom), widened to the leftmost/rightmost edges of the text blocks within that vertical slice. Returns `{boxes: [{number, x0, y0, x1, y1}], page_height_pt}` in PDF points; the frontend scales to image pixels using the same 120 DPI factor as region-extract. |
 | `POST /event/<slug>/api/generate-similar` | Seed-based question generation. Body: `{seed_text, seed_topic, n}`. Wraps `qgen.generate_questions` with the seed as both source material and "do not duplicate" anchor. |
 | `PATCH /api/events/<slug>` | Edit a user-registered event's name/topics/foci/wiki_page in place. Refuses built-ins. |
-| `POST /event/<slug>/api/upload-test-pdf` | Multipart upload of a test PDF (`test_file`, required) + answer key (`key_file`, optional). Normalizes the filename to the `{filename_prefix}_*_test.pdf` glob `_list_test_pdfs` expects (de-duped with a numeric suffix), saves a sibling `_key.pdf` if provided, then enqueues `process_pair` as a background job (§16b) and returns `{ok, pdf_name, has_key, job_id}` — the file save itself is synchronous, only extraction is queued. |
+| `POST /event/<slug>/api/upload-test-pdf` | Multipart upload of a test file (`test_file`, required, `.pdf`/`.docx`/`.doc`) + answer key (`key_file`, optional, same formats). Normalizes the filename to the `{filename_prefix}_*_test.<ext>` glob `_list_test_pdfs` expects (de-duped with a numeric suffix), saves a sibling `_key.<ext>` if provided, then enqueues a job (§16b) that converts any non-PDF to PDF first (§11e) and runs `process_pair`, returning `{ok, pdf_name, has_key, job_id}` — `pdf_name` is already the post-conversion `.pdf` name even though conversion hasn't run yet (deterministic from `doc_convert`'s naming), so the frontend's progress UI doesn't need to special-case Word uploads. The file save itself is synchronous, only conversion+extraction is queued. |
 | `GET /event/<slug>/api/pdfs?sort=…&order=…` | List PDFs with status |
-| `GET /event/<slug>/api/pdf/<pdf>` | All questions + annotations + page count for one PDF |
-| `GET /event/<slug>/api/pdf/<pdf>/page/<n>.png?dpi=…&target=test\|key` | Page render |
+| `GET /event/<slug>/api/pdf/<pdf>` | All questions + annotations + page count for one PDF. Also returns `key_page_count` (null if no key) so the frontend can track per-target page-count bounds (§9b) without a separate request. |
+| `GET /event/<slug>/api/pdf/<pdf>/supplementary` | Sheet/notes/etc. PDFs sharing this test's filename prefix (§9b) — `{docs: [{filename, label, page_count}]}`. |
+| `GET /event/<slug>/api/pdf/<pdf>/page/<n>.png?dpi=…&target=test\|key\|<supplementary filename>` | Page render — `target` resolved by the shared `_open_target_pdf()` (§9b). |
 | `GET /event/<slug>/api/pdf/<pdf>/images` | Image inventory + current assignments |
 | `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-region` | Plain-text extract from a rectangle (PyMuPDF `clip=`). With `parse_choices: true`, runs `split_choices` and returns `stem` + `choices`. |
 | `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-math` | LaTeX extraction from a rectangle (Haiku vision) |
@@ -334,6 +336,19 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `GET /api/jobs/active-count` | `{count, slugs}` — queued+running jobs across every event the caller can see; backs the header badge. |
 | `GET /admin/jobs/api/list` | Coach-only. Every job across every event, newest first. |
 | `POST /admin/jobs/api/<slug>/<job_id>/cancel` | Coach-only equivalent of the per-event cancel route above. |
+| `GET /api/cookies/status` | Coach-only. `download_event.cookie_expiry_status()` passthrough — backs the header's Anubis-cookie freshness badge (§11b). |
+| `POST /event/<slug>/api/doc/<docname>/convert` | Job-queued (§16b) `.docx`/`.doc` → PDF conversion for a file `_pending_doc_conversions()` found (§11e). Returns `{ok, job_id}`. |
+| `GET /event/<slug>/api/scan` | `_scan_event_files()` (§11f) — `{ready, needs_conversion, unrecognized}` buckets for the Scan files page. |
+| `POST /event/<slug>/api/scan/rename` | Onboard an unrecognized file: plain filesystem rename into the naming convention. Body `{filename, role: "test"\|"key"\|"supplementary", year?, division?, submitter?, attach_to?, label?}` — `attach_to`/`label` only for `role="supplementary"` (§11f). |
+| `POST /event/<slug>/api/scan/process-all` | Bulk-enqueue a `process_pair` job (§16b) per file in the "ready" bucket. Returns `{ok, job_ids}`. |
+
+### Target resolution: test / key / supplementary documents (§9b)
+
+Some scioly.org submissions ship figures in a separate file alongside the test (e.g. `circuitlab_2019_b_uflorida_sheet.pdf`, `*_notes.pdf`) rather than embedded in the test PDF itself — `download_event.py` already fetches these (it has no filter on `other_links`), but until this mechanism nothing in the pipeline ever opened them. Automatic extraction stays exactly as it was (auto-associating images across two separate documents isn't reliable enough to trust); instead, the review page's existing `Test PDF` / `Key PDF` toggle (`#targetToggle` in `review.html`) is generalized into an N-way toggle, one button per discovered supplementary document, so a human can flip over and use any existing capture tool (region/math/pick-image) against it.
+
+- `_supplementary_docs(test_pdf)` (`review_app.py`) — globs the test PDF's directory for `{stem_prefix}_*.pdf`, excluding the test and key PDFs themselves. No hardcoded suffix list, so `_sheet`, `_notes`, `_notes1`, or any other suffix scioly.org happened to attach is picked up automatically.
+- `_open_target_pdf(pdfname, target)` — single resolution+cache point for the `target` param, replacing what used to be five near-identical `if target == "key": ... else: ...` blocks across the page-render, extract-region, extract-math, extract-region-vision, and pick-image routes. `target` is `"test"` (default), `"key"`, or any filename from `_supplementary_docs()` — validated by *membership* in that list (not just `_safe_join`'s path-containment check), so a filename that exists on disk but isn't actually one of *this* test's supplementary docs still 404s.
+- `GET .../supplementary` backs the frontend's dynamic buttons; each entry includes a `page_count`, since a sheet/notes PDF almost always has a different page count than the test PDF. The frontend tracks a `PAGE_COUNTS` map keyed by target (populated from this response plus `key_page_count` on the main `/api/pdf/<pdf>` payload) instead of assuming `STATE.page_count` (which only ever reflects the test PDF) — fixes a real bug where switching to a shorter supplementary/key document still showed thumbnail slots and nav bounds sized for the test PDF.
 
 ### API — sources & generation
 
@@ -468,6 +483,8 @@ Prerequisites: `pip install playwright` and `playwright install chromium` once.
 
 Detection helper: `_looks_like_challenge(response)` checks `content-type` + a substring scan of the first 600 chars.
 
+**Headless-server deployments (no X11, Playwright's deps unavailable — e.g. RHEL):** the web UI's download job never passes `bypass_headless=True` (always windowed Chromium when it does run Playwright), and Playwright's bundled-dependency installer targets Ubuntu/Debian, not RHEL — so rather than getting headless Chromium working on the server at all, the recommended path is to never run Playwright there: solve the challenge once on any machine that can (`--reauth --bypass-bot-headless`), `scp` the resulting `.scioly_cookies.json` to the server, and let the server's `download_event.py` run with `--no-bypass-bot` using the pre-solved cookies via plain `requests` for their ~7-day lifetime. `download_event.cookie_expiry_status()` exposes the soonest cookie expiry; `review_app.py`'s coach-only `/api/cookies/status` route and `_user_badge.html`'s badge surface a warning once that's within 48 hours, so the next refresh happens before a download run starts failing mid-batch instead of being discovered only when it does.
+
 ## 11c. Source materials (`texts.py`)
 
 Each event has a `<event>/texts/` directory holding reference material the LLM can draw on. Three file kinds:
@@ -569,6 +586,34 @@ Pipeline:
 4. **Dedup**: `is_duplicate(cand, existing, threshold=0.4)` uses Jaccard similarity on word-3-grams of the stem. Auto-rejects with `reason: "duplicate"` + the matched question number. Candidates are also deduped against earlier candidates in the same batch.
 
 `candidate_to_question(cand, number, source_label)` converts a kept candidate to the canonical Question shape used by the rest of the bank, populating the `validation` field with the LLM rationale, source snippet, and `generated: true` so generated questions are distinguishable in the markdown and UI. Generated questions are stored under a synthetic state key `_generated_<event>.pdf` so they survive reprocess and show up alongside real ones.
+
+## 11e. `.docx`/`.doc` ingestion (`doc_convert.py`)
+
+Not every scioly.org test submission is a PDF — a direct count across `scioly_tests.json`'s `test_link`/`key_link`/`notes_link`/`other_links` fields found 1750 `.pdf`, 144 `.docx`, and 11 `.doc` (plus assorted images/spreadsheets/etc. this app doesn't otherwise act on). `download_event.py` already fetches these (no extension filter), but until this module nothing downstream could open them — `_list_test_pdfs()`'s glob, `pdf_safety.py`'s magic-byte check, and `process_pair`'s page-based extraction model are all PDF-only.
+
+**Design choice**: normalize `.docx`/`.doc` to a real PDF once, at ingestion time, via headless LibreOffice (`soffice --headless --convert-to pdf`), then let the *entire* existing PDF pipeline (`process_pair`, vision OCR, image association, `review.html`'s page rendering/capture, §9b's supplementary-doc logic) handle it completely unchanged — rather than building a second, page-less extraction path for a format with no native page-boundary concept. The original `.docx`/`.doc` is never deleted (kept as the source of record alongside the generated PDF, consistent with this app's no-permanent-deletion stance — §14).
+
+- `doc_convert.looks_like_docx(path)` / `looks_like_doc(path)` — magic-byte checks (`.docx` is a ZIP, `PK\x03\x04`; legacy `.doc` is OLE2, `D0 CF 11 E0 A1 B1 1A E1`), mirroring `pdf_safety.looks_like_pdf`.
+- `doc_convert.convert_to_pdf(src, dest_dir, timeout_s=60)` — runs `soffice` via `subprocess.run` with a timeout (mirrors `pdf_safety.open_pdf_safely`'s hang-protection rationale), raising `DocConvertError` — with install instructions — if `soffice` isn't on `PATH`, the conversion times out, or it exits non-zero. The subprocess's `$HOME` is overridden to a fresh scratch directory per call: LibreOffice headless creates a user-profile directory on first run, and a writable `$HOME` isn't guaranteed for a systemd service account — without this override, conversion can hang on a profile lock instead of failing fast.
+- **Web upload path** (`api_upload_test_pdf`): accepts `.pdf`/`.docx`/`.doc` for both the test and key file, validates with the matching magic-byte check, then converts inside the background job (not the request) so a slow LibreOffice run never blocks the upload response. The immediate JSON response's `pdf_name` is already the *post-conversion* name (`doc_convert`'s output naming, `stem + ".pdf"`, is deterministic) even though conversion hasn't happened yet — keeps the existing frontend progress UI from needing a docx-specific code path.
+- **Discovery**: `review_app.py`'s `_key_path()` falls back to converting a `.docx`/`.doc` key inline (lazy, one-time cost — synchronous because key lookups happen inside hot page-render paths where threading a job round-trip through would be awkward, and a conversion failure there just means "no key available yet," not a broken request). The *test* PDF's conversion is never done inline — see `_pending_doc_conversions()` and §11f's "needs conversion" bucket — since blocking a page-render GET on a LibreOffice run would be worse. `build_question_bank.py`'s CLI `main()` converts inline for both test and key, since the CLI is already one long batch run.
+- `POST /event/<slug>/api/doc/<docname>/convert` — job-queued (§16b) conversion for a discovered-but-unconverted `.docx`/`.doc` test file, used by the Scan files page (§11f).
+- Legacy `.doc` (11 of ~2000 links — not worth bespoke handling) rides the identical `convert_to_pdf()` path; LibreOffice reads both formats via its own format sniffing.
+
+## 11f. Manual file-drop onboarding (Scan files page)
+
+Files copied directly into an event's directory (e.g. `scp`'d in from another machine where someone is assembling question banks from sources other than scioly.org) aren't discovered by anything else in the pipeline unless they already match the `{filename_prefix}_{year}_{division}_{submitter}_test.<ext>` naming convention — `_list_test_pdfs()` and its equivalents are pure on-demand filesystem globs (no registration step), so a *correctly-named* file is visible on the very next page load, but a non-conforming one is silently invisible forever.
+
+`GET /event/<slug>/scan` (`templates/event_scan.html`) is an on-demand page — a "Refresh" button, not a periodic background scan — consistent with this codebase's existing manual-trigger-over-automatic stance for infrequent, operator-initiated actions (the GitHub-update mechanism is explicitly manual for the same reason). It lives in `review_app.py`, not `admin_app.py`, per the established privilege-boundary separation (§16) — this is data/event management, not OS/server administration.
+
+`_scan_event_files()` buckets every file in `event.base_dir`:
+- **ready** — conforming test files (PDF, or `.docx`/`.doc` with an already-converted PDF sibling) with no entry in `state["questions"]` yet. **Process all** bulk-enqueues one `process_pair` job per file (`POST .../api/scan/process-all`), reusing the same job-queue pattern as upload/reprocess.
+- **needs_conversion** — conforming `.docx`/`.doc` test files with no PDF sibling yet (same set as `_pending_doc_conversions()`, §11e). Each gets a one-click **Convert to PDF** action (`POST .../api/doc/<docname>/convert`).
+- **unrecognized** — `.pdf`/`.docx`/`.doc` files that don't match the naming convention *and* aren't a known test's supplementary document either (cross-checked via `_supplementary_docs()`, §9b, so a legitimate `_sheet.pdf` doesn't show up here just because it isn't `_test`/`_key`). Each gets a best-effort year/division guess (`_guess_test_metadata()` — regex for a 4-digit year and a `B`/`C`/`BC` token, never authoritative) to pre-fill an inline onboarding form.
+
+`POST .../api/scan/rename` brings an unrecognized file under the naming convention via a plain `Path.rename()` — no content change. Body: `{filename, role: "test"|"key"|"supplementary", year?, division?, submitter?, attach_to?, label?}`. For `role="supplementary"`, the user picks an existing test from a dropdown (`attach_to`) and a short label instead of retyping year/division/submitter — the new filename shares that test's exact stem prefix plus the label, which is the only thing `_supplementary_docs()` (§9b) actually keys off of, so this is more reliable than asking for the metadata again. After the rename, the file is indistinguishable from anything scioly.org-sourced and is picked up by every existing discovery path with no further code involved.
+
+The landing page (`GET /`) shows each event's unrecognized-file count next to its name (`_count_unrecognized(ev)`, a count-only variant of the same "explained vs. not" logic that doesn't require switching the per-request "current event" `ContextVar` for every row), so a multi-event bulk drop doesn't require visiting each event individually to discover something landed.
 
 ## 12. Adding another event
 

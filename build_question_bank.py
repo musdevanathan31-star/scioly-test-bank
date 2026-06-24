@@ -38,6 +38,7 @@ from typing import Callable
 
 import fitz  # PyMuPDF
 import pdf_safety
+import doc_convert
 
 import jobs
 import llm_providers
@@ -2001,6 +2002,30 @@ def main() -> None:
             f.unlink(missing_ok=True)
 
     test_pdfs = sorted(ev.base_dir.glob(f"{ev.filename_prefix}_*_test.pdf"))
+
+    # .docx/.doc test files: convert any without an already-converted PDF
+    # sibling. The CLI runs as one long batch already, so (unlike the web
+    # upload path) it's fine to convert inline rather than job-queueing it.
+    doc_sources = sorted(ev.base_dir.glob(f"{ev.filename_prefix}_*_test.docx")) + \
+                  sorted(ev.base_dir.glob(f"{ev.filename_prefix}_*_test.doc"))
+    existing_pdf_names = {p.name for p in test_pdfs}
+    for src in doc_sources:
+        pdf_sibling = src.with_suffix(".pdf")
+        if pdf_sibling.exists():
+            if pdf_sibling.name not in existing_pdf_names:
+                test_pdfs.append(pdf_sibling)
+                existing_pdf_names.add(pdf_sibling.name)
+            continue
+        print(f"Converting {src.name} to PDF via LibreOffice...")
+        try:
+            converted = doc_convert.convert_to_pdf(src, src.parent)
+        except doc_convert.DocConvertError as e:
+            print(f"  [!] {e}")
+            continue
+        test_pdfs.append(converted)
+        existing_pdf_names.add(converted.name)
+    test_pdfs = sorted(test_pdfs)
+
     if args.limit:
         test_pdfs = test_pdfs[: args.limit]
 
@@ -2019,6 +2044,16 @@ def main() -> None:
 
     for test_pdf in test_pdfs:
         key_pdf = test_pdf.parent / test_pdf.name.replace("_test.pdf", "_key.pdf")
+        if not key_pdf.exists():
+            for ext in (".docx", ".doc"):
+                key_src = test_pdf.parent / test_pdf.name.replace("_test.pdf", f"_key{ext}")
+                if key_src.exists():
+                    print(f"Converting {key_src.name} to PDF via LibreOffice...")
+                    try:
+                        key_pdf = doc_convert.convert_to_pdf(key_src, key_src.parent)
+                    except doc_convert.DocConvertError as e:
+                        print(f"  [!] {e}")
+                    break
         qs = process_pair(
             test_pdf,
             key_pdf if key_pdf.exists() else None,
