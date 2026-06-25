@@ -26,6 +26,10 @@ __pycache__/
 .claude/
 .playwright-mcp/
 
+# Local code-location reference for planning agents — not part of the
+# shipped docs (spec.md/README.md/HOWTO.md cover those); regenerated locally.
+facts.md
+
 # Live event data — runtime-generated, not source. Generic one-level-deep
 # patterns so any event directory (built-in or user-registered via the UI,
 # e.g. physics_basics/) is covered without listing each one by name.

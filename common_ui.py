@@ -136,8 +136,9 @@ a{color:var(--accent);text-decoration:none}
    across templates (snapshots/compare/diagram modals, edit-user/edit-event
    modals, password-confirm modals). z-index ladder, low to high (each one
    can be triggered from within a lower one, so they stack in this order):
-   .dropdown-panel (60) < .floating-actions (150) < .toast-host (200)
-   < .toast-history (201) < .modal-backdrop (300) < .job-progress-modal (500). */
+   .dropdown-panel (60) < .side-drawer (120) < .floating-actions (150)
+   < .toast-host (200) < .toast-history (201) < .modal-backdrop (300)
+   < .job-progress-modal (500). */
 .modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
   z-index:300;align-items:center;justify-content:center;padding:24px}
 .modal-backdrop.on{display:flex}
@@ -171,6 +172,25 @@ a{color:var(--accent);text-decoration:none}
    column) so pages don't each invent their own column width. */
 .form-grid{display:grid;grid-template-columns:160px 1fr;gap:8px 14px;
   align-items:start;font-size:13px}
+
+/* Page navigation (prev/next + page-number input) and a test/key/sheet
+   target toggle — originally local to review.html, now shared since
+   event_index.html's PDF preview drawer needs both too. */
+.page-nav{display:flex;align-items:center;gap:6px}
+.page-nav input{width:54px;text-align:center;padding:3px 4px;
+  border:1px solid var(--line);border-radius:4px;font:inherit}
+.target-toggle{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.target-toggle button{border:none;border-radius:0;padding:4px 10px;font-size:12px}
+.target-toggle button.on{background:var(--accent);color:#fff}
+
+/* Right-side slide-in drawer — mirrors review.html's left-side
+   .outline-drawer (same transform/transition/`.on` toggle idiom), flipped
+   to the right edge. Used by event_index.html's PDF preview panel. */
+.side-drawer{position:fixed;top:0;bottom:0;right:0;width:520px;max-width:92vw;
+  background:var(--bg-card);border-left:1px solid var(--line);
+  overflow-y:auto;z-index:120;transform:translateX(100%);
+  transition:transform .2s ease;box-shadow:-2px 0 16px rgba(0,0,0,.15)}
+.side-drawer.on{transform:translateX(0)}
 """
 
 # Common JS helpers injected into every page. Provides:

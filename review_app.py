@@ -1723,6 +1723,7 @@ def api_pdf(event_slug, pdfname):
     doc = _open_pdf(pdfname)
     ann = state.get("annotations", {}).get(pdfname, {})
     key_path = _key_path(bqb.BASE_DIR / pdfname)
+    meta = bqb._effective_pdf_meta(bqb.BASE_DIR / pdfname, state)
     return jsonify({
         "name": pdfname,
         "page_count": doc.page_count,
@@ -1737,6 +1738,11 @@ def api_pdf(event_slug, pdfname):
         # a per-target map built from these, not a single shared page_count.
         "key_page_count": (fitz.open(str(key_path)).page_count if key_path else None),
         "annotations": ann,
+        # Tournament/Year: an explicit override if one's been saved, else the
+        # filename-derived guess — always something to pre-fill the review
+        # page's editable fields with, override or not.
+        "tournament": meta["tournament"],
+        "year": meta["year"],
     })
 
 
@@ -1861,6 +1867,20 @@ def api_render(event_slug, pdfname, pno):
     mat = fitz.Matrix(dpi / 72, dpi / 72)
     pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
     return Response(pix.tobytes("png"), mimetype="image/png")
+
+
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/page-counts")
+def api_pdf_page_counts(event_slug, pdfname):
+    """Lightweight page-count lookup for test/key, used by the PDF-listing
+    page's preview drawer (event_index.html) to bound its page-nav without
+    paying api_pdf()'s heavier state-load/question-compute cost — this gets
+    called every time a preview opens, possibly many times per visit to a
+    long PDF list."""
+    _select_event(event_slug)
+    test_doc = _open_pdf(pdfname)
+    key_path = _key_path(bqb.BASE_DIR / pdfname)
+    return jsonify({"test": test_doc.page_count,
+                    "key": (fitz.open(str(key_path)).page_count if key_path else None)})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/save", methods=["POST"])
@@ -2472,6 +2492,81 @@ def api_reprocess(event_slug, pdfname):
     except jobs.JobQueueFull as e:
         return jsonify({"error": str(e)}), 429
     return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/swap-test-key", methods=["POST"])
+def api_swap_test_key(event_slug, pdfname):
+    """Fixes an upload where the test and key roles got assigned backwards
+    — swaps which physical file is named `_test.pdf` vs `_key.pdf` (the
+    same on-disk-rename mechanism api_scan_rename already uses to assign a
+    role, just trading two existing files instead of renaming one fresh
+    one). `pdfname`'s bucket in state is now stale the instant its bytes
+    change underneath it — snapshotted (same pattern as api_reprocess's
+    wipe path) then cleared; the caller is expected to Reprocess afterward.
+    `pdf_meta` (Part 4's Tournament/Year override) is deliberately left
+    alone: it describes the exam itself, not which file currently plays
+    which role, and `pdfname` doesn't change across a swap."""
+    _select_event(event_slug)
+    test_pdf = bqb.BASE_DIR / pdfname
+    if not test_pdf.exists():
+        abort(404)
+    key_pdf = _key_path(test_pdf)
+    if key_pdf is None:
+        return jsonify({"error": "No key PDF found to swap with."}), 400
+    if test_pdf.suffix.lower() != ".pdf" or key_pdf.suffix.lower() != ".pdf":
+        return jsonify({"error": "Both test and key must already be PDFs to swap "
+                                  "(convert any .docx/.doc first)."}), 400
+    tmp = test_pdf.with_suffix(test_pdf.suffix + ".swaptmp")
+    try:
+        test_pdf.rename(tmp)
+        key_pdf.rename(test_pdf)
+        tmp.rename(key_pdf)
+    except OSError as e:
+        return jsonify({"error": f"Swap failed: {e}"}), 500
+    with bqb._state_transaction() as state:
+        if (state.get("annotations", {}).get(pdfname)
+                or state.get("manual", {}).get(pdfname)
+                or state.get("questions", {}).get(pdfname)):
+            archive.snapshot_pdf_state(bqb.EVENT, pdfname, state)
+        state.setdefault("questions", {}).pop(pdfname, None)
+        state.setdefault("vision", {}).pop(pdfname, None)
+        state.setdefault("annotations", {}).pop(pdfname, None)
+        state.setdefault("manual", {}).pop(pdfname, None)
+    return jsonify({"ok": True})
+
+
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/meta", methods=["PATCH"])
+def api_set_pdf_meta(event_slug, pdfname):
+    """Save (or clear, if blanked) this PDF's Tournament name/Year override
+    and cascade it onto every question already extracted from it — so the
+    correction shows up immediately, not just on a future Reprocess (which
+    also durably picks it up, via process_pair's _effective_pdf_meta call).
+    Division is left exactly as each question already has it; only
+    `year`/`source` are rewritten here."""
+    _select_event(event_slug)
+    data = request.get_json(silent=True) or {}
+    tournament = (data.get("tournament") or "").strip()
+    year = (data.get("year") or "").strip()
+    with bqb._state_transaction() as state:
+        if tournament or year:
+            entry = state.setdefault("pdf_meta", {}).setdefault(pdfname, {})
+            if tournament:
+                entry["tournament"] = tournament
+            else:
+                entry.pop("tournament", None)
+            if year:
+                entry["year"] = year
+            else:
+                entry.pop("year", None)
+            if not entry:
+                state["pdf_meta"].pop(pdfname, None)
+        else:
+            state.setdefault("pdf_meta", {}).pop(pdfname, None)
+        meta = bqb._effective_pdf_meta(bqb.BASE_DIR / pdfname, state)
+        for q in state.get("questions", {}).get(pdfname, []) or []:
+            q["year"] = meta["year"]
+            q["source"] = f"{meta['year']} Div-{q.get('division', meta['division'])}: {meta['tournament']}"
+    return jsonify({"ok": True, "tournament": meta["tournament"], "year": meta["year"]})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/snapshots")

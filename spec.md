@@ -89,11 +89,16 @@ Per-event configuration (slug, display name, topic taxonomy, keyword weights, fi
   "manual": { "<pdf>": { "edited_at": "ISO-8601" } },
   "annotations": {
     "<pdf>": Annotations
+  },
+  "pdf_meta": {
+    "<test_pdf_name>.pdf": { "tournament": "University of Florida Invitational", "year": "2019" }
   }
 }
 ```
 
 Generated questions live under the synthetic key `_generated_<event>.pdf` so they appear alongside pipeline-extracted ones in the markdown but are easy to identify and remain immune to reprocess (which only touches real PDFs).
+
+`pdf_meta` (schema v3+) holds a per-PDF Tournament-name/Year override, editable from the review page's header fields — independent of (and additive to) the per-question `year`/`source` fields, which are otherwise just guessed from the filename (`_pdf_name_meta`) every time `process_pair` runs. `_effective_pdf_meta(pdf, state)` resolves the effective value per field (override if present, else the filename guess) and is consulted both by `process_pair` (so the correction survives a future Reprocess) and by `api_pdf`'s response (so the review page always has something to pre-fill the fields with). Saving a new value (`PATCH /event/<slug>/api/pdf/<pdfname>/meta`) cascades immediately onto every question already extracted from that PDF — rewriting `year` and recomposing `source` — so Browse/exports stay consistent with the correction without waiting for a Reprocess. Clearing both fields back to blank removes the `pdf_meta` entry entirely, reverting to the filename guess everywhere.
 
 ### Question
 
@@ -315,7 +320,7 @@ State store and pipeline are the same. The UI is just a graphical front-end that
 - `GET /settings` — every logged-in user: My Account (display name + password change) and LLM API Keys; coaches additionally get Manage Users (see Authentication & roles below). `GET /admin/users` is now a thin redirect here, kept for old links/bookmarks.
 - `GET /admin/jobs` — coach-only cross-event background-job dashboard (see §16b).
 - `GET /event/<slug>/jobs` — per-event background-job history/console (see §16b). Linked from the PDF list and from the header's job-count badge.
-- `GET /event/<slug>/` — sortable PDF list for one event. Includes an upload-test-PDF form (test + optional key; accepts `.pdf`/`.docx`/`.doc` — see §11e).
+- `GET /event/<slug>/` — sortable PDF list for one event. Includes an upload-test-PDF form (test + optional key; accepts `.pdf`/`.docx`/`.doc` — see §11e), a "Scan files" link immediately beside it, and per-row 👁 Preview / ⇄ Swap actions. **Preview** opens a right-side `.side-drawer` (shared CSS, `common_ui.py`) with its own Test/Key/sheet target-toggle and page-nav/zoom — reusing the existing page-render (`/api/pdf/<name>/page/<n>.png`) and supplementary-docs (`/api/pdf/<name>/supplementary`) routes plus a new lightweight `/api/pdf/<name>/page-counts` route, so glancing at a PDF never requires opening the full review page. **Swap** (only shown when a key exists) fixes a test/key upload mistake — see §14's "Swap test/key hook".
 - `GET /event/<slug>/scan` — manual file-drop onboarding page (see §11f). Links to the cross-event "N unrecognized" badge on the landing page.
 - `GET /event/<slug>/review/<pdf>` — single-PDF review (PDF page + question cards). Accepts `?q=<number>` to focus a specific question on load (used by the "Open source ↗" link from the browse page).
 - `GET /event/<slug>/sources` — source-material management + LLM question generation
@@ -774,6 +779,8 @@ Every destructive action the app exposes — including to coaches — is now a r
 - `python archive.py --purge-snapshots-older-than-days N` is the only thing that actually deletes a snapshot file. Never called from `review_app.py`.
 
 **Reprocess hook** (`review_app.py`'s `api_reprocess`): when `discard_annotations` is set and the PDF actually has annotations/manual-edits/questions to lose, `archive.snapshot_pdf_state(...)` runs *before* the wipe. `GET .../snapshots` and `POST .../restore-snapshot` (same `_select_event` access gate as every other PDF route — restoring is protective, not destructive) round out the UI in `templates/review.html`'s Reprocess dropdown.
+
+**Swap test/key hook** (`api_swap_test_key`): fixes an upload where the test and key roles got assigned backwards — a 3-step on-disk rename (`test→tmp`, `key→test`, `tmp→key`), the same mechanism `api_scan_rename`'s onboarding flow already uses to assign a role, just trading two existing files instead of naming one fresh one. The same snapshot-then-clear pattern as the reprocess hook above runs unconditionally afterward (the test filename's `questions`/`vision`/`annotations`/`manual` entries are now stale the instant the bytes underneath them change) — snapshotted first if anything existed, then cleared; the caller is expected to Reprocess afterward to re-extract from the now-correctly-named file. `pdf_meta` (§4) is deliberately left untouched by a swap — it describes the exam itself, not which file currently plays which role. Reachable from both the PDF-listing page's row actions and the review page's toolbar (next to the Test/Key target-toggle).
 
 **Event archive** (`events.py`): `Event.archived: bool = False`, threaded through `_event_to_dict`/`_dict_to_event` same as every other field. `archive_custom_event`/`unarchive_custom_event` replace the old `remove_custom_event`. The `is_builtin()` guard on edit/delete still exists (`_BUILTIN_SLUGS`, populated only by entries hard-coded directly into the `EVENTS` dict literal — see §12a), but nothing ships that way by default, so in practice every event, including Circuit Lab and Thermodynamics, can be archived. `index()` (`review_app.py`) excludes archived events from the normal landing-page list and surfaces them to coaches in a separate "Show archived" section; `_select_event` 404s any direct access to an archived event until it's unarchived.
 

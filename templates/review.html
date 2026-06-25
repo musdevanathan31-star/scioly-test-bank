@@ -156,13 +156,6 @@
 .help{font-size:12px;color:var(--muted);margin:4px 0 10px 0;line-height:1.5}
 .help kbd{background:#eee;border:1px solid #ccc;padding:1px 5px;
   border-radius:4px;font-size:11px}
-.page-nav{display:flex;align-items:center;gap:6px}
-.page-nav input{width:54px;text-align:center;padding:3px 4px;
-  border:1px solid var(--line);border-radius:4px;font:inherit}
-.target-toggle{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
-.target-toggle button{border:none;border-radius:0;padding:4px 10px;font-size:12px}
-.target-toggle button.on{background:var(--accent);color:#fff}
-
 /* Page-thumbnail strip across the top of the PDF pane */
 .thumb-strip{display:flex;gap:4px;padding:8px;background:var(--bg-alt);
   overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--line);
@@ -276,6 +269,18 @@
 <header>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to PDF list" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> {{ pdf_name }}</h1>
+  <span class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">
+    Tournament
+    <input id="pdfTournament" type="text" placeholder="(unknown)"
+           style="font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--line);border-radius:4px;width:160px"
+           title="Human-readable tournament/source name for this PDF — corrects what's otherwise just guessed from the filename. Saving cascades to every question already extracted from this PDF.">
+  </span>
+  <span class="muted" style="font-size:12px;display:flex;align-items:center;gap:4px">
+    Year
+    <input id="pdfYear" type="text" placeholder="(unknown)"
+           style="font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--line);border-radius:4px;width:64px"
+           title="Year this test was administered — corrects what's otherwise just guessed from the filename. Saving cascades to every question already extracted from this PDF.">
+  </span>
   <div style="position:relative;display:inline-block" id="reprocessWrap">
     <button id="reprocess" class="danger" title="Re-run the extraction pipeline. Click for mode options.">Reprocess ▾</button>
     <div id="reprocessMenu" style="display:none;position:absolute;top:100%;left:0;
@@ -336,6 +341,7 @@
       <button data-target="test" class="on" title="Render and capture from the main test PDF">Test PDF</button>
       <button data-target="key" title="Render and capture from the answer key PDF (when available)">Key PDF</button>
     </div>
+    <button id="swapTestKey" title="The test and key files got named backwards — swap them">⇄ Swap test/key</button>
   </div>
   <div class="grow"></div>
   <div class="toolbar-group">
@@ -1097,6 +1103,9 @@ async function load(){
   if(!STATE.has_key){
     document.querySelector('#targetToggle [data-target=key]').style.display = "none";
   }
+  document.getElementById("swapTestKey").disabled = !STATE.has_key;
+  document.getElementById("pdfTournament").value = STATE.tournament || "";
+  document.getElementById("pdfYear").value = STATE.year || "";
   loadSupplementaryDocs();
   // Restore saved annotations so further edits accumulate on top
   if(STATE.annotations){
@@ -2882,6 +2891,48 @@ document.getElementById("addQ").addEventListener("click", ()=>{
   focusedId = q._id;
   setDirty(true); renderCards();
 });
+
+document.getElementById("swapTestKey").addEventListener("click", async ()=>{
+  const keyName = PDF.replace("_test.pdf", "_key.pdf");
+  if(!await confirmModal(
+    `Swap test and key for ${PDF}? "${PDF}" and "${keyName}" will trade names. ` +
+    `Any existing extracted questions for this test are snapshotted (recoverable) then cleared — ` +
+    `you'll need to click Reprocess afterward.`,
+    {danger:true, confirmLabel:"Swap"})) return;
+  try{
+    const r = await fetch(`${API}/pdf/${PDF}/swap-test-key`, {method:"POST"});
+    const j = await r.json();
+    if(j.ok){
+      setStatus("Swapped — reloading...", "ok");
+      location.reload();
+    } else {
+      setStatus("Error: " + (j.error || "unknown"), "err");
+    }
+  } catch(err){ setStatus("Error: " + err.message, "err"); }
+});
+
+async function savePdfMeta(){
+  const tournament = document.getElementById("pdfTournament").value.trim();
+  const year = document.getElementById("pdfYear").value.trim();
+  try{
+    const r = await fetch(`${API}/pdf/${PDF}/meta`, {
+      method: "PATCH", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({tournament, year}),
+    });
+    const j = await r.json();
+    if(!j.ok){ setStatus("Error: " + (j.error || "unknown"), "err"); return; }
+    // Cascade into the locally-held questions too, so cards reflect the
+    // correction immediately without a full reload.
+    STATE.questions.forEach(q => {
+      q.year = j.year;
+      q.source = `${j.year} Div-${q.division || ""}: ${j.tournament}`;
+    });
+    setStatus("Tournament/Year saved.", "ok");
+    renderCards();
+  } catch(err){ setStatus("Error: " + err.message, "err"); }
+}
+document.getElementById("pdfTournament").addEventListener("change", savePdfMeta);
+document.getElementById("pdfYear").addEventListener("change", savePdfMeta);
 
 document.getElementById("validatePage").addEventListener("click", async ()=>{
   if(!STATE.vision_available){ setStatus("ANTHROPIC_API_KEY not set", "err"); return; }

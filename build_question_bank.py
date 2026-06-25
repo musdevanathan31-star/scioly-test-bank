@@ -1972,6 +1972,21 @@ def _pdf_name_meta(pdf: Path) -> tuple[str, str, str]:
     return year, div, rest
 
 
+def _effective_pdf_meta(pdf: Path, state: dict) -> dict:
+    """Tournament/year for `pdf`: an explicit `state["pdf_meta"][pdf.name]`
+    override wins per-field (set via the review page's Tournament/Year
+    fields); otherwise both fall back to the exact filename guess
+    _pdf_name_meta already produced — byte-for-byte identical to
+    pre-pdf_meta behavior for any PDF nobody has ever saved an override
+    for. Division is always filename-derived; there's no per-PDF division
+    override (only Tournament name and Year were asked for)."""
+    year_guess, division, rest_guess = _pdf_name_meta(pdf)
+    override = (state.get("pdf_meta") or {}).get(pdf.name) or {}
+    return {"year": override.get("year", year_guess),
+            "tournament": override.get("tournament", rest_guess),
+            "division": division}
+
+
 def process_pair(test_pdf: Path, key_pdf: Path | None,
                  state: dict, use_vision: bool,
                  should_cancel: Callable[[], bool] = lambda: False,
@@ -1999,8 +2014,9 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
         print(f"  [CACHE] {test_pdf.name}")
         return state["questions"][cache_key]
 
-    year, division, rest = _pdf_name_meta(test_pdf)
-    source = f"{year} Div-{division}: {rest}"
+    meta = _effective_pdf_meta(test_pdf, state)
+    year, division = meta["year"], meta["division"]
+    source = f"{year} Div-{division}: {meta['tournament']}"
     src_slug = _slug(test_pdf.stem)
     print(f"  [PROC]  {test_pdf.name}")
 
@@ -2580,7 +2596,7 @@ def install_graceful_shutdown() -> None:
 
 # Latest schema version. Older state files are migrated forward on load. Bump
 # the constant and add a migrate_to_N entry when a breaking change ships.
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 
 
 def _migrate_state(state: dict) -> dict:
@@ -2590,6 +2606,10 @@ def _migrate_state(state: dict) -> dict:
     if v < 2:
         state.setdefault("annotations", {})
         state.setdefault("manual", {})
+    # v2 → v3: introduce pdf_meta dict (per-PDF Tournament name/Year
+    # overrides, keyed by test filename) if missing (no field changes).
+    if v < 3:
+        state.setdefault("pdf_meta", {})
     state["_schema_version"] = STATE_SCHEMA_VERSION
     return state
 

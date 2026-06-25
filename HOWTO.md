@@ -53,6 +53,10 @@ On an event's main page, click **⬇ Download PDFs from scioly.org** — runs in
 
 Same event page has a **+ Upload test** button near the top that opens a small form with three slots: the test (required), its answer key (optional), and a figures/supplementary document (optional — for tests that ship their diagrams in a separate file, e.g. a `_sheet`/`_notes` PDF; see "pulling figures from a supplementary document" below). Each slot accepts a PDF, `.docx`, or `.doc` — Word documents are converted to PDF automatically (needs `soffice`/LibreOffice installed on the server; if it isn't, the upload fails with an install hint instead of hanging). The test and key are run through extraction immediately — you'll see questions on the very next page load, no separate step required. The figures file is never extracted; it's just stored for browsing on the review page.
 
+### Previewing a PDF without opening the review page
+
+On the event's PDF list, click **👁 Preview** on any row to slide in a panel on the right showing that PDF — its own Test/Key/sheet toggle, page nav, and zoom, all without leaving the list. Handy for a quick glance (e.g. confirming which file is actually the test before deciding whether you need ⇄ Swap) when you don't need the full review page.
+
 ### Onboarding files copied directly onto the server
 
 If you (or a script) `scp` files straight into an event's directory instead of using the upload form or the scioly.org download — e.g. while assembling a question bank from elsewhere — they won't show up anywhere until they're named like everything else. The event's **Scan files** page finds them: a **Ready to process** bucket for already-correctly-named files that were never extracted (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files still waiting on PDF conversion, and an **Unrecognized** bucket for anything else, with a small form to onboard each one by role:
@@ -65,6 +69,8 @@ This is a manual "Refresh" page, not a background watcher — revisit it after d
 ### Reviewing a PDF page-by-page
 
 Click a PDF's name from the event page (or **Review by PDF**) to open the review page — the PDF on one side, extracted question cards on the other. From here you can:
+- **Tournament / Year** — two small editable fields in the header, next to the PDF name. They start out pre-filled with a guess from the filename; correct them and the fix applies immediately to every question already extracted from this PDF (and survives a future Reprocess) — useful when the filename's source slug isn't a real tournament name, or the year was wrong.
+- **⇄ Swap test/key** — if the test and key files got named backwards (a common upload mistake), this trades their names so extraction reads the right one. Any already-extracted questions for this PDF are snapshotted then cleared (you'll need to click Reprocess afterward) — also available from the event page's PDF list next to a row with a key file.
 - **Pull figures from a supplementary document** — if a sheet/notes/figures file was uploaded alongside this test (or discovered already sitting next to it), a toggle button for it appears next to **Test PDF** / **Key PDF**. Switch to it and use **📌 Pick image** (or any other capture tool) against it exactly like the test PDF — useful when a test's diagrams live in a separate file the extraction pipeline doesn't automatically associate with questions.
 - **Drag a rectangle** on the PDF and use the field buttons (**Stem**, **Choices**, **Math → Stem**, **Math → Answer**) to capture text or convert an equation to LaTeX directly into a field.
 - **+ Add question from region** — drag once over an unextracted question; it gets the next free number automatically, with multiple-choice options auto-split into the choices list if present.
@@ -278,7 +284,10 @@ Once a coach releases grades for a test, **My Tests** shows it under Past with y
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |
-| Onboard files dropped in via scp (test/key/supplementary/notes) | Coach, Volunteer (assigned events) | Event page → Scan files |
+| Onboard files dropped in via scp (test/key/supplementary/notes) | Coach, Volunteer (assigned events) | Event page → Scan files (next to + Upload test) |
+| Preview a PDF without opening the review page | Coach, Volunteer (assigned events) | Event page → 👁 Preview |
+| Fix a backwards test/key upload | Coach, Volunteer (assigned events) | Event page → ⇄ Swap, or Review page toolbar → ⇄ Swap test/key |
+| Correct a PDF's Tournament name / Year | Coach, Volunteer (assigned events) | Review page → header fields next to the PDF name |
 | Review/edit one PDF's questions | Coach, Volunteer (assigned events) | Event page → click a PDF / Review by PDF |
 | Pull figures from a supplementary doc | Coach, Volunteer (assigned events) | Review page → target toggle next to Test PDF/Key PDF |
 | Browse/search/bulk-edit the whole bank | Coach, Volunteer (assigned events) | Browse questions |

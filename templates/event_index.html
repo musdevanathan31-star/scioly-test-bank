@@ -18,6 +18,20 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
 .group-row td{background:var(--bg-alt);border-top:2px solid var(--line);
   border-bottom:1px solid var(--line);font-size:12px;color:var(--fg-soft);
   padding:6px 14px}
+/* PDF preview drawer — .side-drawer (shared, common_ui.py) provides the
+   slide-in shell; everything below is this drawer's internal layout. */
+#pdfPreviewDrawer{padding:0;display:flex;flex-direction:column}
+#pdfPreviewDrawer .pd-hdr{display:flex;align-items:center;gap:10px;
+  padding:12px 14px;border-bottom:1px solid var(--line);flex-shrink:0}
+#pdfPreviewDrawer .pd-hdr h3{margin:0;font-size:14px;flex:1;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+#pdfPreviewDrawer .pd-toolbar{display:flex;align-items:center;gap:10px;
+  padding:10px 14px;border-bottom:1px solid var(--line);flex-shrink:0;flex-wrap:wrap}
+#pdfPreviewDrawer .pd-stage{flex:1;overflow:auto;text-align:center;
+  padding:14px;background:var(--bg-alt)}
+#pdfPreviewDrawer .pd-stage img{max-width:100%}
+#pdfPreviewDrawer .pd-zoom{display:flex;gap:4px;align-items:center}
+#pdfPreviewDrawer .pd-zoom button{padding:3px 8px;font-size:13px;line-height:1}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -34,7 +48,6 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   </div>
   <div class="toolbar-group">
     <a href="{{ request.script_root }}/event/{{ event_slug }}/jobs"><button title="View running/queued/recent background jobs for this event (reprocess, scio.ly, generation, …)">Jobs</button></a>
-    <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">Scan files</button></a>
   </div>
   {% include "_user_badge.html" %}
 </header>
@@ -43,6 +56,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
     <span class="muted">Click a row to review. Sort by column. Tick boxes to bulk-reprocess.</span>
     <div class="toolbar-group" style="position:relative;margin-left:18px">
       <button id="upload_toggle_btn" type="button" title="Upload a test PDF/.docx/.doc directly into this event">+ Upload test</button>
+      <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">Scan files</button></a>
       <div id="upload_dropdown" class="dropdown-panel">
         <form id="upload_test_form" enctype="multipart/form-data">
           <label class="muted" style="font-size:12px;display:block;margin-bottom:8px">
@@ -111,6 +125,31 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
     </td></tr></tbody>
   </table>
 </div>
+
+<div class="side-drawer" id="pdfPreviewDrawer">
+  <div class="pd-hdr">
+    <h3 id="pd_title">—</h3>
+    <button class="ghost" id="pd_close" title="Close preview">✕</button>
+  </div>
+  <div class="pd-toolbar">
+    <div class="target-toggle" id="pd_target_toggle"></div>
+    <div class="page-nav">
+      <button id="pd_prev" title="Previous page">◀</button>
+      <input id="pd_page_input" type="number" min="1" value="1" title="Page number">
+      <span id="pd_page_count" class="muted">/ ?</span>
+      <button id="pd_next" title="Next page">▶</button>
+    </div>
+    <div class="pd-zoom">
+      <button id="pd_zoom_out" title="Zoom out">−</button>
+      <span id="pd_zoom_label" class="muted">100%</span>
+      <button id="pd_zoom_in" title="Zoom in">+</button>
+    </div>
+  </div>
+  <div class="pd-stage">
+    <img id="pd_img" alt="">
+  </div>
+</div>
+
 <script>
 const EVENT_SLUG = "{{ event_slug }}";
 let sortKey = "name";
@@ -221,8 +260,10 @@ async function load(){
          : '<span class="badge badge-warn">not processed</span>'
         }</td>
         <td class="row-actions">
+          <button class="ghost" data-preview="${r.name}" title="Preview this PDF in a slide-in panel without leaving this list">👁 Preview</button>
           <a href="${viewQ}" title="See these questions in the browse view"><button class="ghost">View questions</button></a>
           <button class="ghost" data-reprocess="${r.name}" title="Wipe cache and re-extract; replays your annotations">Reprocess</button>
+          ${r.has_key ? `<button class="ghost" data-swap="${r.name}" title="The test and key files got named backwards — swap them">⇄ Swap</button>` : ""}
           <button class="ghost" data-delall="${r.name}" title="Delete every question that came from this PDF (recorded as annotations; survives reprocess)">🗑 Delete all Qs</button>
         </td>
       </tr>`;
@@ -301,6 +342,8 @@ document.querySelectorAll("th[data-sort]").forEach(th=>{
 });
 
 document.addEventListener("click", async e=>{
+  const pv = e.target.dataset.preview;
+  if(pv){ openPreview(pv); return; }
   const n = e.target.dataset.reprocess;
   if(n){
     if(!await confirmModal(`Reprocess ${n}? Manual edits will be lost.`, {danger:true, confirmLabel:"Reprocess"})) return;
@@ -346,6 +389,25 @@ document.addEventListener("click", async e=>{
     load();
     return;
   }
+  const sw = e.target.dataset.swap;
+  if(sw){
+    const keyName = sw.replace("_test.pdf", "_key.pdf");
+    if(!await confirmModal(
+      `Swap test and key for ${sw}? "${sw}" and "${keyName}" will trade names. ` +
+      `Any existing extracted questions for this test are snapshotted (recoverable) then cleared — ` +
+      `you'll need to click Reprocess afterward.`,
+      {danger:true, confirmLabel:"Swap"})) return;
+    e.target.textContent = "Swapping...";
+    e.target.disabled = true;
+    try{
+      const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${sw}/swap-test-key`, {method:"POST"});
+      const j = await r.json();
+      if(j.ok){ setStatus(`Swapped — click Reprocess on ${sw} to re-extract.`, "ok"); }
+      else { setStatus("Error: " + (j.error || "unknown"), "err"); }
+    } catch(err){ setStatus("Error: " + err.message, "err"); }
+    load();
+    return;
+  }
 });
 
 function setStatus(s){
@@ -379,6 +441,84 @@ async function startEventDownload(){
     btn.disabled = false; btn.textContent = "⬇ Download PDFs from scioly.org";
   }
 }
+
+// --- PDF preview drawer ---
+// One drawer instance, reused across rows — opening a different row's
+// preview just updates this state and re-renders, no stacking.
+let PD_PDF = null;       // current pdf filename
+let PD_TARGET = "test";  // "test" | "key" | a supplementary filename
+let PD_PAGE = 1;
+let PD_PAGE_COUNTS = {}; // {test: N, key: N|null, <supp filename>: N}
+let PD_ZOOM = 100;
+
+async function openPreview(pdfName){
+  PD_PDF = pdfName; PD_TARGET = "test"; PD_PAGE = 1; PD_ZOOM = 100;
+  document.getElementById("pd_title").textContent = pdfName;
+  document.getElementById("pd_zoom_label").textContent = "100%";
+  document.getElementById("pdfPreviewDrawer").classList.add("on");
+
+  const [countsR, suppR] = await Promise.all([
+    fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${pdfName}/page-counts`),
+    fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${pdfName}/supplementary`),
+  ]);
+  const counts = await countsR.json();
+  const supp = await suppR.json();
+  PD_PAGE_COUNTS = {test: counts.test, key: counts.key};
+  (supp.docs || []).forEach(d => { PD_PAGE_COUNTS[d.filename] = d.page_count; });
+
+  const toggle = document.getElementById("pd_target_toggle");
+  let buttons = [{target: "test", label: "Test PDF"}];
+  if(counts.key != null) buttons.push({target: "key", label: "Key PDF"});
+  (supp.docs || []).forEach(d => buttons.push({target: d.filename, label: d.label || d.filename}));
+  toggle.innerHTML = buttons.map(b =>
+    `<button data-pd-target="${b.target}" class="${b.target === PD_TARGET ? "on" : ""}">${esc_grp(b.label)}</button>`
+  ).join("");
+  toggle.querySelectorAll("[data-pd-target]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      PD_TARGET = btn.dataset.pdTarget;
+      PD_PAGE = 1;
+      toggle.querySelectorAll("[data-pd-target]").forEach(b => b.classList.toggle("on", b === btn));
+      pd_render();
+    });
+  });
+  pd_render();
+}
+
+function pd_render(){
+  const pageCount = PD_PAGE_COUNTS[PD_TARGET];
+  document.getElementById("pd_page_count").textContent = "/ " + (pageCount || "?");
+  document.getElementById("pd_page_input").value = PD_PAGE;
+  const img = document.getElementById("pd_img");
+  img.src = `${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${PD_PDF}/page/${PD_PAGE}.png?dpi=120&target=${encodeURIComponent(PD_TARGET)}&_=${Date.now()}`;
+  img.style.width = PD_ZOOM + "%";
+}
+
+document.getElementById("pd_close").addEventListener("click", () => {
+  document.getElementById("pdfPreviewDrawer").classList.remove("on");
+});
+document.getElementById("pd_prev").addEventListener("click", () => {
+  if(PD_PAGE > 1){ PD_PAGE--; pd_render(); }
+});
+document.getElementById("pd_next").addEventListener("click", () => {
+  const max = PD_PAGE_COUNTS[PD_TARGET] || PD_PAGE;
+  if(PD_PAGE < max){ PD_PAGE++; pd_render(); }
+});
+document.getElementById("pd_page_input").addEventListener("change", e => {
+  const max = PD_PAGE_COUNTS[PD_TARGET] || 1;
+  const n = Math.max(1, Math.min(max, parseInt(e.target.value, 10) || 1));
+  PD_PAGE = n;
+  pd_render();
+});
+document.getElementById("pd_zoom_out").addEventListener("click", () => {
+  PD_ZOOM = Math.max(50, PD_ZOOM - 25);
+  document.getElementById("pd_zoom_label").textContent = PD_ZOOM + "%";
+  pd_render();
+});
+document.getElementById("pd_zoom_in").addEventListener("click", () => {
+  PD_ZOOM = Math.min(250, PD_ZOOM + 25);
+  document.getElementById("pd_zoom_label").textContent = PD_ZOOM + "%";
+  pd_render();
+});
 
 load();
 </script>
