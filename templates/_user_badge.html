@@ -1,8 +1,13 @@
 {% if current_user %}
 <script>const APP_ROOT = {{ request.script_root|tojson }};</script>
+{% if current_user.role != "student" %}
+{# Jobs are entirely a question-bank-pipeline concept (PDF reprocess, scraping,
+   LLM generation) — irrelevant clutter for a student, who has no bank access
+   at all (see review_app.py's _select_event blanket student-block). #}
 <a id="jobs_badge" href="{{ url_for('admin_jobs_page') if current_user.role == 'coach' else '#' }}"
    class="badge badge-warn" style="display:none;text-decoration:none"
    title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
+{% endif %}
 {% if current_user.role == "coach" %}
 <span id="cookie_badge" class="badge badge-warn" style="display:none"
       title="scioly.org bot-bypass cookies — scp a fresh .scioly_cookies.json from a machine that can run Playwright"></span>
@@ -11,7 +16,15 @@
   Signed in as <b>{{ current_user.display_name or current_user.username }}</b> ({{ current_user.role }})
   {% if current_user.role == "coach" %}
     <a href="{{ url_for('admin_jobs_page') }}">All jobs</a>
+    <a href="{{ url_for('club_management_page') }}">Club Management</a>
   {% endif %}
+  {% if current_user.role in ("coach", "volunteer") %}
+    <a href="{{ url_for('tests_dashboard_page') }}">Tests</a>
+  {% endif %}
+  {% if current_user.role == "student" %}
+    <a href="{{ url_for('my_tests_page') }}">My Tests</a>
+  {% endif %}
+  <a href="{{ url_for('scores_page') }}">Scores</a>
   <a href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys{{ ', manage users' if current_user.role == 'coach' }}">⚙ Settings</a>
   <form action="{{ url_for('logout') }}" method="post" style="display:inline;margin:0">
     <button type="submit" class="ghost" style="font-size:12px">Logout</button>

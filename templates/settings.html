@@ -25,6 +25,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 .role-badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600}
 .role-badge.coach{background:#e6f4ea;color:#1a7a34}
 .role-badge.volunteer{background:#eef2ff;color:#3949ab}
+.role-badge.student{background:#fff3d7;color:#9a6a00}
 .new-user{border:1px solid var(--line);border-radius:6px;padding:14px 18px;margin-top:14px}
 .new-user details > summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
 .new-user details[open] > summary{margin-bottom:10px}
@@ -124,6 +125,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
           <select id="nu_role">
             <option value="volunteer" selected>Volunteer</option>
             <option value="coach">Coach</option>
+            <option value="student">Student</option>
           </select>
 
           <label for="nu_events">Assigned events</label>
@@ -153,6 +155,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
         <select id="ue_role">
           <option value="volunteer">Volunteer</option>
           <option value="coach">Coach</option>
+          <option value="student">Student</option>
         </select>
 
         <label>Assigned events</label>
@@ -260,7 +263,11 @@ document.getElementById("acct_pw_save").addEventListener("click", async () => {
 // ---- Manage Users (coach-only; absent from the DOM entirely for others) ----
 function updateEventsCheckVisibility(roleSelectId, eventsCheckId){
   const role = document.getElementById(roleSelectId).value;
-  document.getElementById(eventsCheckId).style.opacity = (role === "coach") ? 0.4 : 1;
+  // Coaches get implicit all-event access; students' event access is
+  // governed by the per-season roster on the Club Management page, never
+  // by this field — dim it the same way for both, for the same reason
+  // (the checkboxes here would be inert either way).
+  document.getElementById(eventsCheckId).style.opacity = (role === "coach" || role === "student") ? 0.4 : 1;
 }
 document.getElementById("nu_role").addEventListener("change", () => updateEventsCheckVisibility("nu_role", "nu_events"));
 updateEventsCheckVisibility("nu_role", "nu_events");

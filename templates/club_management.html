@@ -1,0 +1,324 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Club Management · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:980px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:16px 18px;margin-bottom:18px}
+section h2{margin:0 0 4px 0;font-size:14px}
+section p.muted{margin:4px 0 14px 0;font-size:12px}
+.season-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px}
+.season-bar select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:13px}
+.events-check{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0}
+.events-check label{font-weight:400;display:flex;align-items:center;gap:4px;font-size:13px}
+.new-season{border:1px solid var(--line);border-radius:6px;padding:14px 18px;margin-top:10px}
+.new-season details > summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+.new-season details[open] > summary{margin-bottom:10px}
+.roster-tbl{width:100%;border-collapse:collapse;margin-top:8px}
+.roster-tbl th,.roster-tbl td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
+.roster-tbl th{background:#fafafa;font-weight:600;color:var(--fg-soft)}
+.roster-tbl td.chk{text-align:center}
+.roster-tbl tr:hover td{background:var(--row-hover)}
+.csv-results{margin-top:10px}
+.csv-results table{width:100%;border-collapse:collapse;font-size:12px}
+.csv-results th,.csv-results td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left}
+.csv-results .err-row{color:var(--bad)}
+.msg{font-size:12px;margin-top:8px}
+.msg.ok{color:var(--ok)}
+.msg.err{color:var(--bad)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/" style="margin-right:10px">←</a>
+  <h1>Club Management</h1>
+  <span id="msg" class="muted"></span>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+
+  <section>
+    <h2>Season</h2>
+    <p class="muted">A season declares its own event lineup — only events checked here can be rostered or scheduled for testing this season. This has no effect on who can curate/edit any event's question bank; that's governed entirely by each user's role/assigned-events on the Settings page.</p>
+    <div class="season-bar">
+      <label for="season_picker">Season</label>
+      <select id="season_picker">
+        {% for s in all_seasons %}
+        <option value="{{ s.season_id }}" {{ "selected" if selected and s.season_id == selected.season_id }}>
+          {{ s.display_label }}{{ " (current)" if s.is_current }}{{ " (archived)" if s.archived }}
+        </option>
+        {% endfor %}
+      </select>
+      {% if selected and not selected.is_current %}
+      <button id="set_current_btn" data-season="{{ selected.season_id }}">Mark as current</button>
+      {% endif %}
+      {% if selected %}
+      <button id="edit_lineup_btn">Edit lineup</button>
+      {% endif %}
+    </div>
+
+    <div class="new-season">
+      <details>
+        <summary>+ New season</summary>
+        <div class="form-grid">
+          <label for="ns_id">Season ID *</label>
+          <input id="ns_id" type="text" placeholder="2028">
+          <label for="ns_label">Label</label>
+          <input id="ns_label" type="text" placeholder="(defaults to season ID)">
+          <label>Event lineup</label>
+          <div class="events-check" id="ns_events">
+            {% for slug in all_events %}
+            <label><input type="checkbox" value="{{ slug }}"> {{ slug }}</label>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="actions" style="text-align:right">
+          <button id="ns_submit" class="primary">Create season</button>
+        </div>
+        <div id="ns_msg" class="msg" style="display:none"></div>
+      </details>
+    </div>
+
+    {% if all_seasons|length > 1 and selected %}
+    <div class="new-season">
+      <details>
+        <summary>Copy roster from another season</summary>
+        <div class="form-grid">
+          <label for="copy_from">From season</label>
+          <select id="copy_from">
+            {% for s in all_seasons if s.season_id != selected.season_id %}
+            <option value="{{ s.season_id }}">{{ s.display_label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="actions" style="text-align:right">
+          <button id="copy_submit" class="primary">Copy roster into {{ selected.display_label }}</button>
+        </div>
+        <div id="copy_msg" class="msg" style="display:none"></div>
+      </details>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if selected %}
+  <section>
+    <h2>Bulk-add students from CSV</h2>
+    <p class="muted">Columns (header row required): <code>display_name, username, password, events</code>.
+      <code>username</code>/<code>password</code>/<code>events</code> may be left blank per row — a blank username is generated from the display name, a blank password is generated as school+year+name (students change it after first login), and <code>events</code> is an optional <code>;</code>-separated list of this season's event slugs to roster the student onto immediately.
+      <a href="#" id="csv_template_link">Download a template</a>.</p>
+    <input type="file" id="csv_file" accept=".csv">
+    <button id="csv_upload_btn" class="primary">Upload</button>
+    <div id="csv_results" class="csv-results" style="display:none"></div>
+  </section>
+
+  <section>
+    <h2>Roster — {{ selected.display_label }}</h2>
+    {% if not selected.event_slugs %}
+    <p class="muted">This season has no events in its lineup yet — use "Edit lineup" above to add some before rostering students.</p>
+    {% elif not students %}
+    <p class="muted">No student accounts yet — create some via Settings → Manage Users, or the CSV upload above.</p>
+    {% else %}
+    <table class="roster-tbl" id="roster_tbl">
+      <thead><tr>
+        <th>Student</th>
+        {% for slug in selected.event_slugs %}
+        <th>{{ slug }}</th>
+        {% endfor %}
+      </tr></thead>
+      <tbody>
+        {% for u in students %}
+        <tr data-username="{{ u.username }}">
+          <td>{{ u.display_name or u.username }}</td>
+          {% for slug in selected.event_slugs %}
+          <td class="chk">
+            <input type="checkbox" data-event="{{ slug }}"
+                   {{ "checked" if u.username in (roster.get(slug) or []) }}>
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="actions"><button id="roster_save" class="primary">Save roster</button></div>
+    <div id="roster_msg" class="msg" style="display:none"></div>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Edit lineup modal -->
+  <div id="lineup_modal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="hdr"><h3>Edit event lineup</h3></div>
+      <div class="events-check" id="lineup_events">
+        {% for slug in all_events %}
+        <label><input type="checkbox" value="{{ slug }}"
+               {{ "checked" if selected and slug in selected.event_slugs }}> {{ slug }}</label>
+        {% endfor %}
+      </div>
+      <div id="lineup_err" class="msg err" style="display:none"></div>
+      <div class="actions" style="display:flex;justify-content:flex-end;gap:8px">
+        <button id="lineup_cancel">Cancel</button>
+        <button id="lineup_save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script>
+const SELECTED_SEASON = {{ (selected.season_id if selected else None)|tojson }};
+
+document.getElementById("season_picker").addEventListener("change", (e) => {
+  location.href = `${APP_ROOT}/club?season=${encodeURIComponent(e.target.value)}`;
+});
+
+const setCurrentBtn = document.getElementById("set_current_btn");
+if(setCurrentBtn){
+  setCurrentBtn.addEventListener("click", async () => {
+    const r = await fetch(`${APP_ROOT}/api/seasons/${setCurrentBtn.dataset.season}/set-current`, {method:"POST"});
+    const j = await r.json();
+    if(j.ok){ toast("Marked current.", "ok"); location.reload(); }
+    else toast("Failed: " + (j.error||""), "err");
+  });
+}
+
+document.getElementById("ns_submit").addEventListener("click", async () => {
+  const season_id = document.getElementById("ns_id").value.trim();
+  const label = document.getElementById("ns_label").value.trim();
+  const event_slugs = [...document.querySelectorAll("#ns_events input:checked")].map(c => c.value);
+  const msgEl = document.getElementById("ns_msg");
+  const r = await fetch(`${APP_ROOT}/api/seasons`, {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({season_id, label, event_slugs}),
+  });
+  const j = await r.json();
+  msgEl.style.display = "";
+  if(j.ok){
+    msgEl.className = "msg ok"; msgEl.textContent = "Created.";
+    location.href = `${APP_ROOT}/club?season=${encodeURIComponent(season_id)}`;
+  } else {
+    msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed";
+  }
+});
+
+const copySubmit = document.getElementById("copy_submit");
+if(copySubmit){
+  copySubmit.addEventListener("click", async () => {
+    const from_season_id = document.getElementById("copy_from").value;
+    const msgEl = document.getElementById("copy_msg");
+    const r = await fetch(`${APP_ROOT}/api/seasons/${SELECTED_SEASON}/copy-roster-from`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({from_season_id}),
+    });
+    const j = await r.json();
+    msgEl.style.display = "";
+    if(j.ok){
+      msgEl.className = "msg ok";
+      msgEl.textContent = "Copied: " + Object.entries(j.copied).map(([k,v]) => `${k} (${v})`).join(", ");
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed";
+    }
+  });
+}
+
+// Edit lineup modal
+const lineupModal = document.getElementById("lineup_modal");
+const editLineupBtn = document.getElementById("edit_lineup_btn");
+if(editLineupBtn){
+  editLineupBtn.addEventListener("click", () => lineupModal.classList.add("on"));
+}
+document.getElementById("lineup_cancel").addEventListener("click", () => lineupModal.classList.remove("on"));
+document.getElementById("lineup_save").addEventListener("click", async () => {
+  const event_slugs = [...document.querySelectorAll("#lineup_events input:checked")].map(c => c.value);
+  const r = await fetch(`${APP_ROOT}/api/seasons/${SELECTED_SEASON}/events`, {
+    method: "PATCH", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({event_slugs}),
+  });
+  const j = await r.json();
+  if(j.ok){ location.reload(); }
+  else {
+    const el = document.getElementById("lineup_err");
+    el.style.display = ""; el.textContent = j.error || "Failed";
+  }
+});
+
+// Roster grid save
+const rosterSave = document.getElementById("roster_save");
+if(rosterSave){
+  rosterSave.addEventListener("click", async () => {
+    const eventSlugs = [...document.querySelectorAll("#roster_tbl th")].slice(1).map(th => th.textContent.trim());
+    const msgEl = document.getElementById("roster_msg");
+    msgEl.style.display = ""; msgEl.className = "msg"; msgEl.textContent = "Saving…";
+    try {
+      for(const slug of eventSlugs){
+        const usernames = [...document.querySelectorAll(`#roster_tbl tr[data-username]`)]
+          .filter(tr => tr.querySelector(`input[data-event="${slug}"]`).checked)
+          .map(tr => tr.dataset.username);
+        const r = await fetch(`${APP_ROOT}/api/seasons/${SELECTED_SEASON}/roster/${encodeURIComponent(slug)}`, {
+          method: "PUT", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({usernames}),
+        });
+        const j = await r.json();
+        if(!j.ok) throw new Error(j.error || `failed saving ${slug}`);
+      }
+      msgEl.className = "msg ok"; msgEl.textContent = "Saved.";
+    } catch(err){
+      msgEl.className = "msg err"; msgEl.textContent = err.message;
+    }
+  });
+}
+
+// CSV template download (client-side, no round trip needed for a static header row)
+const templateLink = document.getElementById("csv_template_link");
+if(templateLink){
+  templateLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    const blob = new Blob(["display_name,username,password,events\n"], {type: "text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "students_template.csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+const csvUploadBtn = document.getElementById("csv_upload_btn");
+if(csvUploadBtn){
+  csvUploadBtn.addEventListener("click", async () => {
+    const fileInput = document.getElementById("csv_file");
+    if(!fileInput.files.length){ toast("Pick a CSV file first.", "err"); return; }
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    csvUploadBtn.disabled = true;
+    let j;
+    try {
+      const r = await fetch(`${APP_ROOT}/api/seasons/${SELECTED_SEASON}/students/bulk-csv`, {
+        method: "POST", body: fd,
+      });
+      j = await r.json();
+    } catch(err){ toast("Upload failed: " + err.message, "err"); csvUploadBtn.disabled = false; return; }
+    csvUploadBtn.disabled = false;
+    if(j.error){ toast("Upload failed: " + j.error, "err"); return; }
+    const resultsEl = document.getElementById("csv_results");
+    resultsEl.style.display = "";
+    let html = "";
+    if(j.created && j.created.length){
+      html += `<table><thead><tr><th>Display name</th><th>Username</th><th>Password</th></tr></thead><tbody>`
+        + j.created.map(c => `<tr><td>${esc(c.display_name)}</td><td>${esc(c.username)}</td><td><code>${esc(c.password)}</code></td></tr>`).join("")
+        + `</tbody></table>`;
+    }
+    if(j.errors && j.errors.length){
+      html += `<p class="err-row">${j.errors.length} row(s) failed: `
+        + j.errors.map(e => `row ${e.row+1}: ${esc(e.reason)}`).join("; ") + `</p>`;
+    }
+    resultsEl.innerHTML = html;
+    toast(`Created ${j.created.length} account(s).` + (j.errors.length ? ` ${j.errors.length} error(s).` : ""),
+          j.errors.length ? "warn" : "ok");
+    if(j.created.length) setTimeout(() => location.reload(), 2000);
+  });
+}
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+</script>
+</body></html>

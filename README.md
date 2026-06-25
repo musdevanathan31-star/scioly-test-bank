@@ -425,12 +425,11 @@ What stays with the code regardless of `DATA_ROOT` (none of it grows unboundedly
 
 ## Authentication & roles
 
-The app supports two roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
+The app supports three roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
 
-- **Coach** — full admin. Every event, plus user management (Manage Users, inside **⚙ Settings**) and shared-textbook uploads.
-- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL.
-
-A **student** role (read-only) is intentionally not built yet — the data model (a `role` string + a per-user `events` list) is generic enough to add one later without rework.
+- **Coach** — full admin. Every event, plus user management (Manage Users, inside **⚙ Settings**), shared-textbook uploads, Club Management, and the Tests dashboard.
+- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to build/grade tests for the [season testing workflow](#season-long-testing-workflow) below, a separate grant unrelated to event access.
+- **Student** — no question-bank access at all (not even read-only — see the [season testing workflow](#season-long-testing-workflow)). Scoped entirely to the tests they're rostered on for the current season: `/my-tests` (take a live test, view released results) and `/scores` (everyone, including students, sees every student's named score — response-level detail is restricted to coaches and whoever actually graded that test).
 
 **First-time setup** — a fresh `auth_users.json` has no accounts, so there's no one who could use the in-app admin UI yet. Bootstrap the first coach from the CLI:
 

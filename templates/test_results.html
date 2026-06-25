@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Results · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{max-width:760px;margin:24px auto;padding:0 20px}
+.score-big{font-size:32px;font-weight:700;color:var(--accent);text-align:center;margin:10px 0}
+.result-card{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:10px}
+.result-card.correct{border-color:var(--ok);background:#f3fbf5}
+.result-card.partial{border-color:var(--warn);background:#fffaf0}
+.result-card.wrong{border-color:var(--bad);background:#fdf3f2}
+.result-card .meta{font-size:11px;color:var(--muted);margin-bottom:4px}
+.result-card .q{font-size:14px;margin-bottom:6px}
+.result-card .ans{font-size:13px}
+.result-card .pts{font-weight:600;font-size:13px;float:right}
+.pair-ok{color:var(--ok)} .pair-bad{color:var(--bad)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/my-tests" style="margin-right:10px">←</a>
+  <h1>{{ event_name }} — Results{{ " for " + student_username if not viewer_is_self }}</h1>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+  <div class="score-big">{{ "%.1f"|format(total_earned) }} / {{ "%.0f"|format(total_possible) }}</div>
+  {% for row in rows %}
+  {% set q = row.q %}
+  {% set grade = row.auto or row.manual %}
+  {% set pts = grade.points_earned if grade else 0 %}
+  {% set possible = grade.points_possible if grade else (q.max_points or 1) %}
+  <div class="result-card {{ 'correct' if pts == possible else 'wrong' if pts == 0 else 'partial' }}">
+    <div class="meta">Q{{ q.number }} · {{ q.qtype }}
+      <span class="pts">{{ pts }} / {{ possible }}</span>
+    </div>
+    <div class="q">{{ q.text }}</div>
+    {% if q.qtype == "mcq" %}
+      <div class="ans">Your answer: <b>{{ row.answer.picked or "(none)" }}</b> — correct answer: <b>{{ q.correct_answer }}</b></div>
+    {% elif q.qtype == "frq" %}
+      <div class="ans">Your answer: {{ row.answer.text or "(none)" }}</div>
+      <div class="ans muted">Reference answer: {{ q.correct_answer }}</div>
+      {% if row.manual and row.manual.comment %}<div class="ans muted">Grader note: {{ row.manual.comment }}</div>{% endif %}
+    {% elif q.qtype == "matching" %}
+      <div class="ans">
+        {% for p in (row.auto.per_pair if row.auto else []) %}
+        <div class="{{ 'pair-ok' if p.ok else 'pair-bad' }}">{{ p.label }} → {{ p.given or "(blank)" }}{{ "" if p.ok else " (correct: " + p.expected + ")" }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+</body></html>

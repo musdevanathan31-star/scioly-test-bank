@@ -2,6 +2,11 @@
 .env
 .scioly_cookies.json
 auth_users.json
+seasons.json
+season_rosters.json
+test_windows.json
+tests.json
+test_responses.json
 ssh-key-*.key
 ssh-key-*.key.pub
 *.pem

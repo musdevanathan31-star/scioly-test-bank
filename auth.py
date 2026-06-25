@@ -1,10 +1,16 @@
 """
 Authentication and role-based access for the shared, multi-user deployment.
 
-Two roles:
+Three roles:
     coach     — full admin, implicit access to every event, plus user
                 management and shared-textbook management.
     volunteer — edit access only to the events a coach has assigned them.
+    student   — no question-bank access at all (enforced in review_app.py's
+                _select_event); scoped instead to the season-long testing
+                workflow (seasons.py/testing.py) via a per-season roster,
+                never via the `events` field below (that field keeps
+                meaning exactly what it means for a volunteer — bank-edit
+                access — a deliberately separate, unrelated mechanism).
 
 Stored as a flat JSON file at the repo root (`auth_users.json`), same
 pattern as `events.py`'s `events_custom.json` — no DB, atomic tempfile+
@@ -38,7 +44,7 @@ _users_lock = threading.Lock()
 # 2-32 chars, must start with a letter — same shape as events.py's slug rule.
 _USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 
-ROLES = ("coach", "volunteer")
+ROLES = ("coach", "volunteer", "student")
 
 
 @dataclass(frozen=True)
@@ -63,12 +69,18 @@ class User:
 
 
 def _load() -> dict[str, User]:
-    if not USERS_FILE.exists():
-        return {}
-    try:
-        data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    # Reads and writes share the same lock (not just writes) — on Windows,
+    # os.replace() targeting a file another thread currently has open for
+    # read can fail with PermissionError. Matters more now that
+    # create_users_bulk() (seasons.py's CSV import) calls create_user() —
+    # i.e. _load()-then-_save() — in a tight loop.
+    with _users_lock:
+        if not USERS_FILE.exists():
+            return {}
+        try:
+            data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
     users: dict[str, User] = {}
     for username, d in data.items():
         try:
@@ -123,6 +135,10 @@ def user_can_access_event(user: User, slug: str) -> bool:
     return user.can_access(slug)
 
 
+def is_student(user: User | None) -> bool:
+    return user is not None and user.role == "student"
+
+
 def create_user(
     username: str,
     password: str,
@@ -151,6 +167,96 @@ def create_user(
     users[username] = user
     _save(users)
     return user
+
+
+def slugify_username(display_name: str) -> str:
+    """Derive a candidate username from a free-text display name (which may
+    contain spaces, mixed case, punctuation) for the Club Management CSV
+    bulk-import — same character rules as _USERNAME_RE, but repaired rather
+    than rejected: lowercase, strip everything outside [a-z0-9], prefix with
+    "s" if the result would start with a digit, fall back to "student" if
+    nothing alphanumeric survives, truncate to the 32-char limit."""
+    slug = re.sub(r"[^a-z0-9]", "", (display_name or "").lower())
+    if not slug:
+        slug = "student"
+    if not slug[0].isalpha():
+        slug = "s" + slug
+    return slug[:32]
+
+
+def generate_unique_username(display_name: str) -> str:
+    """slugify_username(), then append 2, 3, ... until it doesn't collide
+    with an existing account. Used by the CSV bulk-import when a row's
+    username column is left blank."""
+    base = slugify_username(display_name)
+    existing = load_users()
+    if base not in existing:
+        return base
+    n = 2
+    while True:
+        candidate = f"{base}{n}"[:32]
+        if candidate not in existing:
+            return candidate
+        n += 1
+
+
+def generate_password(school: str, season_id: str, username: str) -> str:
+    """The literal "school+year+name" formula for an auto-generated student
+    password (CSV bulk-import, blank password column). Uses the already-
+    deduplicated username rather than the raw display name as the "name"
+    component, so two same-named students never get the same password.
+    `season_id+username` alone is already >= 8 chars even when `school`
+    (the SCHOOL_NAME env var) is unset, satisfying create_user's minimum."""
+    return f"{school}{season_id}{username}".lower()
+
+
+def create_users_bulk(rows: list[dict], season_id: str = "") -> dict:
+    """Bulk-create student accounts from parsed CSV rows (Club Management's
+    CSV upload). Each row: {"display_name": str, "username": str (optional),
+    "password": str (optional)}. A blank username/password is filled in via
+    generate_unique_username()/generate_password() — `season_id` is the
+    season the upload is happening into (used only as the "year" component
+    of a generated password; auth.py has no concept of seasons otherwise,
+    deliberately, per the module docstring). Continues past a per-row
+    failure (e.g. an explicit duplicate username) rather than aborting the
+    whole batch, so one bad row in a large CSV doesn't block the rest —
+    mirrors this app's general "report partial failure, don't discard
+    partial success" stance (e.g. publish()'s skipped-question list
+    elsewhere in this codebase).
+
+    Returns {"created": [{"username","password","display_name"}],
+             "errors": [{"row": int, "reason": str}]} — `password` is the
+    plaintext value only for rows where one was just generated (never the
+    hash), shown once to the coach in the upload results table; an
+    explicitly-supplied password is echoed back too so the coach can
+    confirm what they typed, matching the same one-time-display courtesy.
+    """
+    school = os.environ.get("SCHOOL_NAME", "")
+    created: list[dict] = []
+    errors: list[dict] = []
+    for i, row in enumerate(rows):
+        display_name = (row.get("display_name") or "").strip()
+        if not display_name:
+            errors.append({"row": i, "reason": "display_name is required"})
+            continue
+        username = (row.get("username") or "").strip().lower()
+        if not username:
+            username = generate_unique_username(display_name)
+        password = (row.get("password") or "").strip()
+        if not password:
+            password = generate_password(school, season_id, username)
+        try:
+            create_user(username, password, role="student")
+        except ValueError as e:
+            errors.append({"row": i, "reason": str(e)})
+            continue
+        # "row" lets callers (e.g. review_app.py's CSV-upload route) map a
+        # created account back to that row's other columns (e.g. an
+        # "events" column this function doesn't know about) without relying
+        # on positional alignment with the input list, which would break as
+        # soon as any earlier row fails and goes to `errors` instead.
+        created.append({"row": i, "username": username, "password": password, "display_name": display_name})
+    return {"created": created, "errors": errors}
 
 
 def update_user(

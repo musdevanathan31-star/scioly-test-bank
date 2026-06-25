@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Scores · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:1100px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:18px}
+.season-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px}
+.season-bar select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:13px}
+.scores-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.scores-tbl th,.scores-tbl td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left}
+.scores-tbl th{background:#fafafa;font-weight:600;color:var(--fg-soft);font-size:11px;
+  text-transform:uppercase;letter-spacing:.3px}
+.scores-tbl td.score{text-align:center}
+.scores-tbl a{text-decoration:none}
+.empty{color:var(--muted);font-size:13px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/" style="margin-right:10px">←</a>
+  <h1>Scores</h1>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+
+  <section>
+    <div class="season-bar">
+      <label for="season_picker">Season</label>
+      <select id="season_picker">
+        {% for s in all_seasons %}
+        <option value="{{ s.season_id }}" {{ "selected" if selected and s.season_id == selected.season_id }}>
+          {{ s.display_label }}{{ " (current)" if s.is_current }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+  </section>
+
+  <section>
+    {% if not columns %}
+    <p class="empty">No graded tests yet for this season.</p>
+    {% elif not students %}
+    <p class="empty">No students rostered for this season.</p>
+    {% else %}
+    <table class="scores-tbl">
+      <thead><tr>
+        <th>Student</th>
+        {% for col in columns %}<th>{{ col.label }}</th>{% endfor %}
+      </tr></thead>
+      <tbody>
+        {% for student in students %}
+        <tr>
+          <td>{{ student }}</td>
+          {% for col in columns %}
+          {% set cell = (grid.get(student) or {}).get(col.test.test_id) %}
+          <td class="score">
+            {% if not cell %}
+            <span class="muted">—</span>
+            {% elif cell.pending %}
+            <span class="badge badge-neutral">pending release</span>
+            {% elif cell.detail_ok %}
+            <a href="{{ url_for('score_detail_page', test_id=col.test.test_id, student_username=student) }}">{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</a>
+            {% else %}
+            <span>{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</span>
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+
+</div>
+<script>
+document.getElementById("season_picker").addEventListener("change", (e) => {
+  location.href = `${APP_ROOT}/scores?season=${encodeURIComponent(e.target.value)}`;
+});
+</script>
+</body></html>

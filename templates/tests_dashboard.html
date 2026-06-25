@@ -1,0 +1,257 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Tests · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:1040px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:16px 18px;margin-bottom:18px}
+section h2{margin:0 0 4px 0;font-size:14px}
+section p.muted{margin:4px 0 14px 0;font-size:12px}
+.season-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px}
+.season-bar select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:13px}
+.new-window{border:1px solid var(--line);border-radius:6px;padding:14px 18px;margin-top:10px}
+.new-window details > summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+.new-window details[open] > summary{margin-bottom:10px}
+.events-check{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0}
+.events-check label{font-weight:400;display:flex;align-items:center;gap:4px;font-size:13px}
+.window-card{border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin-bottom:12px}
+.window-card .hdr{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.window-card .hdr h3{margin:0;font-size:14px}
+.window-card .hdr .range{font-size:12px;color:var(--muted)}
+.event-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--line-soft)}
+.event-row:first-of-type{border-top:none}
+.event-row .name{flex:0 0 140px;font-weight:600;font-size:13px}
+.event-row .vols{flex:1;font-size:12px;color:var(--muted)}
+.event-row .vols input{width:100%;padding:3px 6px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px}
+.msg{font-size:12px;margin-top:8px}
+.msg.ok{color:var(--ok)}
+.msg.err{color:var(--bad)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/" style="margin-right:10px">←</a>
+  <h1>Tests</h1>
+  <span id="msg" class="muted"></span>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+
+  <section>
+    <div class="season-bar">
+      <label for="season_picker">Season</label>
+      <select id="season_picker">
+        {% for s in all_seasons %}
+        <option value="{{ s.season_id }}" {{ "selected" if selected and s.season_id == selected.season_id }}>
+          {{ s.display_label }}{{ " (current)" if s.is_current }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if current_user.role == "coach" and selected %}
+    <div class="new-window">
+      <details>
+        <summary>+ New test window</summary>
+        <div class="form-grid">
+          <label for="nw_label">Label</label>
+          <input id="nw_label" type="text" placeholder="e.g. Wednesday July 20 (optional — derived from dates if blank)">
+          <label for="nw_opens">Opens</label>
+          <input id="nw_opens" type="datetime-local">
+          <label for="nw_closes">Closes</label>
+          <input id="nw_closes" type="datetime-local">
+          <label>Events tested</label>
+          <div class="events-check" id="nw_events">
+            {% for slug in selected.event_slugs %}
+            <label><input type="checkbox" value="{{ slug }}"> {{ slug }}</label>
+            {% endfor %}
+          </div>
+        </div>
+        {% if not selected.event_slugs %}
+        <p class="muted">This season has no events in its lineup — add some on <a href="{{ url_for('club_management_page') }}">Club Management</a> first.</p>
+        {% endif %}
+        <div class="actions" style="text-align:right">
+          <button id="nw_submit" class="primary">Create window</button>
+        </div>
+        <div id="nw_msg" class="msg" style="display:none"></div>
+      </details>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if not windows %}
+  <section><p class="muted">No test windows yet for this season.</p></section>
+  {% endif %}
+
+  {% for entry in windows %}
+  {% set w = entry.window %}
+  <div class="window-card" data-window-id="{{ w.window_id }}">
+    <div class="hdr">
+      <h3>{{ w.label or (w.opens_at[:10]) }}</h3>
+      <span class="range">{{ w.opens_at|replace("T", " ") }} → {{ w.closes_at|replace("T", " ") }}</span>
+    </div>
+    {% for et in entry.tests %}
+    <div class="event-row" data-test-id="{{ et.test.test_id }}">
+      <span class="name">{{ et.event_slug }}</span>
+      <span class="badge {{ 'badge-ok' if et.test.status in ('published','live','released') else 'badge-neutral' if et.test.status == 'building' else 'badge-warn' }}">{{ et.test.status }}</span>
+      {% if current_user.role == "coach" %}
+      <span class="vols">
+        <input type="text" data-event="{{ et.event_slug }}" data-window="{{ w.window_id }}"
+               value="{{ et.assigned|join(', ') }}" placeholder="volunteer usernames, comma-separated">
+      </span>
+      {% else %}
+      <span class="vols muted">{{ et.assigned|join(', ') or "(no volunteers assigned)" }}</span>
+      {% endif %}
+      <a href="{{ url_for('test_builder_page', test_id=et.test.test_id) }}">
+        <button class="ghost">{{ "Build" if et.test.status == "building" else "View" }}</button>
+      </a>
+      {% if et.test.status in ("live", "closed", "graded", "released") %}
+      <a href="{{ url_for('test_grading_page', test_id=et.test.test_id) }}">
+        <button class="ghost">Grade</button>
+      </a>
+      {% endif %}
+      {% if current_user.role == "coach" %}
+        {% if et.test.status == "published" %}
+        <button class="primary go-live-btn" data-test="{{ et.test.test_id }}">Go live</button>
+        {% endif %}
+        {% if et.test.status in ("published", "live") %}
+        <button class="unpublish-btn" data-test="{{ et.test.test_id }}">Un-publish</button>
+        {% endif %}
+        {% if et.test.status == "live" %}
+        <button class="ghost makeup-btn" data-test="{{ et.test.test_id }}">+ Makeup window</button>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <!-- Grant makeup window modal -->
+  <div id="makeup_modal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="hdr"><h3>Grant a personal makeup window</h3></div>
+      <div class="form-grid">
+        <label for="mk_username">Student username</label>
+        <input id="mk_username" type="text">
+        <label for="mk_opens">Opens</label>
+        <input id="mk_opens" type="datetime-local">
+        <label for="mk_closes">Closes</label>
+        <input id="mk_closes" type="datetime-local">
+        <label for="mk_reason">Reason</label>
+        <input id="mk_reason" type="text" placeholder="e.g. absent, tech issue">
+      </div>
+      <div id="mk_err" class="msg err" style="display:none"></div>
+      <div class="actions" style="display:flex;justify-content:flex-end;gap:8px">
+        <button id="mk_cancel">Cancel</button>
+        <button id="mk_save" class="primary">Grant</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script>
+document.getElementById("season_picker").addEventListener("change", (e) => {
+  location.href = `${APP_ROOT}/tests?season=${encodeURIComponent(e.target.value)}`;
+});
+
+// Default the new-window form to next Wednesday 1:30-2:30 PM from today —
+// purely a convenience prefill; the coach can edit either field freely,
+// including stretching closes onto a later day for a multi-day window.
+const opensEl = document.getElementById("nw_opens");
+if(opensEl){
+  function fmtLocal(d){
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  const now = new Date();
+  let diff = (3 - now.getDay() + 7) % 7;
+  if(diff === 0) diff = 7;   // "next Wednesday" — if today IS Wednesday, go to next week's
+  const nextWed = new Date(now);
+  nextWed.setDate(now.getDate() + diff);
+  nextWed.setHours(13, 30, 0, 0);
+  const closes = new Date(nextWed);
+  closes.setHours(14, 30, 0, 0);
+  opensEl.value = fmtLocal(nextWed);
+  document.getElementById("nw_closes").value = fmtLocal(closes);
+
+  document.getElementById("nw_submit").addEventListener("click", async () => {
+    const label = document.getElementById("nw_label").value.trim();
+    const opens_at = opensEl.value;
+    const closes_at = document.getElementById("nw_closes").value;
+    const event_slugs = [...document.querySelectorAll("#nw_events input:checked")].map(c => c.value);
+    const msgEl = document.getElementById("nw_msg");
+    const r = await fetch(`${APP_ROOT}/api/test-windows`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({season_id: {{ (selected.season_id if selected else None)|tojson }},
+                            label, opens_at, closes_at, event_slugs}),
+    });
+    const j = await r.json();
+    msgEl.style.display = "";
+    if(j.ok){ msgEl.className = "msg ok"; msgEl.textContent = "Created."; setTimeout(() => location.reload(), 800); }
+    else { msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed"; }
+  });
+}
+
+// Volunteer-assignment inline editor (coach only) — saves on blur.
+document.querySelectorAll(".vols input[data-event]").forEach(el => {
+  el.addEventListener("blur", async () => {
+    const usernames = el.value.split(",").map(s => s.trim()).filter(Boolean);
+    const r = await fetch(`${APP_ROOT}/api/test-windows/${el.dataset.window}/assignments`, {
+      method: "PATCH", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({event_slug: el.dataset.event, usernames}),
+    });
+    const j = await r.json();
+    if(j.ok) toast("Assignments saved.", "ok");
+    else toast("Failed: " + (j.error||""), "err");
+  });
+});
+
+document.querySelectorAll(".go-live-btn").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    if(!await confirmModal("Go live? Students will see this test as upcoming/current and it can no longer be edited (except via Un-publish).")) return;
+    const r = await fetch(`${APP_ROOT}/tests/${btn.dataset.test}/go-live`, {method: "POST"});
+    const j = await r.json();
+    if(j.ok) location.reload();
+    else toast("Failed: " + (j.error||""), "err");
+  });
+});
+
+document.querySelectorAll(".unpublish-btn").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    if(!await confirmModal("Un-publish this test? It reverts to 'building' for edits. Only allowed before the window opens and before any student has saved an answer.", {danger:true, confirmLabel:"Un-publish"})) return;
+    const r = await fetch(`${APP_ROOT}/tests/${btn.dataset.test}/unpublish`, {method: "POST"});
+    const j = await r.json();
+    if(j.ok) location.reload();
+    else toast("Failed: " + (j.error||""), "err");
+  });
+});
+
+// Grant makeup window modal
+const makeupModal = document.getElementById("makeup_modal");
+let makeupTestId = null;
+document.querySelectorAll(".makeup-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    makeupTestId = btn.dataset.test;
+    document.getElementById("mk_username").value = "";
+    document.getElementById("mk_reason").value = "";
+    makeupModal.classList.add("on");
+  });
+});
+document.getElementById("mk_cancel").addEventListener("click", () => makeupModal.classList.remove("on"));
+document.getElementById("mk_save").addEventListener("click", async () => {
+  const student_username = document.getElementById("mk_username").value.trim();
+  const opens_at = document.getElementById("mk_opens").value;
+  const closes_at = document.getElementById("mk_closes").value;
+  const reason = document.getElementById("mk_reason").value.trim();
+  const r = await fetch(`${APP_ROOT}/api/tests/${makeupTestId}/overrides`, {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({student_username, opens_at, closes_at, reason}),
+  });
+  const j = await r.json();
+  if(j.ok){ makeupModal.classList.remove("on"); toast("Makeup window granted.", "ok"); }
+  else {
+    const el = document.getElementById("mk_err");
+    el.style.display = ""; el.textContent = j.error || "Failed";
+  }
+});
+</script>
+</body></html>

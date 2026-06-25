@@ -1,0 +1,211 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Test · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{max-width:760px;margin:24px auto;padding:0 20px}
+.test-section{background:#fff;border:1px solid var(--line);border-radius:8px;padding:24px;margin-bottom:18px}
+.test-progress{display:flex;justify-content:space-between;align-items:center;
+  font-size:12px;color:var(--muted);margin-bottom:14px}
+.test-timer{font-variant-numeric:tabular-nums;font-weight:600}
+.test-timer.warn{color:var(--warn)}
+.test-timer.danger{color:var(--bad)}
+.test-q{font-size:16px;line-height:1.55;color:#222;margin-bottom:14px}
+.test-choices{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}
+.test-choice{padding:10px 14px;border:1px solid var(--line);border-radius:4px;cursor:pointer;
+  background:#fff;text-align:left;font-size:14px}
+.test-choice:hover{background:#f5f9fd;border-color:var(--accent)}
+.test-choice.picked{background:#e3f0fa;border-color:var(--accent)}
+.test-frq-input{width:100%;padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:4px;font:inherit;min-height:80px}
+.test-match-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:18px;align-items:start}
+.test-match-col-head{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:4px}
+.test-match-left,.test-match-right{padding:8px 10px;border:1px solid var(--line);border-radius:4px;
+  font-size:13px;margin-bottom:6px;display:flex;gap:8px;align-items:center}
+.test-match-left select{flex:0 0 auto;padding:3px 6px;border:1px solid var(--line);border-radius:4px;font:inherit}
+.test-context{background:#fffbeb;border:1px solid #e8c875;border-radius:6px;padding:10px 12px;
+  margin-bottom:12px;font-size:13px;line-height:1.5;color:#5a4a1a}
+.save-status{font-size:11px;color:var(--muted);text-align:right;margin-top:6px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <h1>{{ event_name }} — Test</h1>
+  <span id="test_timer" class="test-timer" style="margin-left:auto"></span>
+</header>
+<div class="wrap">
+  <div class="test-section" id="loading_msg">Loading…</div>
+  <div class="test-section" id="quiz_section" style="display:none">
+    <div class="test-progress">
+      <span><b id="q_idx">1</b> of <span id="q_total"></span></span>
+    </div>
+    <div id="q_context" style="display:none"></div>
+    <div class="test-q" id="q_text"></div>
+    <div class="test-choices" id="q_choices" style="display:none"></div>
+    <textarea id="q_frq" class="test-frq-input" style="display:none" placeholder="Type your answer…"></textarea>
+    <div id="q_matching" style="display:none"></div>
+    <div class="save-status" id="save_status"></div>
+    <div style="text-align:right;margin-top:14px">
+      <button id="btn_prev">← Previous</button>
+      <button id="btn_next">Next →</button>
+      <button id="btn_submit" class="primary">Submit test</button>
+    </div>
+  </div>
+</div>
+<script>
+const TEST_ID = {{ test_id|tojson }};
+let QUESTIONS = [], ANSWERS = {}, CONTEXTS = {}, CLOSES_AT = null;
+let IDX = 0;
+let SAVE_TIMER = null;
+let TIMER_ID = null;
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function loadTest(){
+  let r, j;
+  try {
+    r = await fetch(`${APP_ROOT}/api/my-tests/${TEST_ID}/take`);
+    j = await r.json();
+  } catch(err){ document.getElementById("loading_msg").textContent = "Failed to load: " + err.message; return; }
+  if(!r.ok){
+    document.getElementById("loading_msg").textContent = j.error || "This test isn't available right now.";
+    return;
+  }
+  QUESTIONS = j.questions || [];
+  ANSWERS = j.answers || {};
+  CONTEXTS = j.contexts || {};
+  CLOSES_AT = j.closes_at;
+  document.getElementById("loading_msg").style.display = "none";
+  document.getElementById("quiz_section").style.display = "";
+  document.getElementById("q_total").textContent = QUESTIONS.length;
+  startTimer();
+  presentQuestion();
+}
+
+function startTimer(){
+  clearInterval(TIMER_ID);
+  const el = document.getElementById("test_timer");
+  function render(){
+    const remain = (new Date(CLOSES_AT).getTime() - Date.now()) / 1000;
+    if(remain <= 0){
+      el.textContent = "Time's up";
+      el.className = "test-timer danger";
+      clearInterval(TIMER_ID);
+      submitTest(true);
+      return;
+    }
+    const mins = Math.floor(remain / 60), secs = Math.floor(remain % 60);
+    el.textContent = `${mins}:${String(secs).padStart(2,"0")} left`;
+    el.className = "test-timer" + (remain <= 60 ? " danger" : remain <= 300 ? " warn" : "");
+  }
+  render();
+  TIMER_ID = setInterval(render, 1000);
+}
+
+function renderContext(q){
+  const el = document.getElementById("q_context");
+  const ctxKey = q.context_id ? Object.keys(CONTEXTS).find(k => k.endsWith("::" + q.context_id)) : null;
+  const ctx = ctxKey ? CONTEXTS[ctxKey] : null;
+  if(!ctx){ el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "";
+  el.className = "test-context";
+  el.innerHTML = `<div>${esc(ctx.text || "")}</div>`;
+}
+
+function presentQuestion(){
+  const q = QUESTIONS[IDX];
+  document.getElementById("q_idx").textContent = IDX + 1;
+  document.getElementById("q_text").textContent = q.text || "";
+  renderContext(q);
+  document.getElementById("btn_prev").disabled = (IDX === 0);
+  document.getElementById("btn_next").style.display = (IDX === QUESTIONS.length - 1) ? "none" : "";
+
+  const saved = ANSWERS[String(q.number)];
+  const choicesEl = document.getElementById("q_choices");
+  const frqEl = document.getElementById("q_frq");
+  const matchEl = document.getElementById("q_matching");
+  choicesEl.style.display = "none"; frqEl.style.display = "none"; matchEl.style.display = "none";
+
+  if(q.qtype === "mcq"){
+    choicesEl.style.display = "";
+    choicesEl.innerHTML = (q.choices || []).map(c =>
+      `<button type="button" class="test-choice ${saved && saved.picked === c.letter ? 'picked' : ''}" data-letter="${esc(c.letter)}">
+         <b>${esc(c.letter)}.</b> ${esc(c.text)}
+       </button>`).join("");
+    choicesEl.querySelectorAll(".test-choice").forEach(b => {
+      b.addEventListener("click", () => {
+        choicesEl.querySelectorAll(".test-choice").forEach(x => x.classList.remove("picked"));
+        b.classList.add("picked");
+        saveAnswer(q.number, {qtype: "mcq", picked: b.dataset.letter});
+      });
+    });
+  } else if(q.qtype === "matching"){
+    matchEl.style.display = "";
+    const m = q.matching || {left: [], right: []};
+    const picks = (saved && saved.picks) || {};
+    const cellHtml = (item) => item.image ? `<img src="${esc(item.image)}" alt="figure" style="max-width:80px">` : `<span>${esc(item.text)}</span>`;
+    const rightHtml = (m.right || []).map(r => `<div class="test-match-right"><b>${esc(r.label)}.</b> ${cellHtml(r)}</div>`).join("");
+    const leftHtml = (m.left || []).map(l => `
+      <div class="test-match-left" data-label="${esc(l.label)}">
+        <b>${esc(l.label)}.</b> ${cellHtml(l)}
+        <select class="match-pick" data-leftlabel="${esc(l.label)}">
+          <option value="">—</option>
+          ${(m.right||[]).map(r => `<option value="${esc(r.label)}" ${picks[l.label]===r.label?"selected":""}>${esc(r.label)}</option>`).join("")}
+        </select>
+      </div>`).join("");
+    matchEl.innerHTML = `<div class="test-match-grid"><div><div class="test-match-col-head">Column A</div>${leftHtml}</div>
+      <div><div class="test-match-col-head">Column B</div>${rightHtml}</div></div>`;
+    matchEl.querySelectorAll(".match-pick").forEach(sel => {
+      sel.addEventListener("change", () => {
+        const allPicks = {};
+        matchEl.querySelectorAll(".match-pick").forEach(s => { if(s.value) allPicks[s.dataset.leftlabel] = s.value; });
+        saveAnswer(q.number, {qtype: "matching", picks: allPicks});
+      });
+    });
+  } else {
+    frqEl.style.display = "";
+    frqEl.value = (saved && saved.text) || "";
+    frqEl.oninput = () => {
+      clearTimeout(SAVE_TIMER);
+      SAVE_TIMER = setTimeout(() => saveAnswer(q.number, {qtype: "frq", text: frqEl.value}), 600);
+    };
+  }
+}
+
+async function saveAnswer(number, answer){
+  document.getElementById("save_status").textContent = "Saving…";
+  ANSWERS[String(number)] = answer;
+  try {
+    const r = await fetch(`${APP_ROOT}/api/my-tests/${TEST_ID}/answer`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({number: String(number), answer}),
+    });
+    const j = await r.json();
+    document.getElementById("save_status").textContent = j.ok ? "Saved." : "Save failed: " + (j.error||"");
+  } catch(err){
+    document.getElementById("save_status").textContent = "Save error: " + err.message;
+  }
+}
+
+document.getElementById("btn_prev").addEventListener("click", () => { if(IDX > 0){ IDX--; presentQuestion(); } });
+document.getElementById("btn_next").addEventListener("click", () => { if(IDX < QUESTIONS.length - 1){ IDX++; presentQuestion(); } });
+
+async function submitTest(auto){
+  if(!auto){
+    if(!await confirmModal("Submit your test? You won't be able to change your answers after this.",
+                            {confirmLabel: "Submit"})) return;
+  }
+  try {
+    const r = await fetch(`${APP_ROOT}/api/my-tests/${TEST_ID}/submit`, {method: "POST"});
+    const j = await r.json();
+    if(j.ok){
+      location.href = `${APP_ROOT}/my-tests`;
+    } else {
+      toast("Submit failed: " + (j.error||""), "err");
+    }
+  } catch(err){ toast("Submit error: " + err.message, "err"); }
+}
+document.getElementById("btn_submit").addEventListener("click", () => submitTest(false));
+
+loadTest();
+</script>
+</body></html>

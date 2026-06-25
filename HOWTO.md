@@ -4,10 +4,11 @@ A task-oriented guide: "I want to do X" rather than "how does X work." For *why*
 
 ## Roles at a glance
 
-- **Coach** — full admin. Sees every event, can manage users and shared textbooks, and can do everything a volunteer can do on every event (not just assigned ones).
-- **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL.
+- **Coach** — full admin. Sees every event, can manage users and shared textbooks, runs Club Management and the Tests dashboard, and can do everything a volunteer can do on every event (not just assigned ones).
+- **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL. May also be assigned to build/grade a season test for an event — a separate grant, unrelated to event access (see "For Volunteers" below).
+- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-tests` (take a live test, see released results for past ones) and `/scores` (see everyone's named scores). See "For Students" below.
 
-There's no read-only "student" role yet (see README's "Authentication & roles"). Log in at `/login` with the username/password a coach gave you.
+Log in at `/login` with the username/password a coach gave you.
 
 ## Account settings (any role)
 
@@ -164,6 +165,40 @@ Click **Quiz** from an event's page, set your filters (topic/count/type/etc. —
 
 A matching question shows a dropdown next to each left-column item listing every right-column label, with the right column displayed alongside so you can see every option before picking. It's graded with **partial credit** — getting 3 of 5 pairs right adds 0.6 to your running score, not all-or-nothing — and the feedback/mistake-review screens show exactly which pairs you got right or wrong.
 
+### Set up a new season
+
+A season groups events, students, and tests under one label (e.g. "2027"). Open **Club Management** from the header.
+1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**.
+2. Click **Mark as current** on it — exactly one season is ever current; this is what "My Tests"/Tests dashboard/Scores default to.
+3. Add students: either one-by-one via **⚙ Settings → Manage Users** (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via ⚙ Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
+4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Tests" and the Scores page for each student — it has no effect on who can edit that event's question bank.
+5. Running a new season off an old one's roster? Pick the prior season from **Copy roster from…** and click Copy — only events present in both seasons' lineups copy over, and any since-disabled student is silently skipped.
+
+Note: a season's event lineup only scopes the roster grid and which events a test window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.
+
+### Build and publish a test
+
+On the **Tests** dashboard, pick the season, then:
+1. Expand **+ New test window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
+2. For each event row, type in the volunteer username(s) who'll build it (comma-separated) — this is a separate grant from their event bank access; a volunteer can build a test for an event they have no edit access to.
+3. That volunteer (or you) clicks **Build** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching default to 1 pt). Autosaves as you go.
+4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already built.
+5. Back on the Tests dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "building" — only works before the window opens and before any student has saved an answer.
+
+### Run a test window and grade results
+
+Once a test is live and its window opens, rostered students see it as "Current" on **My Tests** and can take it (one question at a time, no correctness feedback, countdown to close). After the window closes (or sooner):
+1. Click **Grade** on the test's row (Tests dashboard) — lists every free-response answer needing a score, with the snapshotted reference answer alongside each student's submission. Enter points (capped at that question's max) per answer; autosaves on blur.
+2. The row's "N/M FRQs graded" badge tracks progress; **Release grades** stays disabled until every FRQ for every submitted response is graded.
+3. Click **Release grades** — this is the one truly coach-only step. It flips every student's response to released in one batch; only after this do students see their results on My Tests, and the test's column on **Scores** shows real numbers instead of "pending release."
+
+### Grant a student a makeup window
+
+If a student missed the class-wide window (absence, tech issue, etc.), you can give them an independent open/close window instead of touching the test for everyone else:
+1. On the Tests dashboard, find the live test's row and click **+ Makeup window**.
+2. Enter the student's username, an opens/closes datetime, and a short reason. Click **Grant**.
+3. That student can now access the test during their personal window, completely independent of whether the class-wide window is open, closed, or hasn't started yet — it doesn't extend the class window, it's a separate clock that wins outright for that one student. Use the same modal with an earlier/blank window to revoke it later if needed.
+
 ### What only a coach can do, at a glance
 
 | Action | Coach | Volunteer |
@@ -201,6 +236,10 @@ Identical to the coach's Generate page: wiki scrape, source upload, LLM generati
 
 Same as the coach workflow — **Quiz** from any of your assigned events.
 
+### Building or grading a season test you've been assigned to
+
+A coach can assign you to build or grade a test for *any* event from the **Tests** dashboard — this is independent of your assigned-events list above, so you may be asked to build a test for an event you otherwise can't edit. Click **Tests** in the header to see what you've been assigned, then **Build** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Build and publish a test" / "Run a test window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
+
 ### What you can't do, and why
 
 | Action | Why not |
@@ -209,6 +248,24 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 | Manage users (Settings → Manage Users) | Gated by `@coach_required` |
 | Create/edit/archive events | Gated by `@coach_required` |
 | Upload a new shared textbook | Write routes gated by `@coach_required`; reading/using existing ones is open to everyone |
+
+## For Students
+
+### Logging in for the first time
+
+A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login`, then go to **⚙ Settings → My Account** to change your password whenever you like.
+
+### Taking a test
+
+Click **My Tests** in the header. Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.
+
+If you missed the window, ask a coach for a personal makeup window — once granted, the test becomes accessible to you on your own separate schedule, regardless of whether the class window is open.
+
+### Viewing results and scores
+
+Once a coach releases grades for a test, **My Tests** shows it under Past with your full results — your answers, the correct answers, and your score per question (including partial credit on matching questions). Until release, it just shows as submitted/pending, even if a volunteer has already graded the free-response parts behind the scenes.
+
+**Scores** (header link, visible to every role) shows every rostered student's named score on every graded test for the season — not just your own. You can only drill into the question-by-question detail of your *own* responses; other students' rows show the score only.
 
 ## Quick task index
 
@@ -235,3 +292,16 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 | Take a quiz | Coach, Volunteer (assigned events) | Quiz |
 | Archive/unarchive an event | Coach only | Landing page |
 | Restore a wiped reprocess | Coach, Volunteer (assigned events) | Review page → 🕘 Snapshot history |
+| Create/mark current a season | Coach | Club Management |
+| Bulk-create students + roster via CSV | Coach | Club Management → + Bulk-add students from CSV |
+| Roster a student onto an event | Coach | Club Management → roster grid |
+| Create a test window, assign volunteers | Coach | Tests dashboard |
+| Build a test (pick questions, publish) | Coach, assigned Volunteer | Tests dashboard → Build |
+| Go live / un-publish a test | Coach | Tests dashboard |
+| Grant a student a personal makeup window | Coach | Tests dashboard → + Makeup window |
+| Grade free-response answers | Coach, assigned Volunteer | Tests dashboard → Grade |
+| Release grades | Coach only | Tests dashboard → Release grades |
+| Take a live test | Student | My Tests |
+| View your own released results | Student | My Tests |
+| View season-wide named scores | Coach, Volunteer, Student | Scores |
+| View another student's response detail | Coach; Volunteer who graded it (or assigned, all-MCQ test) | Scores → click a score |

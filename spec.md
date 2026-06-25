@@ -6,7 +6,7 @@ Turn a folder of Science Olympiad test PDFs (test + answer key) into a single br
 
 Multi-event by design. Events shipped today: `circuit_lab` (Circuit Lab) and `thermodynamics` (Thermodynamics). Adding another is one entry in `events.py` — see §12.
 
-**Contents**: [1. Goal](#1-goal) · [2. Architecture](#2-architecture) · [3. Pipeline stages](#3-pipeline-stages-per-pdf) · [4. State file](#4-state-file-qbank_statejson) · [5. Annotation replay](#5-annotation-replay-apply_annotations) · [6. Topic taxonomy](#6-topic-taxonomy) · [6b. Rotating foci](#6b-rotating-foci) · [7. MC splitting](#7-multiple-choice-splitting-split_choices) · [8. Markdown output](#8-markdown-output) · [9. Flask review UI](#9-flask-review-ui) · [10. Vision prompts](#10-vision-prompts) · [11. Costs](#11-costs) · [12. Adding another event](#12-adding-another-event) · [13. Known limitations](#13-known-limitations) · [14. Security hardening](#14-security-hardening) · [15. Backup mechanism](#15-backup-mechanism) · [16. Server-admin app](#16-server-admin-app)
+**Contents**: [1. Goal](#1-goal) · [2. Architecture](#2-architecture) · [3. Pipeline stages](#3-pipeline-stages-per-pdf) · [4. State file](#4-state-file-qbank_statejson) · [5. Annotation replay](#5-annotation-replay-apply_annotations) · [6. Topic taxonomy](#6-topic-taxonomy) · [6b. Rotating foci](#6b-rotating-foci) · [7. MC splitting](#7-multiple-choice-splitting-split_choices) · [8. Markdown output](#8-markdown-output) · [9. Flask review UI](#9-flask-review-ui) · [10. Vision prompts](#10-vision-prompts) · [11. Costs](#11-costs) · [12. Adding another event](#12-adding-another-event) · [13. Known limitations](#13-known-limitations) · [14. Security hardening](#14-security-hardening) · [15. Backup mechanism](#15-backup-mechanism) · [16. Server-admin app](#16-server-admin-app) · [17. Season-long testing workflow](#17-season-long-testing-workflow)
 
 ## 2. Architecture
 
@@ -296,6 +296,8 @@ Matching questions (`qtype: "matching"`) render their own block in place of the 
 ## 9. Flask review UI
 
 State store and pipeline are the same. The UI is just a graphical front-end that produces annotations and generated questions.
+
+**This whole section describes the coach/volunteer question-bank surface, which a student role (§17) is entirely excluded from** — a student's routes (`/my-tests`, `/scores`) live under a deliberately separate prefix that never calls `_select_event()`, the per-event access gate every route below goes through.
 
 ### Pages
 
@@ -749,6 +751,8 @@ The CLI tools (`download_event.py`, `build_question_bank.py`) take `--event <slu
 
 ## 14. Security hardening
 
+**Student access (§17)** follows the same spirit as everything below, with two enforcement points specific to that role: (1) a blanket one-line block at the top of `_select_event()` (`if user.role == "student": abort(403)`) removes question-bank access entirely rather than scoping it, since every existing per-event route funnels through that one function; (2) every test-window time check (`testing.is_window_open`) is re-derived from wall-clock time on every request that serves question content or accepts an answer — never cached, never trusted from an earlier check — so a request arriving right at the open/close boundary, or a client with a skewed clock, can't see content early or submit late without the server independently agreeing the window was actually open at that moment.
+
 ### No-permanent-deletion data model
 
 Every destructive action the app exposes — including to coaches — is now a reversible flag flip or a pre-action snapshot, not a real delete. The only true deletion left is an operator-run CLI, never a web route.
@@ -851,3 +855,74 @@ README.md's "Backups" section covers *what* runs (`deploy/backup-extracted-data.
 **Log/console visibility is deliberately unrestricted beyond normal event access** — anyone who can reach `/event/<slug>/...` at all sees that job's full console output and error detail, same as `_select_event`'s existing gate. No coach-only redaction: a volunteer already trusted to edit an event's PDFs/questions isn't getting new exposure by also seeing that event's extraction log.
 
 **Scope — Tier 1 vs Tier 2**: only genuinely long, multi-call operations became jobs (reprocess, bulk reprocess, upload-extract, scio.ly download/scrape, generate, wiki scrape). Short single-LLM-call actions (validate one question, one region/math capture, one diagram-chat turn, single-page OCR, image upload, generate-similar, textbook chapter detection) stay synchronous fetches — converting those to persisted jobs would add plumbing disproportionate to their ~2-15s runtime, since they already complete within one request lifecycle.
+
+## 17. Season-long testing workflow
+
+A third role, **student**, sits alongside coach/volunteer (`auth.ROLES`). A student has **zero question-bank access of any kind** — enforced by one line at the top of `_select_event()` (`review_app.py`) that `abort(403)`s immediately if `g.user.role == "student"`, before the existing coach/volunteer access logic runs. Since every `/event/<slug>/...` route calls `_select_event()` first, this single guard blocks `review.html`/`browse.html`/`quiz.html`/`sources.html`/`event_index.html` for students everywhere at once. Rationale: practice-quiz exposure could leak content that ends up on a future official test, defeating the point of a real one. A student's entire surface lives under a separate `/my-tests`/`/scores` route prefix that never calls `_select_event()`.
+
+Two new modules, both following `auth.py`'s exact persistence idiom (frozen dataclasses, flat JSON at `DATA_ROOT`, a lock shared by read *and* write so `os.replace()` never races a concurrent reader on Windows, atomic tempfile+`os.replace` writes):
+
+- **`seasons.py`** — `Season` (a year, e.g. `"2027"`, with its own declared event lineup `event_slugs`, and an `is_current` flag — exactly one season is current at a time, enforced in `set_current_season()`) plus a per-season student roster (`season_rosters.json`, keyed `{season_id: {event_slug: [usernames]}}`).
+- **`testing.py`** — `TestWindow` (a scheduled open/close span, possibly spanning several days, covering one or more events for one season), `Test` (one event's test within one window), and `Response` (one student's answers/grading for one test). Three separate files (`test_windows.json`, `tests.json`, `test_responses.json`) rather than one combined file, so a burst of concurrent student autosave traffic against `test_responses.json` (by far the highest-write-volume of the three) never contends with a coach loading the dashboard.
+
+**A season's event lineup is a roster/scheduling scoping concept only** — it controls which event columns appear on the Club Management roster grid and which events a `TestWindow` can be created against. It has **zero effect on question-bank curation access**: a coach or a volunteer with existing `auth.User.events` access can still browse/edit/curate any event's bank regardless of whether that event is in the current season's lineup. `User.events` (a volunteer's bank-edit grant) and a season's roster are deliberately separate, unrelated mechanisms that happen to both be keyed on event slugs.
+
+### Lifecycle
+
+1. **Coach creates a season**, picking its event lineup (`POST /api/seasons`), marks it current (`set_current_season`), and rosters students per event on the **Club Management** page (`/club`) — either by hand (a checkbox grid, full-replace `PUT /api/seasons/<id>/roster/<event_slug>`) or by uploading a CSV (`POST /api/seasons/<id>/students/bulk-csv`: columns `display_name, username, password, events`; a blank `username` is generated by slugifying the display name with a numeric-suffix-on-collision, per `auth.generate_unique_username`; a blank `password` is generated as `{SCHOOL_NAME env var}{season_id}{username}` via `auth.generate_password` — long enough to clear the 8-char minimum even with `SCHOOL_NAME` unset; the upload is additive on the roster side, never wiping entries a CSV didn't mention). `seasons.copy_roster_forward(from, to)` copies a prior season's roster as a starting point, restricted to events present in *both* seasons' lineups, silently dropping any since-disabled/deleted account.
+2. **Coach creates a `TestWindow`** on the **Tests dashboard** (`/tests`) — one shared `opens_at`/`closes_at` span (absolute ISO8601 datetimes; may run several days, not necessarily one) covering a subset of the season's event lineup. The creation form defaults to next Wednesday 1:30–2:30 PM as an editable starting suggestion only — the data model itself has no same-day assumption.
+3. **Coach assigns volunteers per event within the window** (`PATCH /api/test-windows/<id>/assignments`). One `Test` is lazily created per `(window, event)` pair the moment that event is added to the window (`testing._ensure_test`), `status="building"`.
+4. **Volunteers (or a coach) build the test** on `/tests/<test_id>/build` — a question-picker modeled on `browse.html`'s filter bar, but with a **persistent kept-set** (`Test.kept: [{bucket, number, max_points}]`) that survives re-filtering, unlike `browse.html`'s transient per-render checkbox state. A "🎲 select N at random" control draws only from `_validation_status === "correct"` questions not already kept, additively (repeatable). FRQ rows get an editable max-points field; MCQ/matching default to 1 point (matching's existing partial-credit logic, §4/quiz.html, scales within that 1). Multiple assigned volunteers share one kept-set with silent last-write-wins autosave (same idiom as `browse.html`'s existing per-question autosave) — no real-time collaboration. `_select_test(test_id)` (`review_app.py`) gates every test-builder route: a coach always, a volunteer only if `g.user.username` appears in that test's window's `assignments[event_slug]` — **deliberately independent of `_select_event()`**, since a volunteer assigned to build a test may have nothing in `User.events` at all (test-building assignment and bank-edit access are different grants; conflating them would over- or under-grant).
+5. **Publish** (`POST /tests/<id>/publish`) snapshots every kept question's full content into `Test.snapshot` — `{bucket, number, qtype, text, max_points, images, image_descriptions, context_id, source_question_ref}` plus `choices`+`correct_answer` (mcq/frq) or `matching` (its `left`/`right`/`pairs`, captured as-is). Any shared context block a snapshotted question references is frozen too, into `Test.snapshot_contexts` (keyed `"bucket::id"`, same namespacing `api_all_questions`/`build_markdown` already use). **The snapshot is never re-read from the live bank after this point** — a later edit, reprocess, or deletion in the bank cannot silently change a test that's already been built, administered, or graded. A kept question deleted from the bank since being kept is skipped (reported, not a hard failure).
+6. **Coach goes live** (`POST /tests/<id>/go-live`, requires `status=="published"`) — the test becomes visible on rostered students' `/my-tests` as upcoming/current, and the builder's kept-set PATCH route 403s any further edit (even for a coach). **Un-publish** (`POST /tests/<id>/unpublish`) is the exception path back to `"building"`, blocked once *either* the class-wide window has opened *or* any student response has a saved answer — a personal-makeup student (see below) could already be mid-test even before the class window opens, so both conditions are checked independently.
+7. **Students take the test** on `/my-tests/<id>/take` — a dedicated template (`test_take.html`), **not** `quiz.html`: one question at a time with Prev/Next, **zero correctness feedback during the test** (the defining difference from `quiz.html`'s immediate-reveal design), autosave per answer, and a single "Submit test" reachable from any question. Question **order is randomized per student and stored** (`Response.question_order`, generated once on first load, never recomputed from a seed) — content is identical for everyone, only display order differs, and it survives reloads. `GET /api/my-tests/<id>/take` strips `correct_answer`/`matching.pairs`/`source_question_ref` from every question before it ever reaches the student.
+8. **Window enforcement** (`testing.effective_window`/`is_window_open`/`is_window_past`) is recomputed from wall-clock time on **every** request that serves question content or accepts an answer/submission — never cached, never checked once at page load. A personal **makeup-window override** (`Test.overrides: {student_username: {opens_at, closes_at, granted_by, granted_at, reason}}`, granted via `POST /api/tests/<id>/overrides`) wins outright over the class-wide window for that one student — an independent clock, not an extension of it. **Auto-submit at close**: the take-page proactively submits when its client-side countdown hits zero; the server-side submit route independently re-checks the window and, if it's already past, still accepts and persists whatever was autosaved (marking `status="auto_submitted_late"`) rather than discarding real work — only a brand-new attempt with zero prior activity past a fully-elapsed window is rejected outright. A student who has already submitted is redirected away from the take-page even if the class window is technically still open (`Response.status != "in_progress"`), and that test moves to their "Past" bucket on `/my-tests` immediately rather than waiting for the window to close.
+9. **Grading** (`/tests/<id>/grade`, same `_select_test()` gate as the builder): MCQ/matching auto-grade at submit time, server-side (`testing._grade_mcq`/`_grade_matching` — a direct Python port of `quiz.html`'s client-side `submitMatchingAnswer` partial-credit logic, since a real test cannot trust a client-computed score). FRQ items need a manual numeric score out of the question's `max_points` (`PATCH /api/tests/<id>/grading/<student>/<number>`). `testing.test_grading_complete(test_id, snapshot)` is recomputed on read (never stored, to avoid a second source of truth) — true once every submitted response has a non-null manual grade for every FRQ in the snapshot (trivially true for an all-MCQ/matching test, with nothing to grade).
+10. **Release** (`POST /tests/<id>/release-grades`, **coach-only** — a deliberate final checkpoint distinct from the grading work itself, which both coaches and assigned volunteers can do) batch-flips `released=True`/`released_at`/`released_by` on every submitted `Response` for that test simultaneously. Stored **per-response**, not as a single `Test`-level flag, since "can this student see their response" is fundamentally a per-response fact even though a whole test's worth of responses are released at once. A released, graded test's results (`/my-tests/<id>/results`) show the student their own answers, the snapshotted questions/correct-answers, and per-question score — gated by `resp.released`, re-checked server-side regardless of whether a link was shown.
+11. **Scores page** (`/scores`, every role including students) — rows are every student rostered on any of the season's events; columns are every test with `test_grading_complete()==True` (shown as soon as grading is done, rendered `"pending release"` until release flips the cell contents — the column itself never disappears/reappears). Per the product decision behind this feature, **every role sees every student's named score** (full transparency, like a posted scoreboard) — but response-level drill-down (`/scores/<test_id>/<student>`, reusing `test_results.html` with a non-self viewer) is restricted by `can_view_response_detail()`: a coach always; a volunteer only for a test **they personally graded** (stamped via `graded_by` on at least one manual grade), with one fallback — a test with zero FRQ items (nothing to manually grade) still grants drill-down to its assigned volunteer(s), since the literal "personally graded" rule would otherwise lock them out of their own test's results for no reason; a student only their own.
+
+### Data shapes
+
+```jsonc
+// seasons.json
+{"2027": {"label": "2027", "event_slugs": ["anatomy","ecology"], "is_current": true,
+          "archived": false, "created_at": "...", "created_by": "coach1"}}
+
+// season_rosters.json
+{"2027": {"anatomy": ["asmith","bjones"], "ecology": ["asmith"]}}
+
+// test_windows.json
+{"<window_id>": {"season_id": "2027", "label": "Wed July 20", "opens_at": "2027-07-20T13:30:00",
+                  "closes_at": "2027-07-20T14:30:00", "event_slugs": ["anatomy"],
+                  "assignments": {"anatomy": ["vol1"]}, "archived": false, ...}}
+
+// tests.json — Test.snapshot entry shapes (mcq/frq share one shape, matching its own)
+{"<test_id>": {"window_id": "...", "event_slug": "anatomy", "status": "live",
+  "kept": [{"bucket":"...", "number":"7", "max_points":1}],
+  "snapshot": [
+    {"bucket":"...", "number":"7", "qtype":"mcq", "text":"...",
+     "choices":[{"letter":"A","text":"..."}], "correct_answer":"B", "max_points":1,
+     "images":[], "image_descriptions":{}, "context_id":null,
+     "source_question_ref":{"bucket":"...","number":"7"}},
+    {"bucket":"...", "number":"15", "qtype":"matching", "text":"...",
+     "matching":{"left":[...],"right":[...],"pairs":{"1":"A"}}, "max_points":1, ...}
+  ],
+  "snapshot_contexts": {"bucket::ctx_1": {...}},
+  "overrides": {"asmith": {"opens_at":"...","closes_at":"...","granted_by":"coach1","granted_at":"...","reason":"absent"}},
+  ...}}
+
+// test_responses.json — keyed {test_id: {username: Response}}
+{"<test_id>": {"asmith": {
+  "question_order": [2,0,1],
+  "answers": {"7": {"qtype":"mcq","picked":"B"}, "12": {"qtype":"frq","text":"..."}},
+  "auto_grade": {"7": {"correct":true,"points_earned":1,"points_possible":1}},
+  "manual_grade": {"12": {"points_earned":2.5,"points_possible":3,"graded_by":"vol1","graded_at":"...","comment":""}},
+  "status": "submitted", "released": true, "released_at": "...", "released_by": "coach1", ...
+}}}
+```
+
+### Security notes (see also §14)
+
+- Question content/correctness is never served to a student outside an open window — enforced server-side on every relevant request, not just hidden client-side.
+- A real test's grading is computed server-side from the frozen snapshot; the client is never trusted to self-report a score (the matching partial-credit port exists specifically because `quiz.html`'s version is client-only and fine for a practice quiz, but not for a real one).
+- CSRF protection (`_check_csrf`, §14) applies automatically to every new mutating route here — no special wiring needed, same double-submit-cookie mechanism as the rest of the app.

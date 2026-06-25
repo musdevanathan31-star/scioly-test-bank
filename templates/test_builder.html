@@ -1,0 +1,284 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Build test · {{ event_name }} · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{display:flex;gap:16px;padding:18px;max-width:1300px;margin:0 auto}
+.main{flex:1;min-width:0}
+.sidebar{flex:0 0 320px}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:14px}
+.filter-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.filter-bar select,.filter-bar input[type=text]{padding:5px 8px;border:1px solid var(--line);
+  border-radius:4px;font:inherit;font-size:12px}
+.random-bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:8px;
+  background:#f5f9fd;border-radius:4px}
+.random-bar input[type=number]{width:60px;padding:4px 6px;border:1px solid var(--line);border-radius:4px}
+.qcard{border:1px solid var(--line);border-radius:4px;padding:10px 12px;margin-bottom:8px}
+.qcard .top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.qcard .num{font-weight:600;font-size:12px;color:var(--muted)}
+.qcard .text{font-size:13px;margin:4px 0}
+.qcard .badge{font-size:10px}
+.kept-list{max-height:70vh;overflow-y:auto}
+.kept-item{border:1px solid var(--line);border-radius:4px;padding:8px 10px;margin-bottom:6px;font-size:12px}
+.kept-item .top{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.kept-item .pts{width:50px;padding:2px 4px;border:1px solid var(--line);border-radius:4px}
+.kept-item .x{color:var(--bad);cursor:pointer}
+.save-status{font-size:11px;color:var(--muted)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
+  <h1>Build test <span class="muted" style="font-weight:400">— {{ event_name }}{{ " · " + window_label if window_label }}</span></h1>
+  <span id="save_status" class="save-status" style="margin-left:auto"></span>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+  <div class="main">
+    <section>
+      <div class="filter-bar">
+        <input type="text" id="f_search" placeholder="Search text…">
+        <select id="f_topic"><option value="">(any topic)</option></select>
+        <select id="f_type">
+          <option value="">(any type)</option>
+          <option value="mcq">MCQ</option>
+          <option value="frq">FRQ</option>
+          <option value="matching">Matching</option>
+        </select>
+        <label class="muted" style="font-size:12px"><input type="checkbox" id="f_correct_only" checked> validated correct only</label>
+      </div>
+      <div class="random-bar">
+        <span>🎲 Add</span>
+        <input type="number" id="random_n" value="5" min="1" max="100">
+        <span>random validated-correct questions not already kept</span>
+        <button id="random_btn">Add</button>
+      </div>
+      <div id="pool_list"></div>
+    </section>
+  </div>
+  <div class="sidebar">
+    <section>
+      <h3 style="margin:0 0 8px 0;font-size:13px">Kept (<span id="kept_count">0</span>)</h3>
+      {% if status != "building" %}
+      <p class="muted" style="font-size:12px">This test is <b>{{ status }}</b> — no longer editable here.</p>
+      {% endif %}
+      <div class="kept-list" id="kept_list"></div>
+      {% if status == "building" %}
+      <div class="actions" style="margin-top:10px">
+        <button id="publish_btn" class="primary" style="width:100%">Publish</button>
+      </div>
+      <div id="publish_msg" class="msg" style="display:none;font-size:12px;margin-top:6px"></div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+<script>
+const TEST_ID = {{ test_id|tojson }};
+const EVENT_SLUG = {{ event_slug|tojson }};
+const TEST_STATUS = {{ status|tojson }};
+const API = `${APP_ROOT}/event/${EVENT_SLUG}/api`;
+
+let POOL = [];
+let KEPT = [];   // [{bucket, number, max_points}] — persistent, never rebuilt by re-filtering
+let SAVE_TIMER = null;
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function keptKey(item){ return `${item.bucket}::${item.number}`; }
+
+async function loadPool(){
+  const r = await fetch(`${API}/all-questions`);
+  const j = await r.json();
+  POOL = j.questions || [];
+  const topics = [...new Set(POOL.map(q => q.topic).filter(Boolean))].sort();
+  const sel = document.getElementById("f_topic");
+  topics.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = t; sel.appendChild(o); });
+}
+
+async function loadTest(){
+  const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}`);
+  const j = await r.json();
+  KEPT = j.kept || [];
+  renderKept();
+}
+
+function findPoolQ(bucket, number){
+  return POOL.find(q => q._bucket === bucket && String(q.number) === String(number));
+}
+
+function questionTypeOf(q){
+  if(q._is_matching) return "matching";
+  if(q._is_mcq) return "mcq";
+  return "frq";
+}
+
+function filteredPool(){
+  const search = document.getElementById("f_search").value.trim().toLowerCase();
+  const topic = document.getElementById("f_topic").value;
+  const type = document.getElementById("f_type").value;
+  const correctOnly = document.getElementById("f_correct_only").checked;
+  const keptKeys = new Set(KEPT.map(keptKey));
+  return POOL.filter(q => {
+    if(keptKeys.has(`${q._bucket}::${q.number}`)) return false;   // already kept — don't show twice
+    if(correctOnly && q._validation_status !== "correct") return false;
+    if(topic && q.topic !== topic) return false;
+    if(type && questionTypeOf(q) !== type) return false;
+    if(search && !(q.text||"").toLowerCase().includes(search)) return false;
+    return true;
+  });
+}
+
+function renderPool(){
+  const list = filteredPool().slice(0, 100);   // cap rendering — search/filter to narrow further
+  const root = document.getElementById("pool_list");
+  if(!list.length){ root.innerHTML = '<p class="muted">No matching questions.</p>'; return; }
+  root.innerHTML = list.map(q => `
+    <div class="qcard" data-bucket="${esc(q._bucket)}" data-number="${esc(q.number)}">
+      <div class="top">
+        <span class="num">#${esc(q.number)} · ${esc(q.topic||"")}</span>
+        <span>
+          <span class="badge ${q._validation_status === 'correct' ? 'badge-ok' : 'badge-neutral'}">${esc(q._validation_status||'unvalidated')}</span>
+          <button class="ghost btn-tiny" data-act="add">+ Keep</button>
+        </span>
+      </div>
+      <div class="text">${esc((q.text||"").slice(0,180))}</div>
+    </div>`).join("");
+  root.querySelectorAll('[data-act="add"]').forEach(btn => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest(".qcard");
+      addToKept(card.dataset.bucket, card.dataset.number);
+    });
+  });
+}
+
+function addToKept(bucket, number){
+  const key = `${bucket}::${number}`;
+  if(KEPT.some(k => keptKey(k) === key)) return;
+  KEPT.push({bucket, number, max_points: 1});
+  renderKept();
+  renderPool();
+  scheduleSave();
+}
+
+function removeFromKept(bucket, number){
+  KEPT = KEPT.filter(k => keptKey(k) !== `${bucket}::${number}`);
+  renderKept();
+  renderPool();
+  scheduleSave();
+}
+
+function renderKept(){
+  document.getElementById("kept_count").textContent = KEPT.length;
+  const root = document.getElementById("kept_list");
+  root.innerHTML = KEPT.map(item => {
+    const q = findPoolQ(item.bucket, item.number);
+    const qtype = q ? questionTypeOf(q) : "frq";
+    const isFrq = qtype === "frq";
+    return `
+    <div class="kept-item" data-bucket="${esc(item.bucket)}" data-number="${esc(item.number)}">
+      <div class="top">
+        <span>#${esc(item.number)} ${q ? esc((q.text||"").slice(0,40)) : "(not in current pool — filters?)"}</span>
+        <span class="x" data-act="remove" title="Remove">✕</span>
+      </div>
+      ${isFrq
+        ? `<label class="muted">Max points <input type="number" class="pts" min="0.5" step="0.5" value="${item.max_points}" data-act="points"></label>`
+        : `<span class="muted">1 pt (auto-graded)</span>`}
+    </div>`;
+  }).join("");
+  root.querySelectorAll('[data-act="remove"]').forEach(el => {
+    el.addEventListener("click", () => {
+      const item = el.closest(".kept-item");
+      removeFromKept(item.dataset.bucket, item.dataset.number);
+    });
+  });
+  root.querySelectorAll('[data-act="points"]').forEach(el => {
+    el.addEventListener("change", () => {
+      const item = el.closest(".kept-item");
+      const kept = KEPT.find(k => keptKey(k) === `${item.dataset.bucket}::${item.dataset.number}`);
+      if(kept){ kept.max_points = parseFloat(el.value) || 1; scheduleSave(); }
+    });
+  });
+}
+
+function scheduleSave(){
+  if(TEST_STATUS !== "building") return;
+  clearTimeout(SAVE_TIMER);
+  document.getElementById("save_status").textContent = "Saving…";
+  SAVE_TIMER = setTimeout(flushSave, 600);
+}
+
+async function flushSave(){
+  try {
+    const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}`, {
+      method: "PATCH", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({kept: KEPT}),
+    });
+    const j = await r.json();
+    if(j.ok){
+      document.getElementById("save_status").textContent =
+        `Saved by ${j.last_edited_by} at ${new Date(j.last_edited_at).toLocaleTimeString()}`;
+    } else {
+      document.getElementById("save_status").textContent = "Save failed: " + (j.error||"");
+    }
+  } catch(err){
+    document.getElementById("save_status").textContent = "Save error: " + err.message;
+  }
+}
+
+["f_search","f_topic","f_type","f_correct_only"].forEach(id => {
+  document.getElementById(id).addEventListener("input", renderPool);
+  document.getElementById(id).addEventListener("change", renderPool);
+});
+
+document.getElementById("random_btn").addEventListener("click", () => {
+  const n = parseInt(document.getElementById("random_n").value) || 0;
+  if(n <= 0) return;
+  const keptKeys = new Set(KEPT.map(keptKey));
+  const candidates = POOL.filter(q => q._validation_status === "correct" && !keptKeys.has(`${q._bucket}::${q.number}`));
+  // shuffle-and-slice
+  for(let i = candidates.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  const picked = candidates.slice(0, n);
+  picked.forEach(q => KEPT.push({bucket: q._bucket, number: q.number, max_points: 1}));
+  renderKept();
+  renderPool();
+  scheduleSave();
+  toast(`Added ${picked.length} random question(s).`, "ok");
+});
+
+const publishBtn = document.getElementById("publish_btn");
+if(publishBtn){
+  publishBtn.addEventListener("click", async () => {
+    if(!KEPT.length){ toast("Keep at least one question first.", "err"); return; }
+    publishBtn.disabled = true;
+    const msgEl = document.getElementById("publish_msg");
+    try {
+      const r = await fetch(`${APP_ROOT}/tests/${TEST_ID}/publish`, {method: "POST"});
+      const j = await r.json();
+      msgEl.style.display = "";
+      if(j.ok){
+        msgEl.className = "msg ok";
+        msgEl.textContent = `Published ${j.snapshot_count} question(s).`
+          + (j.skipped.length ? ` ${j.skipped.length} kept question(s) were removed from the bank and skipped.` : "");
+        setTimeout(() => location.href = `${APP_ROOT}/tests`, 1800);
+      } else {
+        msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed";
+        publishBtn.disabled = false;
+      }
+    } catch(err){
+      msgEl.style.display = ""; msgEl.className = "msg err"; msgEl.textContent = err.message;
+      publishBtn.disabled = false;
+    }
+  });
+}
+
+(async function init(){
+  await loadPool();
+  await loadTest();
+  renderPool();
+})();
+</script>
+</body></html>

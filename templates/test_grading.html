@@ -1,0 +1,134 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Grade · {{ event_name }} · NCMS Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:900px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:14px}
+.toggle-bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.frq-block{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:12px}
+.frq-block h3{margin:0 0 8px 0;font-size:14px}
+.answer-row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line-soft)}
+.answer-row:first-of-type{border-top:none}
+.answer-row .student{flex:0 0 140px;font-weight:600;font-size:13px}
+.answer-row .ans{flex:1;font-size:13px;white-space:pre-wrap}
+.answer-row .pts{flex:0 0 80px}
+.answer-row .pts input{width:60px;padding:3px 6px;border:1px solid var(--line);border-radius:4px}
+.release-bar{display:flex;justify-content:space-between;align-items:center}
+.msg{font-size:12px;margin-top:8px}
+.msg.ok{color:var(--ok)}
+.msg.err{color:var(--bad)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
+  <h1>Grade · {{ event_name }}</h1>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+
+  <section>
+    <div class="release-bar">
+      <span id="grading_progress" class="muted">Loading…</span>
+      <button id="release_btn" class="primary" disabled>Release grades</button>
+    </div>
+    <div id="release_msg" class="msg" style="display:none"></div>
+  </section>
+
+  <section>
+    <div id="frq_list"></div>
+  </section>
+
+</div>
+<script>
+const TEST_ID = {{ test_id|tojson }};
+let SNAPSHOT_FRQS = [], RESPONSES = {};
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function load(){
+  const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}/grading`);
+  const j = await r.json();
+  SNAPSHOT_FRQS = j.snapshot_frqs || [];
+  RESPONSES = j.responses || {};
+  render();
+  updateProgress(j.grading_complete);
+}
+
+function updateProgress(complete){
+  let graded = 0, total = 0;
+  for(const [username, r] of Object.entries(RESPONSES)){
+    if(!["submitted","auto_submitted_late"].includes(r.status)) continue;
+    for(const q of SNAPSHOT_FRQS){
+      total++;
+      const g = r.manual_grade[String(q.number)];
+      if(g && g.points_earned != null) graded++;
+    }
+  }
+  document.getElementById("grading_progress").textContent = `${graded} / ${total} free-response answers graded`;
+  const btn = document.getElementById("release_btn");
+  btn.disabled = !complete || total === 0;
+  btn.title = complete ? "" : "Every free-response answer must be graded first";
+}
+
+function render(){
+  const root = document.getElementById("frq_list");
+  if(!SNAPSHOT_FRQS.length){ root.innerHTML = '<p class="muted">This test has no free-response questions to grade.</p>'; return; }
+  root.innerHTML = SNAPSHOT_FRQS.map(q => {
+    const rows = Object.entries(RESPONSES)
+      .filter(([, r]) => ["submitted","auto_submitted_late"].includes(r.status))
+      .map(([username, r]) => {
+        const answer = r.answers[String(q.number)];
+        const grade = r.manual_grade[String(q.number)];
+        return `
+        <div class="answer-row" data-username="${esc(username)}" data-number="${esc(q.number)}">
+          <span class="student">${esc(username)}</span>
+          <span class="ans">${esc(answer ? answer.text : "(no answer)")}</span>
+          <span class="pts">
+            <input type="number" min="0" max="${q.max_points}" step="0.5"
+                   value="${grade ? grade.points_earned : ''}" class="grade-input"> / ${q.max_points}
+          </span>
+        </div>`;
+      }).join("");
+    return `
+    <div class="frq-block">
+      <h3>Q${esc(q.number)} <span class="muted" style="font-weight:400">(${q.max_points} pt)</span></h3>
+      <p class="muted" style="font-size:12px">${esc(q.text)}</p>
+      ${rows || '<p class="muted">No submissions yet.</p>'}
+    </div>`;
+  }).join("");
+  root.querySelectorAll(".grade-input").forEach(el => {
+    el.addEventListener("change", async () => {
+      const row = el.closest(".answer-row");
+      const points_earned = parseFloat(el.value);
+      if(isNaN(points_earned)) return;
+      const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}/grading/${encodeURIComponent(row.dataset.username)}/${encodeURIComponent(row.dataset.number)}`, {
+        method: "PATCH", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({points_earned}),
+      });
+      const j = await r.json();
+      if(j.ok){
+        toast("Saved.", "ok");
+        await load();
+      } else {
+        toast("Failed: " + (j.error||""), "err");
+      }
+    });
+  });
+}
+
+document.getElementById("release_btn").addEventListener("click", async () => {
+  if(!await confirmModal("Release grades? Students will immediately be able to see their full results for this test.")) return;
+  const r = await fetch(`${APP_ROOT}/tests/${TEST_ID}/release-grades`, {method: "POST"});
+  const j = await r.json();
+  const msgEl = document.getElementById("release_msg");
+  msgEl.style.display = "";
+  if(j.ok){ msgEl.className = "msg ok"; msgEl.textContent = `Released to ${j.released_count} student(s).`; }
+  else { msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed"; }
+});
+
+load();
+</script>
+</body></html>
