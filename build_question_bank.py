@@ -576,6 +576,20 @@ _MATCHING_CUE = re.compile(
 _DIGIT_MARKER = re.compile(r"(?:^|\s)(\d{1,2})[\.\)]\s")
 _ALPHA_MARKER = re.compile(r"(?:^|\s)([A-Za-z])[\.\)]\s")
 
+# A leading answer-blank placeholder (e.g. "____ Eradication") left for the
+# student to write their match into by hand — stripped unconditionally,
+# before marker detection, since real PDFs commonly have no marker at all
+# after the blank (see _split_column_items/_group_continuation_rows).
+_PLACEHOLDER_BLANK_RE = re.compile(r"^_{2,}\s*")
+
+# One marker pattern for either a digit ("1.", "1)") or a single letter
+# ("A.", "A)") label, used everywhere a matching-column row's leading marker
+# needs to be detected or stripped — regardless of which side ("left"/
+# "right") is being parsed, since real PDFs don't reliably keep one charset
+# per side. `\s*(.*)$` already tolerates a marker with nothing after it on
+# the same line (e.g. a bare "f." whose text starts on the next line).
+_MATCHING_MARKER_RE = re.compile(r"^\(?([A-Za-z]|\d{1,2})[\.\)]\s*(.*)$")
+
 
 def _looks_like_matching(body: str) -> bool:
     """Cheap, vision-free signal that a question body is a matching table
@@ -600,27 +614,44 @@ def _looks_like_matching(body: str) -> bool:
     return bool(digit_markers) and bool(alpha_markers)
 
 
+def _group_continuation_rows(rows: list[str]) -> list[list[int]]:
+    """Group row indices so an unmarked row merges onto the previous
+    *marked* row (a wrapped continuation line) — shared by both the manual
+    capture path and automatic detection. A row before any marker has been
+    seen stays its own group, so a column with no printed labels at all
+    (every row genuinely separate) is left alone rather than guessed at."""
+    groups: list[list[int]] = []
+    seen_marker = False
+    for i, row in enumerate(rows):
+        if _MATCHING_MARKER_RE.match(row):
+            seen_marker = True
+            groups.append([i])
+        elif seen_marker and groups:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    return groups
+
+
 def _split_column_items(rows: list[str], label_charset: str) -> list[dict]:
     """Extract a {label, text} dict per already-segmented row (continuation
     lines already merged by the caller). Strips a leading numeric ("1.",
-    "1)") or alpha ("A.", "A)") marker matching `label_charset`; falls back
-    to positional numbering (1,2,3.../A,B,C...) for any row with no marker.
-    Generalizes split_choices_by_lines()'s marker-per-line strategy without
-    its 5-item ceiling or ascending-from-A requirement — matching columns
-    commonly run 6-10+ rows and the right column need not start at A."""
-    if label_charset == "numeric":
-        marker_re = re.compile(r"^\(?(\d{1,2})[\.\)]\s*(.*)$")
-    else:
-        marker_re = re.compile(r"^\(?([A-Za-z])[\.\)]\s*(.*)$")
-
+    "1)") or alpha ("A.", "A)") marker — either charset is accepted on
+    either side, since real PDFs don't reliably keep one charset per
+    column; `label_charset` only decides the positional-fallback numbering
+    (1,2,3.../A,B,C...) for any row with no marker at all. Generalizes
+    split_choices_by_lines()'s marker-per-line strategy without its 5-item
+    ceiling or ascending-from-A requirement — matching columns commonly run
+    6-10+ rows and the right column need not start at A."""
     items: list[dict] = []
     for row in rows:
         row = row.strip()
         if not row:
             continue
-        m = marker_re.match(row)
+        m = _MATCHING_MARKER_RE.match(row)
         if m:
-            label = m.group(1).upper() if label_charset == "alpha" else m.group(1)
+            raw_label = m.group(1)
+            label = raw_label.upper() if raw_label.isalpha() else raw_label
             items.append({"label": label, "text": (m.group(2) or "").strip(), "image": None})
         else:
             items.append({"label": None, "text": row, "image": None})
@@ -632,28 +663,22 @@ def _split_column_items(rows: list[str], label_charset: str) -> list[dict]:
 
 def split_column_items(raw: str, label_charset: str) -> list[dict]:
     """Split a drag-captured column region's raw (newline-preserving) text
-    into one item per row, merging wrapped continuation lines onto the
-    previous marked row. Used by the manual "add matching question" capture
-    flow (review_app.py's /extract-region-column). `label_charset` is
-    "numeric" for a left-column capture, "alpha" for a right-column one."""
+    into one item per row: strips a leading answer-blank placeholder (e.g.
+    "____") from every line, then merges wrapped continuation lines onto
+    the previous marked row via _group_continuation_rows(). Used by the
+    manual "add matching question" capture flow (review_app.py's
+    /extract-region-column). `label_charset` is "numeric" for a left-column
+    capture, "alpha" for a right-column one — see _split_column_items for
+    what it actually affects (positional fallback only)."""
     if not raw:
         return []
     lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n")]
+    lines = [_PLACEHOLDER_BLANK_RE.sub("", ln) for ln in lines]
     lines = [ln for ln in lines if ln]
     if not lines:
         return []
-    marker_re = (re.compile(r"^\(?(\d{1,2})[\.\)]\s") if label_charset == "numeric"
-                 else re.compile(r"^\(?([A-Za-z])[\.\)]\s"))
-    rows: list[str] = []
-    seen_marker = False
-    for ln in lines:
-        if marker_re.match(ln):
-            seen_marker = True
-            rows.append(ln)
-        elif seen_marker and rows:
-            rows[-1] = rows[-1] + " " + ln
-        else:
-            rows.append(ln)
+    groups = _group_continuation_rows(lines)
+    rows = [" ".join(lines[i] for i in g) for g in groups]
     return _split_column_items(rows, label_charset)
 
 
@@ -1027,14 +1052,23 @@ def vision_extract_column(b64: str, label_charset: str) -> dict:
     split it into labeled items. Haiku fallback for the manual matching-
     capture flow (review_app.py's /extract-region-column-vision), used when
     split_column_items()'s text-based heuristic struggles (merged cells,
-    image-only rows, unusual spacing). Returns {"items": [{"label","text"}, ...]}."""
-    charset_hint = ("numbered 1, 2, 3, ..." if label_charset == "numeric"
-                    else "lettered A, B, C, ...")
+    image-only rows, unusual spacing). Returns {"items": [{"label","text"}, ...]}.
+    `label_charset` is accepted for call-site compatibility (the caller
+    still knows which side it's capturing) but no longer narrows the
+    prompt — real PDFs don't reliably keep one charset per column, so the
+    model is asked to report whichever convention is actually printed."""
     prompt = (
         "This image is one column from a Science Olympiad matching-type "
-        f"question — a list of {charset_hint} items.\n"
-        "Extract each item's label and text, top to bottom. If an item is a "
-        "figure/diagram rather than text, set its text to ''.\n"
+        "question — a list of items, top to bottom.\n"
+        "Items may be numbered (1, 2, 3, ...) or lettered (A, B, C, ...) — "
+        "report whichever convention is actually printed, do not assume one.\n"
+        "Extract each item's label and text. If an item's text wraps across "
+        "multiple lines, join it into a single text value. If an item is "
+        "prefixed with a blank/underscore placeholder (e.g. '____') meant "
+        "for the student to write their answer in by hand, omit that "
+        "placeholder from both the label and the text — it is not part of "
+        "the item itself. If an item is a figure/diagram rather than text, "
+        "set its text to ''.\n"
         'Return JSON only: {"items": [{"label": "1", "text": "..."}]}\n'
         "Reply with ONLY the JSON object, no markdown fences, no prose."
     )
@@ -1310,6 +1344,14 @@ def vision_extract_matching(page: fitz.Page, q_num: str) -> dict | None:
         "Identify the left-column items and right-column items (their visible "
         "label and text), and the correct pairing ONLY if an answer is "
         "visibly indicated on this page (leave pairs empty otherwise).\n"
+        "Items in either column may be numbered, lettered, or have no visible "
+        "label at all — report whichever is actually printed, do not assume "
+        "one column is always numbers and the other always letters.\n"
+        "If an item's text wraps across multiple lines, join it into a "
+        "single text value. If an item is prefixed with a blank/underscore "
+        "placeholder (e.g. '____') meant for the student to write their "
+        "answer in by hand, omit that placeholder from both the label and "
+        "the text — it is not part of the item itself.\n"
         'Return JSON only: {"left":[{"label":"1","text":"..."}], '
         '"right":[{"label":"A","text":"..."}], "pairs":{}}\n'
         "If a cell is a figure/diagram rather than text, set its text to ''.\n"
@@ -1689,10 +1731,11 @@ def _cluster_matching_columns(doc: fitz.Document, page: fitz.Page, pno: int,
 
     Image-to-cell association happens here (not in a separate pass) because
     this is the only place a column's text *blocks* and the resulting
-    labeled *items* are still in the same 1:1, same-order correspondence
-    (one row -> one item, via _split_column_items, which never merges or
-    drops rows) — once the items list is handed back to the caller that
-    correspondence is gone."""
+    labeled *items* can still be tied back together — via `row_y0s`, the
+    y0 of each merge-group's first block (see _group_continuation_rows),
+    rather than a strict 1:1 block<->item correspondence (broken on
+    purpose now, since a wrapped multi-line cell legitimately merges
+    several blocks into one item)."""
     blocks = [b for b in page.get_text("blocks")
               if b[6] == 0 and y0 <= b[1] < y1 and b[4].strip()]
     if len(blocks) < 4:
@@ -1700,9 +1743,15 @@ def _cluster_matching_columns(doc: fitz.Document, page: fitz.Page, pno: int,
     xs = sorted({round(b[0], 1) for b in blocks})
     if len(xs) < 2:
         return None
-    gap, split_x = max((xs[i + 1] - xs[i], xs[i]) for i in range(len(xs) - 1))
+    # split_x is the *midpoint* of the largest gap, not its lower edge — a
+    # block's real x0 (e.g. 77.25) can round differently than the value
+    # used to find the gap (e.g. 77.2), so comparing against the boundary
+    # value itself would wrongly bucket it on the gap's far side. The
+    # midpoint has comfortable clearance on either side for any real block.
+    gap, gap_lo = max((xs[i + 1] - xs[i], xs[i]) for i in range(len(xs) - 1))
     if gap < 20:   # no confident two-column signal
         return None
+    split_x = gap_lo + gap / 2
 
     left_blocks  = sorted((b for b in blocks if b[0] <= split_x), key=lambda b: b[1])
     right_blocks = sorted((b for b in blocks if b[0] > split_x),  key=lambda b: b[1])
@@ -1713,26 +1762,35 @@ def _cluster_matching_columns(doc: fitz.Document, page: fitz.Page, pno: int,
         return [" ".join(ln.strip() for ln in b[4].split("\n") if ln.strip())
                 for b in blocks_]
 
-    left_items  = _split_column_items(_rows_for(left_blocks), "numeric")
-    right_items = _split_column_items(_rows_for(right_blocks), "alpha")
+    def _grouped_rows_and_y0s(blocks_):
+        raw_rows = [_PLACEHOLDER_BLANK_RE.sub("", r) for r in _rows_for(blocks_)]
+        groups = _group_continuation_rows(raw_rows)
+        rows = [" ".join(raw_rows[i] for i in g) for g in groups]
+        row_y0s = [blocks_[g[0]][1] for g in groups]
+        return rows, row_y0s
+
+    left_rows, left_row_y0s = _grouped_rows_and_y0s(left_blocks)
+    right_rows, right_row_y0s = _grouped_rows_and_y0s(right_blocks)
+
+    left_items  = _split_column_items(left_rows, "numeric")
+    right_items = _split_column_items(right_rows, "alpha")
     if len(left_items) < 2 or len(right_items) < 2:
         return None
 
-    _assign_column_images(doc, page, pno, src_slug, left_blocks, left_items, y0, y1)
-    _assign_column_images(doc, page, pno, src_slug, right_blocks, right_items, y0, y1)
+    _assign_column_images(doc, page, pno, src_slug, left_row_y0s, left_items, y0, y1)
+    _assign_column_images(doc, page, pno, src_slug, right_row_y0s, right_items, y0, y1)
     return {"left": left_items, "right": right_items, "pairs": {}}
 
 
 def _assign_column_images(doc: fitz.Document, page: fitz.Page, pno: int, src_slug: str,
-                          blocks: list, items: list[dict], y0: float, y1: float) -> None:
+                          row_y0s: list[float], items: list[dict], y0: float, y1: float) -> None:
     """Mutates `items[i]["image"]` in place for any embedded image whose
-    render rect's y0 falls within `blocks[i]`'s row span (that block's y0
-    up to either the next block's y0 or this question's y1) — relies on
-    `blocks` and `items` being the same length, in the same top-to-bottom
-    order (true by construction: both come from the same _rows_for() pass
-    immediately before _split_column_items() in _cluster_matching_columns,
-    one row in, one item out, never merged/dropped)."""
-    if not blocks or len(blocks) != len(items):
+    render rect's y0 falls within `row_y0s[i]`'s row span (that row's start
+    y0 up to either the next row's start y0 or this question's y1) — relies
+    on `row_y0s` and `items` being the same length, in the same top-to-
+    bottom order (true by construction: both are built in lockstep, one
+    merge-group at a time, in _cluster_matching_columns)."""
+    if not row_y0s or len(row_y0s) != len(items):
         return
     seen: set[int] = set()
     for idx, info in enumerate(page.get_images(full=True)):
@@ -1751,9 +1809,9 @@ def _assign_column_images(doc: fitz.Document, page: fitz.Page, pno: int, src_slu
             continue
         # Which row does this image's top edge fall into?
         row_i = None
-        for i, b in enumerate(blocks):
-            row_bottom = blocks[i + 1][1] if i + 1 < len(blocks) else y1
-            if b[1] <= img_y0 < row_bottom:
+        for i, ry0 in enumerate(row_y0s):
+            row_bottom = row_y0s[i + 1] if i + 1 < len(row_y0s) else y1
+            if ry0 <= img_y0 < row_bottom:
                 row_i = i
                 break
         if row_i is None or items[row_i].get("image"):

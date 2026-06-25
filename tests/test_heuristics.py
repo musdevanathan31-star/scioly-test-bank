@@ -246,6 +246,229 @@ def test_split_column_items_empty_input():
     assert bqb.split_column_items("", "numeric") == []
 
 
+def test_split_column_items_strips_unconditional_leading_placeholder():
+    # Real specimen (disease_detectives bakingsoda test, p.2): the left
+    # column is a blank-for-the-student's-answer + bare term, no marker at
+    # all — the placeholder must be stripped even with nothing to anchor to.
+    raw = "___ Eradication\n___ Vector\n___ Isolation"
+    items = bqb.split_column_items(raw, "numeric")
+    assert [it["label"] for it in items] == ["1", "2", "3"]
+    assert [it["text"] for it in items] == ["Eradication", "Vector", "Isolation"]
+
+
+def test_split_column_items_merges_marker_alone_on_own_line():
+    # Real specimen (same PDF): several markers sit alone on their own
+    # line, with the entry's text starting only on the next line(s).
+    raw = "f.\nCipher catches a cold after staying at the\nhospital.\nj.\nA mosquito"
+    items = bqb.split_column_items(raw, "alpha")
+    assert [it["label"] for it in items] == ["F", "J"]
+    assert items[0]["text"] == "Cipher catches a cold after staying at the hospital."
+    assert items[1]["text"] == "A mosquito"
+
+
+def test_split_column_items_accepts_letter_marker_on_declared_numeric_side():
+    # Real specimen (disease_detectives vert1ran test, p.4): the LEFT
+    # column is lettered, violating the old left=numeric assumption — the
+    # letter marker must still be recognized and stripped, not silently
+    # treated as unmarked text with a positional "1" label.
+    raw = "a. Wearing a mask on the subway\nb. Staphylococcus aureus"
+    items = bqb.split_column_items(raw, "numeric")
+    assert [it["label"] for it in items] == ["A", "B"]
+    assert items[0]["text"] == "Wearing a mask on the subway"
+
+
+def test_split_column_items_no_marker_column_rows_stay_separate():
+    # A column with no printed labels at all (every row genuinely separate)
+    # must not be merged just because rows are adjacent — regression guard
+    # for the marker-based-only merge tier.
+    raw = "Influenza\nTuberculosis\nAthlete's foot"
+    items = bqb.split_column_items(raw, "alpha")
+    assert [it["text"] for it in items] == ["Influenza", "Tuberculosis", "Athlete's foot"]
+    assert [it["label"] for it in items] == ["A", "B", "C"]
+
+
+def test_split_column_items_multiline_wrap_merges_into_one_item():
+    # Real specimen (vert1ran): a long definition wraps 3 physical lines
+    # with the marker on the first — must merge into one item, not three.
+    raw = ("a. more than expected cases in a particular area or population\n"
+           "during a particular period, affecting a significant proportion of\n"
+           "a community\n"
+           "b. an inanimate object that can transmit infectious agents")
+    items = bqb.split_column_items(raw, "numeric")
+    assert len(items) == 2
+    assert items[0]["label"] == "A"
+    assert items[0]["text"] == (
+        "more than expected cases in a particular area or population "
+        "during a particular period, affecting a significant proportion of "
+        "a community")
+
+
+def test_group_continuation_rows_marker_per_row():
+    groups = bqb._group_continuation_rows(["1. a", "2. b", "3. c"])
+    assert groups == [[0], [1], [2]]
+
+
+def test_group_continuation_rows_merges_unmarked_onto_previous_marked():
+    groups = bqb._group_continuation_rows(["f.", "continues here", "more text"])
+    assert groups == [[0, 1, 2]]
+
+
+def test_group_continuation_rows_no_marker_at_all_stays_separate():
+    groups = bqb._group_continuation_rows(["term one", "term two", "term three"])
+    assert groups == [[0], [1], [2]]
+
+
+# Real-PDF fixtures: row text extracted verbatim (via fitz) from each
+# column's drag-captured region on the two specimens that originally
+# exposed issues 1/2/4 — disease_detectives bakingsoda test p.2 (unlabeled
+# left column with answer-blank placeholders, lettered right column with
+# several marker-alone-on-its-own-line and multi-line entries) and
+# vert1ran test p.4 (lettered LEFT column violating the old left=numeric
+# assumption, unlabeled right column, multi-line left entries).
+
+_BAKINGSODA_LEFT_RAW = """\
+___ Eradication
+___ Vector
+___ Isolation
+___ Quarantine
+___ Public health approach
+___ Pathogenicity
+___ Virulence
+___ Prophylaxis
+___ Disease
+___ Noscomial
+___ Syndromic surveillance
+___ Infectivity
+___ Agent
+"""
+
+_BAKINGSODA_RIGHT_RAW = """\
+a. Wearing a mask on the subway to avoid
+catching a cold
+b. Staphylococcus aureus
+c. Used to separate and restrict the movement
+of people who are healthy but who may
+have been exposed to an infectious disease
+to see if they develop illness.
+d. The property of causing disease following
+infection
+e. A local hospital monitors reports of
+patients coming in for sore throats.
+f.
+Cipher catches a cold after staying at the
+hospital.
+g. Any harmful deviation from the normal
+structural or functional state of an
+organism.
+h. The property of establishing infection after
+exposure
+i.
+The property of causing severe disease
+j.
+A mosquito
+k. Separates sick people with a contagious
+disease from those who are not sick.
+l.
+Funds are directed to an area few in
+healthcare resources so citizens can stay
+healthy
+m. Rinderpest no longer exists naturally in the
+world
+"""
+
+_VERT1RAN_LEFT_RAW = """\
+a. more than expected cases in a particular area or population
+during a particular period, affecting a significant proportion of
+a community
+b. an inanimate object that can transmit infectious agents
+c. an aggregation of cases in a defined area during a particular
+period
+d. disease, or any departure from a healthy state
+e. separation of healthy people who have been potentially
+exposed to infectious disease
+f. the frequency with which new cases occur within a
+population over a particular period
+g. a factor whose presence or absence is necessary in the
+occurrence of an adverse health outcome.
+h. the probability an event will occur
+i. a range of manifestations the disease process can take
+j. period between exposure and onset of symptoms of disease
+(typically non-infectious)
+k. an agent's ability to cause disease following infection
+l. a factor that brings about change in health conditions or
+other characteristics
+m. the first case or instance of a patient coming to the
+attention of health authorities
+n. an event that occurs infrequently and irregularly
+o. a living intermediary that carries an agent from a reservoir to
+a susceptible host
+"""
+
+_VERT1RAN_RIGHT_RAW = """\
+agent
+cluster
+determinant
+epidemic
+fomite
+incidence
+latency period
+morbidity
+pathogenicity
+quarantine
+risk
+spectrum of illness
+vector
+zoonosis
+outlier
+"""
+
+
+def test_split_column_items_bakingsoda_left_column_real_fixture():
+    items = bqb.split_column_items(_BAKINGSODA_LEFT_RAW, "numeric")
+    assert len(items) == 13
+    assert items[0] == {"label": "1", "text": "Eradication", "image": None}
+    assert items[-1] == {"label": "13", "text": "Agent", "image": None}
+    assert all("_" not in it["text"] for it in items)
+
+
+def test_split_column_items_bakingsoda_right_column_real_fixture():
+    items = bqb.split_column_items(_BAKINGSODA_RIGHT_RAW, "alpha")
+    assert len(items) == 13
+    assert [it["label"] for it in items] == [chr(ord("A") + i) for i in range(13)]
+    # The two marker-alone-on-its-own-line entries must be fully merged,
+    # not truncated at the marker or split into extra spurious items.
+    assert items[5]["text"] == "Cipher catches a cold after staying at the hospital."
+    assert items[9]["text"] == "A mosquito"
+    # A 3-line wrapped entry must merge into one item too.
+    assert items[2]["text"] == (
+        "Used to separate and restrict the movement of people who are "
+        "healthy but who may have been exposed to an infectious disease "
+        "to see if they develop illness.")
+
+
+def test_split_column_items_vert1ran_left_column_real_fixture():
+    items = bqb.split_column_items(_VERT1RAN_LEFT_RAW, "numeric")
+    assert len(items) == 15
+    # Left column is lettered, not numbered — must be recognized and
+    # uppercased despite label_charset="numeric" (the old hardcoded
+    # left=numeric assumption is exactly what broke this real PDF).
+    assert [it["label"] for it in items] == [chr(ord("A") + i) for i in range(15)]
+    assert items[0]["text"] == (
+        "more than expected cases in a particular area or population "
+        "during a particular period, affecting a significant proportion of "
+        "a community")
+
+
+def test_split_column_items_vert1ran_right_column_real_fixture():
+    items = bqb.split_column_items(_VERT1RAN_RIGHT_RAW, "alpha")
+    assert len(items) == 15
+    assert [it["text"] for it in items] == [
+        "agent", "cluster", "determinant", "epidemic", "fomite", "incidence",
+        "latency period", "morbidity", "pathogenicity", "quarantine", "risk",
+        "spectrum of illness", "vector", "zoonosis", "outlier",
+    ]
+
+
 def test_parse_matching_key_line_exact_length():
     pairs = bqb._parse_matching_key_line("A,C,B", ["1", "2", "3"])
     assert pairs == {"1": "A", "2": "C", "3": "B"}

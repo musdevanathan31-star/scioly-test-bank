@@ -1480,9 +1480,11 @@ function matchingHTML(q){
     <div class="match-grid">
       <div class="match-col-head">Column A
         <button class="ghost btn-tiny" data-act="addMatchItem" data-side="left" title="Add a left-column item">+</button>
+        <button class="ghost btn-tiny" data-act="captureMoreMatch" data-side="left" title="Drag-capture more left-column items from the PDF (any page) and append them">📋</button>
       </div>
       <div class="match-col-head">Column B
         <button class="ghost btn-tiny" data-act="addMatchItem" data-side="right" title="Add a right-column item">+</button>
+        <button class="ghost btn-tiny" data-act="captureMoreMatch" data-side="right" title="Drag-capture more right-column items from the PDF (any page) and append them">📋</button>
       </div>
       ${gridRows}
     </div>
@@ -1900,6 +1902,14 @@ function bindCardEvents(){
           items.push({label, text: "", image: null});
           annOverrideMatching(q);
           setDirty(true); renderCards();
+        } else if(act === "captureMoreMatch"){
+          // Drag-capture more items for this *existing* matching question's
+          // left/right column, appending rather than replacing — works on
+          // any page (navigate first), for a table that continues beyond
+          // where it was originally captured. See performCapture()'s
+          // mode.id fork for where the appended items actually land.
+          const side = el.dataset.side;
+          startCapture(side === "left" ? "matchingLeft" : "matchingRight", q._id);
         } else if(act === "delMatchItem"){
           const side = el.dataset.side, idx = Number(el.dataset.idx);
           const items = q.matching[side];
@@ -2415,8 +2425,9 @@ async function performCapture(mode, x, y, w, h){
 
   // Matching-question capture path (two drags: left column, then right)
   if(mode.field === "matchingLeft" || mode.field === "matchingRight"){
-    const labelCharset = mode.field === "matchingLeft" ? "numeric" : "alpha";
-    setStatusHtml(`Extracting ${labelCharset === "numeric" ? "left" : "right"} column... <span class='spinner'></span>`);
+    const side = mode.field === "matchingLeft" ? "left" : "right";
+    const labelCharset = side === "left" ? "numeric" : "alpha";
+    setStatusHtml(`Extracting ${side} column... <span class='spinner'></span>`);
     let r;
     try{
       r = await fetch(`${API}/pdf/${PDF}/page/${curPage}/extract-region-column`,{
@@ -2426,13 +2437,39 @@ async function performCapture(mode, x, y, w, h){
     } catch(err){ setStatus("Extract failed: " + err.message, "err"); cancelCapture(); return; }
     if(!r.ok){ setStatus("Extract failed: HTTP " + r.status, "err"); cancelCapture(); return; }
     const j = await r.json();
-    LAST_CAPTURE = { mode: {...mode}, x, y, w, h, page: curPage, target };
-    MATCHING_DRAFT = MATCHING_DRAFT || { left: [], right: [] };
-    if(labelCharset === "numeric"){ MATCHING_DRAFT.left = j.items || []; }
-    else { MATCHING_DRAFT.right = j.items || []; }
+    // appendCount lets a Haiku re-try (below) know how many items this
+    // capture just contributed, so it can replace rather than duplicate them.
+    LAST_CAPTURE = { mode: {...mode}, x, y, w, h, page: curPage, target, appendCount: (j.items || []).length };
     const hb = document.getElementById("haikuFallback");
+
+    // Appending more items to an already-created matching question
+    // (mode.id set, via the card's "Capture more from PDF" button) — a
+    // single one-off append, independent per side/per click. Never touches
+    // MATCHING_DRAFT and never auto-advances to the other side, unlike the
+    // brand-new-question flow below.
+    if(mode.id){
+      const q = findQ(mode.id);
+      if(!q){ setStatus("Capture failed: question no longer exists.", "err"); cancelCapture(); return; }
+      q.matching = q.matching || {left: [], right: [], pairs: {}};
+      q.matching[side] = q.matching[side].concat(j.items || []);
+      if(curPage !== q.page){
+        q.extra_pages = q.extra_pages || [];
+        if(!q.extra_pages.includes(curPage)) q.extra_pages.push(curPage);
+        q.extra_pages.sort((a,b) => a - b);
+        annOverride(q.number, "extra_pages", q.extra_pages);
+      }
+      annOverrideMatching(q);
+      setDirty(true); renderCards();
+      setStatus(`Captured ${(j.items||[]).length} more ${side} item(s) for Q#${q.number}.`, "ok");
+      if(hb) hb.style.display = "";
+      cancelCapture({preserveLast: true});
+      return;
+    }
+
+    MATCHING_DRAFT = MATCHING_DRAFT || { left: [], right: [] };
+    MATCHING_DRAFT[side] = j.items || [];
     if(hb) hb.style.display = "";
-    if(mode.field === "matchingLeft"){
+    if(side === "left"){
       // Auto-advance to the right-column drag — no second toolbar click needed.
       cancelCapture({preserveLast: true, preserveDraft: true});
       startCapture("matchingRight");
@@ -2540,9 +2577,30 @@ document.getElementById("haikuFallback").addEventListener("click", async () => {
     } catch(err){ setStatus("Haiku call failed: " + err.message, "err"); return; }
     const j = await r.json();
     if(j.error){ setStatus("Haiku error: " + j.error, "err"); return; }
+    const side = labelCharset === "numeric" ? "left" : "right";
+
+    // Re-trying the most recent "Capture more from PDF" append (mode.id
+    // set) — replace the items that capture just contributed (tracked via
+    // appendCount) with the vision-extracted ones, rather than duplicating
+    // them alongside a second copy.
+    if(c.mode.id){
+      const q = findQ(c.mode.id);
+      if(!q){ setStatus("Haiku error: question no longer exists.", "err"); return; }
+      q.matching = q.matching || {left: [], right: [], pairs: {}};
+      const removeCount = c.appendCount || 0;
+      if(removeCount > 0){
+        q.matching[side].splice(q.matching[side].length - removeCount, removeCount);
+      }
+      q.matching[side] = q.matching[side].concat(j.items || []);
+      annOverrideMatching(q);
+      setDirty(true); renderCards();
+      setStatus(`Re-extracted ${side} column via Haiku for Q#${q.number}.`, "ok");
+      document.getElementById("haikuFallback").style.display = "none";
+      return;
+    }
+
     MATCHING_DRAFT = MATCHING_DRAFT || { left: [], right: [] };
-    if(labelCharset === "numeric"){ MATCHING_DRAFT.left = j.items || []; }
-    else { MATCHING_DRAFT.right = j.items || []; }
+    MATCHING_DRAFT[side] = j.items || [];
     // If the draft already has both sides (this is a Haiku re-try on an
     // already-finalized question's column), re-finalize would create a
     // duplicate — only auto-finalize while the draft hasn't been committed
