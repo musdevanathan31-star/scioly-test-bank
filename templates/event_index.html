@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>{{ event_name }} · Review · NCMS Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Review · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .list-wrap{padding:18px}
@@ -39,7 +39,6 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   <a href="{{ request.script_root }}/" title="Back to event list" style="font-size:18px">←</a>
   <h1>{{ event_name }} — Review</h1>
   <span id="status" class="muted"></span>
-  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <div class="toolbar-group">
     <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
   </div>
@@ -50,7 +49,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
     <span class="muted">Click a row to review. Sort by column. Tick boxes to bulk-reprocess.</span>
     <div class="toolbar-group" style="position:relative;margin-left:18px">
       <button id="upload_toggle_btn" type="button" title="Upload a test PDF/.docx/.doc directly into this event">+ Upload test</button>
-      <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">Scan files</button></a>
+      <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Scan files — onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">↻</button></a>
       <div id="upload_dropdown" class="dropdown-panel">
         <form id="upload_test_form" enctype="multipart/form-data">
           <label class="muted" style="font-size:12px;display:block;margin-bottom:8px">

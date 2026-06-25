@@ -12,15 +12,16 @@ Log in at `/login` with the username/password a coach gave you.
 
 ## Getting around (any role)
 
-Click **☰** in the header on any page to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in); **Jobs**, **Club Management**, and **Test management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages (previously a separate "Messages" button).
+Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Event Management** jumps to the landing page; **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in); **Jobs**, **Club Management**, and **Test management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu.
 
 ## Account settings (any role)
 
-Click **⚙ Settings** in the header from any page — this is the same page for everyone, it just shows more sections if you're a coach.
+Open the **☰** navigation menu and click **Settings** — this is the same page for everyone, it just shows more sections if you're a coach.
 
-- **My Account** — change your **display name** (a friendlier label shown in the header instead of your username — purely cosmetic, your username for logging in never changes) and **change your password** (you'll need to re-enter your current password first; a wrong one is rejected with no change made).
-- **LLM API Keys** — optionally supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral API key(s) for *this browser only*. Stored in localStorage, never sent to the server except as a request header on this app's own calls — useful if you'd rather use your own billing than the server's shared key, or if the server's key runs out of credits (the app automatically falls back through whichever keys you've set, in that order).
-- **Manage Users** — coach-only, see below.
+- **My Account** — change your **display name** (a friendlier label shown in the navigation menu instead of your username — purely cosmetic, your username for logging in never changes) and **change your password** (you'll need to re-enter your current password first; a wrong one is rejected with no change made).
+- **LLM API Keys** — optionally supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral API key(s) for *this browser only*. Stored in localStorage, never sent to the server except as a request header on this app's own calls — useful if you'd rather use your own billing than the server's shared key, or if the server's key runs out of credits (the app automatically falls back through whichever keys you've set, in that order). Coaches and volunteers with a key set here see a running cost badge in the navigation menu; everyone else doesn't, since they can't have caused any personal-key spend.
+
+**Manage Users** is coach-only and lives on the **Club Management** page now, not Settings — see below.
 
 ## For Coaches
 
@@ -30,11 +31,11 @@ A fresh instance has no accounts at all, so the very first one has to be created
 ```
 python auth.py --create-coach
 ```
-This prompts for a username and password and creates the first coach account directly. After that, log in normally and use **⚙ Settings → Manage Users** for everyone else.
+This prompts for a username and password and creates the first coach account directly. After that, log in normally and use **Club Management → Manage Users** for everyone else.
 
 ### Managing users
 
-From the header, click **⚙ Settings**, then scroll to **Manage Users**. The section lists every account with its role and assigned events.
+Open **Club Management** from the navigation menu, then scroll to **Manage Users**. The section lists every account with its role and assigned events.
 - **+ Add a user** — expand it, fill in username/password/role, and (for volunteers) which events they can access. Click **Create user**.
 - **✎ Edit** on any row — change role or assigned events, then **Save**.
 - **⛔ Disable** — blocks that person's login and kicks any session they currently have open, immediately. Nothing about their account or work is deleted — it's fully reversible.
@@ -182,20 +183,20 @@ A matching question shows a dropdown next to each left-column item listing every
 A season groups events, students, and tests under one label (e.g. "2027"). Open **☰ → Club Management**.
 1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**.
 2. Click **Mark as current** on it — exactly one season is ever current; this is what "My Tests"/Tests dashboard/Scores default to.
-3. Add students: either one-by-one via **⚙ Settings → Manage Users** (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via ⚙ Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
+3. Add students: either one-by-one via **Manage Users** on this same Club Management page (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
 4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Tests" and the Scores page for each student — it has no effect on who can edit that event's question bank.
 5. Running a new season off an old one's roster? Pick the prior season from **Copy roster from…** and click Copy — only events present in both seasons' lineups copy over, and any since-disabled student is silently skipped.
 
 Note: a season's event lineup only scopes the roster grid and which events a test window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.
 
-### Build and publish a test
+### Prepare and publish a test
 
 On the **Tests** dashboard, pick the season, then:
 1. Expand **+ New test window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
-2. For each event row, type in the volunteer username(s) who'll build it (comma-separated) — this is a separate grant from their event bank access; a volunteer can build a test for an event they have no edit access to.
-3. That volunteer (or you) clicks **Build** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching default to 1 pt). Autosaves as you go.
-4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already built.
-5. Back on the Tests dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "building" — only works before the window opens and before any student has saved an answer.
+2. For each event row, click the **Assign…** button to open a picker — it lists every coach plus every volunteer who has bank-edit access to that specific event, check off who should prepare it, and **Save**. Only people with bank access to that event (or any coach) are offered here.
+3. That coach or volunteer clicks **Prepare** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching default to 1 pt). Autosaves as you go.
+4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already been prepared.
+5. Back on the Tests dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "preparing" — only works before the window opens and before any student has saved an answer.
 
 ### Run a test window and grade results
 
@@ -248,16 +249,16 @@ Identical to the coach's Generate page: wiki scrape, source upload, LLM generati
 
 Same as the coach workflow — **Quiz** from any of your assigned events.
 
-### Building or grading a season test you've been assigned to
+### Preparing or grading a season test you've been assigned to
 
-A coach can assign you to build or grade a test for *any* event from the **Tests** dashboard — this is independent of your assigned-events list above, so you may be asked to build a test for an event you otherwise can't edit. Click **Tests** in the header to see what you've been assigned, then **Build** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Build and publish a test" / "Run a test window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
+A coach can assign you to prepare or grade a test for an event — the assignment picker only offers you for an event if you already have bank-edit access to it (or you're a coach), so this normally lines up with your assigned-events list above. Click **Tests** in the header to see what you've been assigned, then **Prepare** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Prepare and publish a test" / "Run a test window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
 
 ### What you can't do, and why
 
 | Action | Why not |
 |---|---|
 | See or open an unassigned event | `_select_event` (the access chokepoint every `/event/<slug>/...` route calls first) returns 403 for volunteers outside their assigned list — see `spec.md` §9 |
-| Manage users (Settings → Manage Users) | Gated by `@coach_required` |
+| Manage users (Club Management → Manage Users) | Gated by `@coach_required` |
 | Create/edit/archive events | Gated by `@coach_required` |
 | Upload a new shared textbook | Write routes gated by `@coach_required`; reading/using existing ones is open to everyone |
 
@@ -265,7 +266,7 @@ A coach can assign you to build or grade a test for *any* event from the **Tests
 
 ### Logging in for the first time
 
-A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login`, then go to **⚙ Settings → My Account** to change your password whenever you like.
+A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login`, then go to **☰ → Settings → My Account** to change your password whenever you like.
 
 ### Taking a test
 
@@ -284,9 +285,9 @@ Once a coach releases grades for a test, **My Tests** shows it under Past with y
 | Task | Who | Where |
 |---|---|---|
 | Bootstrap the very first account | operator (CLI) | `python auth.py --create-coach` |
-| Change your password or display name | Coach, Volunteer | ⚙ Settings → My Account |
-| Set your own LLM API key | Coach, Volunteer | ⚙ Settings → LLM API Keys |
-| Create/disable a user | Coach | ⚙ Settings → Manage Users |
+| Change your password or display name | Coach, Volunteer | ☰ → Settings → My Account |
+| Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
+| Create/disable a user | Coach | ☰ → Club Management → Manage Users |
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |

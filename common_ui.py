@@ -197,6 +197,8 @@ a{color:var(--accent);text-decoration:none}
    used to take to reach the same destinations. A .dropdown-panel variant
    with its own link/accordion styling. */
 .nav-panel{min-width:230px}
+.nav-identity{padding:6px 10px 8px;margin-bottom:4px;border-bottom:1px solid var(--line);
+  font-size:12px;color:var(--fg-soft)}
 .nav-panel .nav-link{display:block;padding:6px 10px;border-radius:4px;color:var(--fg);
   text-decoration:none;font-size:13px}
 .nav-panel .nav-link:hover{background:var(--hover)}
@@ -331,8 +333,16 @@ document.addEventListener("keydown", function(e){
 async function refreshCostBadge(){
   const el = document.getElementById("cost-badge");
   if(!el) return;
+  // Only shown to a user with their own browser-local LLM key set — the
+  // server has no visibility into who has a personal key (localStorage-only),
+  // so this check has to happen client-side.
+  if(!window.getLLMKeys || Object.keys(getLLMKeys()).length === 0){
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
   try {
-    const r = await fetch("/api/usage");
+    const r = await fetch(`${APP_ROOT}/api/usage`);
     const j = await r.json();
     const cost = Number(j.estimated_cost_usd || 0);
     el.textContent = "$" + cost.toFixed(cost >= 1 ? 2 : 3);

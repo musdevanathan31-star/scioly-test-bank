@@ -427,8 +427,8 @@ What stays with the code regardless of `DATA_ROOT` (none of it grows unboundedly
 
 The app supports three roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
 
-- **Coach** — full admin. Every event, plus user management (Manage Users, inside **⚙ Settings**), shared-textbook uploads, Club Management, and the Tests dashboard.
-- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to build/grade tests for the [season testing workflow](#season-long-testing-workflow) below, a separate grant unrelated to event access.
+- **Coach** — full admin. Every event, plus user management (Manage Users, inside **Club Management**), shared-textbook uploads, and the Tests dashboard.
+- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to prepare/grade tests for the [season testing workflow](#season-long-testing-workflow) below — the test-assignment picker only offers volunteers with bank-edit access to that event (plus any coach), though the underlying access check itself remains a separate grant unrelated to event access.
 - **Student** — no question-bank access at all (not even read-only — see the [season testing workflow](#season-long-testing-workflow)). Scoped entirely to the tests they're rostered on for the current season: `/my-tests` (take a live test, view released results) and `/scores` (everyone, including students, sees every student's named score — response-level detail is restricted to coaches and whoever actually graded that test).
 
 **First-time setup** — a fresh `auth_users.json` has no accounts, so there's no one who could use the in-app admin UI yet. Bootstrap the first coach from the CLI:
@@ -437,12 +437,13 @@ The app supports three roles, stored in `auth_users.json` (`auth.py` — same fl
 python auth.py --create-coach
 ```
 
-After that, log in and use **⚙ Settings → Manage Users** (coach-only, linked from the header) to create volunteer accounts and check which events each one can access.
+After that, log in and use **Club Management → Manage Users** (coach-only, linked from the navicon) to create volunteer accounts and check which events each one can access.
 
-**⚙ Settings** (linked from the header, every logged-in user) is the one place for account self-service:
-- **My Account** — change your display name (a friendlier label shown in the header instead of your username; purely cosmetic, doesn't change your login) and change your own password (requires re-entering your current password first).
-- **LLM API Keys** — supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral key(s) for this browser only (localStorage, never sent to the server except as a request header) — used to override the server's own key, with automatic fallback through the list if one is rate-limited or out of credits. This used to be a floating button on every page; it's now a plain section here instead.
-- **Manage Users** (coach-only) — the same user CRUD that used to live at `/admin/users` (still works as a redirect here for old links/bookmarks).
+**Settings** (linked from the navicon, every logged-in user) is the one place for account self-service:
+- **My Account** — change your display name (a friendlier label shown in the navicon instead of your username; purely cosmetic, doesn't change your login) and change your own password (requires re-entering your current password first).
+- **LLM API Keys** — supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral key(s) for this browser only (localStorage, never sent to the server except as a request header) — used to override the server's own key, with automatic fallback through the list if one is rate-limited or out of credits.
+
+**Manage Users** (coach-only, on the **Club Management** page) — the same user CRUD that used to live at `/admin/users` (still works as a redirect here for old links/bookmarks).
 
 Sessions are plain signed Flask cookies — set `FLASK_SECRET_KEY` (a random 32+ byte hex string) in `.env` for production so logins survive a restart; without it the app generates a throwaway key per process start and everyone gets logged out. Once served over HTTPS, also set `SESSION_COOKIE_SECURE=true` so the session cookie requires TLS.
 

@@ -15,8 +15,8 @@ dashboard. All three share the same atomic tempfile+os.replace write helper
 and a lock-registry keyed by filename, mirroring build_question_bank.py's
 per-event _state_locks pattern.
 
-A Test is built from one event's question bank but is NOT gated by
-`auth.User.events` (a volunteer's bank-edit access) — test-building
+A Test is prepared from one event's question bank but is NOT gated by
+`auth.User.events` (a volunteer's bank-edit access) — test-preparation
 assignment is a separate grant, keyed on TestWindow.assignments, enforced
 by review_app.py's `_select_test()` guard, deliberately independent of
 `_select_event()`. See seasons.py's module docstring for the parallel
@@ -181,7 +181,7 @@ def create_window(season_id: str, opens_at: str, closes_at: str,
                    event_slugs: list[str], label: str = "", created_by: str = "") -> TestWindow:
     """Validates event_slugs is a subset of the season's lineup and
     opens_at < closes_at, then creates the window and lazily creates one
-    Test per event (status "building", kept=[])."""
+    Test per event (status "preparing", kept=[])."""
     import seasons as seasons_mod
 
     season = seasons_mod.get_season(season_id)
@@ -265,7 +265,7 @@ class Test:
     window_id: str
     season_id: str
     event_slug: str
-    status: str = "building"      # building|published|live|closed|graded|released
+    status: str = "preparing"     # preparing|published|live|closed|graded|released
     kept: list = field(default_factory=list)            # [{bucket, number, max_points}]
     snapshot: list | None = None                          # frozen question content, set at publish
     snapshot_contexts: dict = field(default_factory=dict)  # frozen shared-context blocks, keyed "bucket::id"
@@ -294,9 +294,17 @@ def _test_to_dict(t: Test) -> dict:
 
 
 def _dict_to_test(d: dict) -> Test:
+    # Lazy migration: older tests.json records may still say "building" (the
+    # status was renamed to "preparing" — "build" is Sci-Oly jargon for
+    # building *events*, which confused volunteers when reused for tests).
+    # Normalizing here means any such record reads as "preparing" right away
+    # and gets rewritten on its next save, with no separate migration script.
+    status = d.get("status", "preparing")
+    if status == "building":
+        status = "preparing"
     return Test(
         test_id=d["test_id"], window_id=d.get("window_id", ""), season_id=d.get("season_id", ""),
-        event_slug=d.get("event_slug", ""), status=d.get("status", "building"),
+        event_slug=d.get("event_slug", ""), status=status,
         kept=list(d.get("kept") or []), snapshot=d.get("snapshot"),
         snapshot_contexts=dict(d.get("snapshot_contexts") or {}),
         overrides=dict(d.get("overrides") or {}),
@@ -353,13 +361,13 @@ def _ensure_test(window_id: str, season_id: str, event_slug: str, created_by: st
 
 def update_test_kept(test_id: str, kept: list, edited_by: str = "") -> Test:
     """Autosave for the test-builder's persistent kept-set. Rejects once the
-    test is no longer "building" (published/live and beyond) — edits past
+    test is no longer "preparing" (published/live and beyond) — edits past
     that point must go through the explicit unpublish exception path."""
     with _tests_transaction() as tests:
         existing = tests.get(test_id)
         if existing is None:
             raise ValueError(f"unknown test {test_id!r}")
-        if existing.status != "building":
+        if existing.status != "preparing":
             raise ValueError(f"test is {existing.status!r}, not editable — unpublish first")
         cleaned = []
         for item in kept:
@@ -411,7 +419,7 @@ def publish_test(test_id: str, published_by: str = "") -> dict:
         existing = tests.get(test_id)
         if existing is None:
             raise ValueError(f"unknown test {test_id!r}")
-        if existing.status != "building":
+        if existing.status != "preparing":
             raise ValueError(f"test is already {existing.status!r}")
         if not existing.kept:
             raise ValueError("cannot publish an empty test — keep at least one question first")
@@ -452,7 +460,7 @@ def publish_test(test_id: str, published_by: str = "") -> dict:
 
 
 def unpublish_test(test_id: str) -> Test:
-    """Reverts a published/live test back to "building" for edits. Caller
+    """Reverts a published/live test back to "preparing" for edits. Caller
     (review_app.py's route) is responsible for the guardrail checks (window
     not yet open, no saved responses) before calling this — this function
     itself only enforces the status precondition, not the timing/response
@@ -464,7 +472,7 @@ def unpublish_test(test_id: str) -> Test:
             raise ValueError(f"unknown test {test_id!r}")
         if existing.status not in ("published", "live"):
             raise ValueError(f"test is {existing.status!r}, not published/live")
-        updated = replace(existing, status="building", snapshot=None, snapshot_contexts={},
+        updated = replace(existing, status="preparing", snapshot=None, snapshot_contexts={},
                            published_at=None, published_by=None, live_at=None, live_by=None)
         tests[test_id] = updated
     return updated

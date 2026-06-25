@@ -171,6 +171,11 @@ def _inject_user():
 
 
 @app.context_processor
+def _inject_school_name():
+    return {"school_name": os.environ.get("SCHOOL_NAME", "NCMS").upper()}
+
+
+@app.context_processor
 def _inject_nav():
     """Accessible events for the navicon's per-event accordions
     (templates/_user_badge.html) — same access rule index() already uses
@@ -840,14 +845,11 @@ def api_unarchive_event(slug: str):
 @app.route("/settings")
 def settings_page():
     """Every logged-in user gets My Account (display name + password
-    change) and LLM API Keys; coaches additionally get Manage Users
-    (the former standalone /admin/users page, now a section here) —
-    one unified surface instead of a coach-only page plus a floating
-    LLM-keys button every other page injected separately."""
-    is_coach = g.user.role == "coach"
-    users = sorted(auth.load_users().values(), key=lambda u: u.username) if is_coach else []
-    all_events = sorted(EVENTS.keys()) if is_coach else []
-    return render_template("settings.html", users=users, all_events=all_events)
+    change) and LLM API Keys — one unified surface instead of a floating
+    LLM-keys button every other page injected separately. Manage Users
+    lives on the Club Management page now (coach-only, see
+    club_management_page())."""
+    return render_template("settings.html")
 
 
 @app.route("/api/account/password", methods=["POST"])
@@ -953,6 +955,7 @@ def club_management_page():
         key=lambda u: (u.display_name or u.username),
     )
     roster = seasons.get_full_roster(selected_id) if selected else {}
+    users = sorted(auth.load_users().values(), key=lambda u: u.username)
     return render_template(
         "club_management.html",
         all_seasons=all_seasons,
@@ -961,6 +964,7 @@ def club_management_page():
         all_events=sorted(EVENTS.keys()),
         students=students,
         roster=roster,
+        users=users,
     )
 
 
@@ -1125,7 +1129,24 @@ def tests_dashboard_page():
                                                   (all_seasons[0].season_id if all_seasons else ""))
     selected = seasons.get_season(selected_id) if selected_id else None
 
+    all_users = auth.load_users()
+
+    def _candidates_for(slug):
+        # Coaches have implicit bank access to every event; volunteers only
+        # qualify for events they're explicitly granted (user.events) — a
+        # deliberate departure from this module's prior "assignment is
+        # independent of bank access" design, per the explicit request that
+        # only people who can edit an event's bank may be called in to
+        # prepare its test. Pre-existing assignments that predate this rule
+        # are left untouched (see `assigned` below) — only the *picker* is
+        # constrained going forward.
+        return sorted(
+            u.username for u in all_users.values()
+            if not u.disabled and (u.role == "coach" or (u.role == "volunteer" and slug in u.events))
+        )
+
     windows = []
+    candidates_by_event = {}
     if selected:
         for w in sorted(testing.load_windows().values(), key=lambda w: w.opens_at):
             if w.season_id != selected.season_id or w.archived:
@@ -1141,14 +1162,13 @@ def tests_dashboard_page():
                     continue
                 window_tests.append({"event_slug": slug, "test": t,
                                      "assigned": w.assignments.get(slug) or []})
+                candidates_by_event.setdefault(slug, _candidates_for(slug))
             windows.append({"window": w, "tests": window_tests})
 
-    volunteers = sorted((u.username for u in auth.load_users().values()
-                         if u.role == "volunteer" and not u.disabled))
     return render_template(
         "tests_dashboard.html",
         all_seasons=all_seasons, selected=selected, windows=windows,
-        all_volunteers=volunteers,
+        candidates_by_event=candidates_by_event,
     )
 
 
@@ -1188,8 +1208,10 @@ def api_update_test_assignments(window_id):
     data = request.get_json() or {}
     event_slug = data.get("event_slug", "")
     users = auth.load_users()
+    # Coaches are now assignable too (previously volunteer-only) — matches
+    # the new picker's candidate pool (see tests_dashboard_page()).
     usernames = [u for u in (data.get("usernames") or [])
-                 if u in users and users[u].role == "volunteer"]
+                 if u in users and users[u].role in ("coach", "volunteer")]
     try:
         testing.update_window_assignments(window_id, event_slug, usernames)
     except ValueError as e:
@@ -1261,7 +1283,7 @@ def api_go_live_test(test_id):
 @app.route("/tests/<test_id>/unpublish", methods=["POST"])
 @coach_required
 def api_unpublish_test(test_id):
-    """Reverts a published/live test to "building" for edits. Blocked once
+    """Reverts a published/live test to "preparing" for edits. Blocked once
     EITHER the class-wide window has opened OR any student response has a
     saved answer — a personal-makeup student could already be mid-test
     even before the class window opens, so both conditions are checked
@@ -3824,7 +3846,7 @@ def api_create_event():
         "ok":   True,
         "slug": ev.slug,
         "name": ev.name,
-        "url":  f"/event/{ev.slug}/",
+        "url":  url_for("event_index", event_slug=ev.slug),
     })
 
 

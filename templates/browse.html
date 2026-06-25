@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>{{ event_name }} · Browse · NCMS Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Browse · {{ school_name }} Sci-Oly Question Banks</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
@@ -158,7 +158,6 @@ header{background:#fff;border-bottom:1px solid var(--line)}
     <a href="{{ request.script_root }}/event/{{ event_slug }}/" style="text-decoration:none;color:var(--fg-soft)">{{ event_name }}</a>
     <span class="muted" style="font-weight:400"> · Browse</span>
   </h1>
-  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
   {% include "_user_badge.html" %}

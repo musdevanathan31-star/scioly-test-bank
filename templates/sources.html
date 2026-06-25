@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>{{ event_name }} · Generate · NCMS Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Generate · {{ school_name }} Sci-Oly Question Banks</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
@@ -52,7 +52,6 @@
   <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to event review" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Sources &amp; Generation</h1>
   <span id="status" class="muted"></span>
-  <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
   {% include "_user_badge.html" %}
 </header>
 <div class="wrap">

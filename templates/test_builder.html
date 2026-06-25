@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Build test · {{ event_name }} · NCMS Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>Prepare test · {{ event_name }} · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .wrap{display:flex;gap:16px;padding:18px;max-width:1300px;margin:0 auto}
@@ -29,7 +29,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 <script>{{ common_js|safe }}</script>
 <header>
   <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
-  <h1>Build test <span class="muted" style="font-weight:400">— {{ event_name }}{{ " · " + window_label if window_label }}</span></h1>
+  <h1>Prepare test <span class="muted" style="font-weight:400">— {{ event_name }}{{ " · " + window_label if window_label }}</span></h1>
   <span id="save_status" class="save-status" style="margin-left:auto"></span>
   {% include "_user_badge.html" %}
 </header>
@@ -59,11 +59,11 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
   <div class="sidebar">
     <section>
       <h3 style="margin:0 0 8px 0;font-size:13px">Kept (<span id="kept_count">0</span>)</h3>
-      {% if status != "building" %}
+      {% if status != "preparing" %}
       <p class="muted" style="font-size:12px">This test is <b>{{ status }}</b> — no longer editable here.</p>
       {% endif %}
       <div class="kept-list" id="kept_list"></div>
-      {% if status == "building" %}
+      {% if status == "preparing" %}
       <div class="actions" style="margin-top:10px">
         <button id="publish_btn" class="primary" style="width:100%">Publish</button>
       </div>
@@ -202,7 +202,7 @@ function renderKept(){
 }
 
 function scheduleSave(){
-  if(TEST_STATUS !== "building") return;
+  if(TEST_STATUS !== "preparing") return;
   clearTimeout(SAVE_TIMER);
   document.getElementById("save_status").textContent = "Saving…";
   SAVE_TIMER = setTimeout(flushSave, 600);

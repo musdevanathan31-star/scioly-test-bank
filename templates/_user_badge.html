@@ -14,10 +14,17 @@
    destination (test bank / question bank / sources are per-event, so
    each expands an accordion over nav_events; the rest are direct links).
    Replaces what used to be a different scattered set of links on every
-   template (see git history for the pre-navicon layout). #}
-<div class="toolbar-group" style="position:relative">
+   template (see git history for the pre-navicon layout). `order:-1` pins
+   it to the visual left edge of the (already display:flex) header
+   regardless of where this include actually sits in each template's
+   header markup — no per-template restructuring needed. #}
+<div class="toolbar-group" style="position:relative;order:-1">
   <button id="navIconBtn" type="button" title="Navigate">☰</button>
   <div id="navIconPanel" class="dropdown-panel nav-panel">
+    <div class="nav-identity">
+      Signed in as <b>{{ current_user.display_name or current_user.username }}</b> ({{ current_user.role }})
+    </div>
+    <a class="nav-link" href="{{ url_for('index') }}">Event Management</a>
     {% if nav_events %}
       {{ nav_event_group("Test bank", "event_index") }}
       {{ nav_event_group("Question bank", "browse_page") }}
@@ -33,7 +40,21 @@
       <a class="nav-link" href="{{ url_for('tests_dashboard_page') }}">Test management</a>
     {% endif %}
     <a class="nav-link" href="{{ url_for('scores_page') }}">Scores</a>
+    {% if current_user.role == "student" %}
+      <a class="nav-link" href="{{ url_for('my_tests_page') }}">My Tests</a>
+    {% endif %}
+    {% if current_user.role in ("coach", "volunteer") %}
+    {# Hidden until JS confirms this browser has a personal LLM key set
+       (window.getLLMKeys(), common_ui.py) — the server can't know that,
+       keys are localStorage-only. See refreshCostBadge() below. #}
+    <span id="cost-badge" class="cost-badge" style="display:none;margin:4px 10px"
+          title="Anthropic API spend this process. Hover for details.">$0.00</span>
+    {% endif %}
     <button type="button" class="nav-link" id="navNotifBtn" style="width:100%;text-align:left">Notifications</button>
+    <a class="nav-link" href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys">⚙ Settings</a>
+    <form action="{{ url_for('logout') }}" method="post" style="margin:0">
+      <button type="submit" class="nav-link" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;font:inherit">Logout</button>
+    </form>
   </div>
 </div>
 {% if current_user.role != "student" %}
@@ -41,19 +62,9 @@
    LLM generation) — irrelevant clutter for a student, who has no bank access
    at all (see review_app.py's _select_event blanket student-block). #}
 <a id="jobs_badge" href="{{ url_for('admin_jobs_page') if current_user.role == 'coach' else '#' }}"
-   class="badge badge-warn" style="display:none;text-decoration:none"
+   class="badge badge-warn" style="display:none;text-decoration:none;margin-left:auto"
    title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
 {% endif %}
-<span class="muted" style="font-size:12px;margin-left:auto;display:flex;align-items:center;gap:8px">
-  Signed in as <b>{{ current_user.display_name or current_user.username }}</b> ({{ current_user.role }})
-  {% if current_user.role == "student" %}
-    <a href="{{ url_for('my_tests_page') }}">My Tests</a>
-  {% endif %}
-  <a href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys{{ ', manage users' if current_user.role == 'coach' }}">⚙ Settings</a>
-  <form action="{{ url_for('logout') }}" method="post" style="display:inline;margin:0">
-    <button type="submit" class="ghost" style="font-size:12px">Logout</button>
-  </form>
-</span>
 <script>
 (function(){
   // Polls every ~20s — frequent enough that a job finishing while you're on

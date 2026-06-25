@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Tests · NCMS Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>Tests · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .wrap{padding:18px;max-width:1040px;margin:0 auto}
@@ -22,7 +22,9 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 .event-row:first-of-type{border-top:none}
 .event-row .name{flex:0 0 140px;font-weight:600;font-size:13px}
 .event-row .vols{flex:1;font-size:12px;color:var(--muted)}
-.event-row .vols input{width:100%;padding:3px 6px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px}
+.event-row .vols .assign-btn{width:100%;text-align:left;padding:3px 6px;font-size:12px}
+.assignee-check{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0}
+.assignee-check label{font-weight:400;display:flex;align-items:center;gap:4px;font-size:13px}
 .msg{font-size:12px;margin-top:8px}
 .msg.ok{color:var(--ok)}
 .msg.err{color:var(--bad)}
@@ -92,17 +94,19 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     {% for et in entry.tests %}
     <div class="event-row" data-test-id="{{ et.test.test_id }}">
       <span class="name">{{ et.event_slug }}</span>
-      <span class="badge {{ 'badge-ok' if et.test.status in ('published','live','released') else 'badge-neutral' if et.test.status == 'building' else 'badge-warn' }}">{{ et.test.status }}</span>
+      <span class="badge {{ 'badge-ok' if et.test.status in ('published','live','released') else 'badge-neutral' if et.test.status == 'preparing' else 'badge-warn' }}">{{ et.test.status }}</span>
       {% if current_user.role == "coach" %}
       <span class="vols">
-        <input type="text" data-event="{{ et.event_slug }}" data-window="{{ w.window_id }}"
-               value="{{ et.assigned|join(', ') }}" placeholder="volunteer usernames, comma-separated">
+        <button type="button" class="ghost assign-btn" data-event="{{ et.event_slug }}" data-window="{{ w.window_id }}"
+                data-assigned="{{ et.assigned|join(',') }}">
+          {{ et.assigned|join(', ') or "Assign…" }}
+        </button>
       </span>
       {% else %}
       <span class="vols muted">{{ et.assigned|join(', ') or "(no volunteers assigned)" }}</span>
       {% endif %}
       <a href="{{ url_for('test_builder_page', test_id=et.test.test_id) }}">
-        <button class="ghost">{{ "Build" if et.test.status == "building" else "View" }}</button>
+        <button class="ghost">{{ "Prepare" if et.test.status == "preparing" else "View" }}</button>
       </a>
       {% if et.test.status in ("live", "closed", "graded", "released") %}
       <a href="{{ url_for('test_grading_page', test_id=et.test.test_id) }}">
@@ -147,8 +151,23 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     </div>
   </div>
 
+  <!-- Assign volunteers/coaches modal -->
+  <div id="assign_modal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="hdr"><h3>Assign to <span class="muted" style="font-size:13px;font-weight:400" id="assign_event_label"></span></h3></div>
+      <p class="muted" style="margin:0 0 10px 0">Only coaches and volunteers with bank access to this event are selectable.</p>
+      <div class="assignee-check" id="assign_check"></div>
+      <div id="assign_err" class="msg err" style="display:none"></div>
+      <div class="actions" style="display:flex;justify-content:flex-end;gap:8px">
+        <button id="assign_cancel">Cancel</button>
+        <button id="assign_save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 <script>
+const CANDIDATES_BY_EVENT = {{ candidates_by_event|tojson }};
 document.getElementById("season_picker").addEventListener("change", (e) => {
   location.href = `${APP_ROOT}/tests?season=${encodeURIComponent(e.target.value)}`;
 });
@@ -191,18 +210,45 @@ if(opensEl){
   });
 }
 
-// Volunteer-assignment inline editor (coach only) — saves on blur.
-document.querySelectorAll(".vols input[data-event]").forEach(el => {
-  el.addEventListener("blur", async () => {
-    const usernames = el.value.split(",").map(s => s.trim()).filter(Boolean);
-    const r = await fetch(`${APP_ROOT}/api/test-windows/${el.dataset.window}/assignments`, {
-      method: "PATCH", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({event_slug: el.dataset.event, usernames}),
-    });
-    const j = await r.json();
-    if(j.ok) toast("Assignments saved.", "ok");
-    else toast("Failed: " + (j.error||""), "err");
+// Assign volunteers/coaches modal (coach only) — candidates are scoped to
+// this event per CANDIDATES_BY_EVENT (coaches always qualify; volunteers
+// only if they have bank access to this specific event).
+const assignModal = document.getElementById("assign_modal");
+let _assigningBtn = null;
+document.querySelectorAll(".assign-btn[data-event]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    _assigningBtn = btn;
+    const slug = btn.dataset.event;
+    const assigned = new Set((btn.dataset.assigned || "").split(",").filter(Boolean));
+    document.getElementById("assign_event_label").textContent = slug;
+    const candidates = CANDIDATES_BY_EVENT[slug] || [];
+    const checkEl = document.getElementById("assign_check");
+    checkEl.innerHTML = candidates.length
+      ? candidates.map(u => `<label><input type="checkbox" value="${u}" ${assigned.has(u) ? "checked" : ""}> ${u}</label>`).join("")
+      : `<p class="muted">No coaches or volunteers with bank access to this event.</p>`;
+    document.getElementById("assign_err").style.display = "none";
+    assignModal.classList.add("on");
   });
+});
+document.getElementById("assign_cancel").addEventListener("click", () => assignModal.classList.remove("on"));
+document.getElementById("assign_save").addEventListener("click", async () => {
+  if(!_assigningBtn) return;
+  const usernames = [...document.querySelectorAll("#assign_check input:checked")].map(c => c.value);
+  const errEl = document.getElementById("assign_err");
+  const r = await fetch(`${APP_ROOT}/api/test-windows/${_assigningBtn.dataset.window}/assignments`, {
+    method: "PATCH", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({event_slug: _assigningBtn.dataset.event, usernames}),
+  });
+  const j = await r.json();
+  if(j.ok){
+    _assigningBtn.dataset.assigned = usernames.join(",");
+    _assigningBtn.textContent = usernames.join(", ") || "Assign…";
+    assignModal.classList.remove("on");
+    toast("Assignments saved.", "ok");
+  } else {
+    errEl.textContent = j.error || "Failed";
+    errEl.style.display = "block";
+  }
 });
 
 document.querySelectorAll(".go-live-btn").forEach(btn => {
@@ -217,7 +263,7 @@ document.querySelectorAll(".go-live-btn").forEach(btn => {
 
 document.querySelectorAll(".unpublish-btn").forEach(btn => {
   btn.addEventListener("click", async () => {
-    if(!await confirmModal("Un-publish this test? It reverts to 'building' for edits. Only allowed before the window opens and before any student has saved an answer.", {danger:true, confirmLabel:"Un-publish"})) return;
+    if(!await confirmModal("Un-publish this test? It reverts to 'preparing' for edits. Only allowed before the window opens and before any student has saved an answer.", {danger:true, confirmLabel:"Un-publish"})) return;
     const r = await fetch(`${APP_ROOT}/tests/${btn.dataset.test}/unpublish`, {method: "POST"});
     const j = await r.json();
     if(j.ok) location.reload();
