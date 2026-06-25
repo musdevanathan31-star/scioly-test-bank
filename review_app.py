@@ -729,7 +729,13 @@ def index():
     assigned them — so a volunteer never sees a link to an event
     _select_event() would 403 them on anyway. Archived events are hidden
     here but never deleted from disk; coaches see them in a separate
-    "Show archived" section with an Unarchive action."""
+    "Show archived" section with an Unarchive action.
+
+    Students have no bank access at all, so this page would just be an
+    empty event list for them — send them straight to their actual landing
+    page instead."""
+    if g.user.role == "student":
+        return redirect(url_for("my_tests_page"))
     rows = []
     archived_rows = []
     for slug, ev in sorted(EVENTS.items()):
@@ -947,8 +953,7 @@ def club_management_page():
     all_seasons = sorted(seasons.load_seasons().values(),
                           key=lambda s: s.season_id, reverse=True)
     current = seasons.get_current_season()
-    selected_id = request.args.get("season") or (current.season_id if current else
-                                                  (all_seasons[0].season_id if all_seasons else ""))
+    selected_id = seasons.resolve_season_id(request.args.get("season"))
     selected = seasons.get_season(selected_id) if selected_id else None
     students = sorted(
         (u for u in auth.load_users().values() if u.role == "student" and not u.disabled),
@@ -959,7 +964,7 @@ def club_management_page():
     return render_template(
         "club_management.html",
         all_seasons=all_seasons,
-        current_season_id=current.season_id if current else None,
+        current=current,
         selected=selected,
         all_events=sorted(EVENTS.keys()),
         students=students,
@@ -1125,8 +1130,7 @@ def api_bulk_csv_students(season_id):
 def tests_dashboard_page():
     all_seasons = sorted(seasons.load_seasons().values(), key=lambda s: s.season_id, reverse=True)
     current = seasons.get_current_season()
-    selected_id = request.args.get("season") or (current.season_id if current else
-                                                  (all_seasons[0].season_id if all_seasons else ""))
+    selected_id = seasons.resolve_season_id(request.args.get("season"))
     selected = seasons.get_season(selected_id) if selected_id else None
 
     all_users = auth.load_users()
@@ -1167,7 +1171,7 @@ def tests_dashboard_page():
 
     return render_template(
         "tests_dashboard.html",
-        all_seasons=all_seasons, selected=selected, windows=windows,
+        all_seasons=all_seasons, current=current, selected=selected, windows=windows,
         candidates_by_event=candidates_by_event,
     )
 
@@ -1376,7 +1380,7 @@ def my_tests_page():
     import seasons as seasons_mod
     from datetime import datetime as _dt, timezone as _tz
 
-    season = seasons_mod.get_current_season()
+    season = seasons_mod.get_season(seasons_mod.resolve_season_id())
     upcoming, current, past = [], [], []
     if season:
         my_events = set(seasons_mod.student_events(season.season_id, g.user.username))
@@ -1427,7 +1431,7 @@ def test_take_page(test_id):
 @student_required
 def api_my_tests():
     import seasons as seasons_mod
-    season = seasons_mod.get_current_season()
+    season = seasons_mod.get_season(seasons_mod.resolve_season_id())
     out = []
     if season:
         my_events = set(seasons_mod.student_events(season.season_id, g.user.username))
@@ -1650,8 +1654,7 @@ def scores_page():
         abort(403)
     all_seasons = sorted(seasons_mod.load_seasons().values(), key=lambda s: s.season_id, reverse=True)
     current = seasons_mod.get_current_season()
-    selected_id = request.args.get("season") or (current.season_id if current else
-                                                  (all_seasons[0].season_id if all_seasons else ""))
+    selected_id = seasons_mod.resolve_season_id(request.args.get("season"))
     selected = seasons_mod.get_season(selected_id) if selected_id else None
 
     students_seen: dict[str, str] = {}

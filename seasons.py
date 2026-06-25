@@ -138,6 +138,26 @@ def get_current_season() -> Season | None:
     return None
 
 
+def resolve_season_id(requested_id: str | None = None) -> str:
+    """Which season a season-scoped page is "about" when nothing is
+    explicitly requested via ?season=: the one marked current, else the
+    most recent season that exists at all, else "" if there are none.
+
+    Centralizes a fallback that club_management_page()/tests_dashboard_page()/
+    scores_page() (review_app.py) each used to duplicate inline — and that
+    my_tests_page()/api_my_tests() were missing entirely, which let a coach
+    fully roster students and prepare/publish/go-live a test under "the"
+    season without ever clicking "Mark as current", while the student-facing
+    pages saw `get_current_season() is None` and showed nothing at all."""
+    if requested_id:
+        return requested_id
+    current = get_current_season()
+    if current:
+        return current.season_id
+    all_seasons = sorted(_load_seasons().values(), key=lambda s: s.season_id, reverse=True)
+    return all_seasons[0].season_id if all_seasons else ""
+
+
 def create_season(season_id: str, label: str = "", event_slugs: list[str] | None = None,
                    created_by: str = "") -> Season:
     from datetime import datetime, timezone
@@ -153,10 +173,17 @@ def create_season(season_id: str, label: str = "", event_slugs: list[str] | None
     with _seasons_transaction() as seasons:
         if season_id in seasons:
             raise ValueError(f"season {season_id!r} already exists")
+        # The very first season ever created is auto-marked current — a
+        # coach setting up this app for the first time shouldn't need to
+        # know about a separate "Mark as current" step before students can
+        # see anything. A second/later season never auto-switches current,
+        # so a coach can stage next year's season ahead of time without
+        # disrupting the live one.
         season = Season(
             season_id=season_id,
             label=(label or "").strip(),
             event_slugs=tuple(event_slugs),
+            is_current=not seasons,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             created_by=created_by,
         )

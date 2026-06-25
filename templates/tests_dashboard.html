@@ -40,6 +40,15 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 <div class="wrap">
 
   <section>
+    {% if selected and not current %}
+    <div class="banner" style="margin:0 0 10px 0;border-radius:4px">
+      ⚠ No season is marked current — students won't see any tests on My Tests until one is. Mark "{{ selected.display_label }}" as current on <a href="{{ url_for('club_management_page') }}">Club Management</a> to fix this.
+    </div>
+    {% elif selected and current.season_id != selected.season_id %}
+    <div class="banner" style="margin:0 0 10px 0;border-radius:4px">
+      ⚠ You're viewing "{{ selected.display_label }}", but "{{ current.display_label }}" is the current season — that's what students see on My Tests.
+    </div>
+    {% endif %}
     <div class="season-bar">
       <label for="season_picker">Season</label>
       <select id="season_picker">

@@ -5,14 +5,14 @@ A task-oriented guide: "I want to do X" rather than "how does X work." For *why*
 ## Roles at a glance
 
 - **Coach** — full admin. Sees every event, can manage users and shared textbooks, runs Club Management and the Tests dashboard, and can do everything a volunteer can do on every event (not just assigned ones).
-- **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL. May also be assigned to build/grade a season test for an event — a separate grant, unrelated to event access (see "For Volunteers" below).
-- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-tests` (take a live test, see released results for past ones) and `/scores` (see everyone's named scores). See "For Students" below.
+- **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL. May also be assigned to prepare/grade a season test for an event — a separate grant, unrelated to event access (see "For Volunteers" below).
+- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-tests` (take a live test, see released results for past ones) and `/scores` (see everyone's named scores). Logging in takes you straight to My Tests, since there's no bank to land on. See "For Students" below.
 
 Log in at `/login` with the username/password a coach gave you.
 
 ## Getting around (any role)
 
-Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Event Management** jumps to the landing page; **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in); **Jobs**, **Club Management**, and **Test management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu.
+Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Event Management** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club Management**, and **Test management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Tests, Scores, Notifications, Settings, Logout.
 
 ## Account settings (any role)
 
@@ -181,8 +181,8 @@ A matching question shows a dropdown next to each left-column item listing every
 ### Set up a new season
 
 A season groups events, students, and tests under one label (e.g. "2027"). Open **☰ → Club Management**.
-1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**.
-2. Click **Mark as current** on it — exactly one season is ever current; this is what "My Tests"/Tests dashboard/Scores default to.
+1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**. If this is the very first season this instance has ever had, it's automatically marked current — no extra step needed. A second or later season is **not** auto-switched, so you can stage next year's season ahead of time without disrupting the live one.
+2. If it isn't already current, click **Mark as current** on it — exactly one season is ever current, and that's what "My Tests" defaults to for students. If you skip this, a yellow banner appears on this page and on the Tests dashboard ("⚠ No season is marked current…" or "⚠ You're viewing X, but Y is the current season…") — students won't see any tests until you fix it.
 3. Add students: either one-by-one via **Manage Users** on this same Club Management page (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
 4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Tests" and the Scores page for each student — it has no effect on who can edit that event's question bank.
 5. Running a new season off an old one's roster? Pick the prior season from **Copy roster from…** and click Copy — only events present in both seasons' lineups copy over, and any since-disabled student is silently skipped.
@@ -266,11 +266,11 @@ A coach can assign you to prepare or grade a test for an event — the assignmen
 
 ### Logging in for the first time
 
-A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login`, then go to **☰ → Settings → My Account** to change your password whenever you like.
+A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login` — you land directly on **My Tests**, your home page (there's no question bank to manage, so the navigation menu only shows what you can actually use: My Tests, Scores, Notifications, Settings, Logout). Go to **☰ → Settings → My Account** to change your password whenever you like.
 
 ### Taking a test
 
-Click **My Tests** in the header. Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.
+Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.
 
 If you missed the window, ask a coach for a personal makeup window — once granted, the test becomes accessible to you on your own separate schedule, regardless of whether the class window is open.
 
@@ -311,8 +311,8 @@ Once a coach releases grades for a test, **My Tests** shows it under Past with y
 | Create/mark current a season | Coach | Club Management |
 | Bulk-create students + roster via CSV | Coach | Club Management → + Bulk-add students from CSV |
 | Roster a student onto an event | Coach | Club Management → roster grid |
-| Create a test window, assign volunteers | Coach | Tests dashboard |
-| Build a test (pick questions, publish) | Coach, assigned Volunteer | Tests dashboard → Build |
+| Create a test window, assign coaches/volunteers | Coach | Tests dashboard → Assign… |
+| Prepare a test (pick questions, publish) | Coach, assigned Volunteer | Tests dashboard → Prepare |
 | Go live / un-publish a test | Coach | Tests dashboard |
 | Grant a student a personal makeup window | Coach | Tests dashboard → + Makeup window |
 | Grade free-response answers | Coach, assigned Volunteer | Tests dashboard → Grade |

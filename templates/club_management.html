@@ -56,6 +56,15 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
   <section>
     <h2>Season</h2>
     <p class="muted">A season declares its own event lineup — only events checked here can be rostered or scheduled for testing this season. This has no effect on who can curate/edit any event's question bank; that's governed entirely by each user's role/assigned-events on the Settings page.</p>
+    {% if selected and not current %}
+    <div class="banner" style="margin:0 0 10px 0;border-radius:4px">
+      ⚠ No season is marked current — students won't see any tests on My Tests until one is. Mark "{{ selected.display_label }}" as current below to fix this.
+    </div>
+    {% elif selected and current.season_id != selected.season_id %}
+    <div class="banner" style="margin:0 0 10px 0;border-radius:4px">
+      ⚠ You're viewing "{{ selected.display_label }}", but "{{ current.display_label }}" is the current season — that's what students see on My Tests.
+    </div>
+    {% endif %}
     <div class="season-bar">
       <label for="season_picker">Season</label>
       <select id="season_picker">
