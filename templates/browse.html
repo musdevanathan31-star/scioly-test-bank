@@ -159,7 +159,6 @@ header{background:#fff;border-bottom:1px solid var(--line)}
     <span class="muted" style="font-weight:400"> · Browse</span>
   </h1>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
-  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
   {% include "_user_badge.html" %}

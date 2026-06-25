@@ -191,6 +191,23 @@ a{color:var(--accent);text-decoration:none}
   overflow-y:auto;z-index:120;transform:translateX(100%);
   transition:transform .2s ease;box-shadow:-2px 0 16px rgba(0,0,0,.15)}
 .side-drawer.on{transform:translateX(0)}
+
+/* Navicon menu (templates/_user_badge.html) — the app's single consolidated
+   navigation entry point, replacing the per-template scattered links it
+   used to take to reach the same destinations. A .dropdown-panel variant
+   with its own link/accordion styling. */
+.nav-panel{min-width:230px}
+.nav-panel .nav-link{display:block;padding:6px 10px;border-radius:4px;color:var(--fg);
+  text-decoration:none;font-size:13px}
+.nav-panel .nav-link:hover{background:var(--hover)}
+.nav-group-toggle{display:block;width:100%;text-align:left;background:none;border:none;
+  padding:6px 10px;font-size:13px;color:var(--fg);cursor:pointer;border-radius:4px}
+.nav-group-toggle:hover{background:var(--hover)}
+.nav-group-items{display:none;padding-left:14px}
+.nav-group-items.on{display:block}
+.nav-group-items a{display:block;padding:4px 8px;font-size:12px;color:var(--fg-soft);
+  text-decoration:none;border-radius:4px}
+.nav-group-items a:hover{background:var(--hover)}
 """
 
 # Common JS helpers injected into every page. Provides:

@@ -10,6 +10,10 @@ A task-oriented guide: "I want to do X" rather than "how does X work." For *why*
 
 Log in at `/login` with the username/password a coach gave you.
 
+## Getting around (any role)
+
+Click **☰** in the header on any page to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in); **Jobs**, **Club Management**, and **Test management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages (previously a separate "Messages" button).
+
 ## Account settings (any role)
 
 Click **⚙ Settings** in the header from any page — this is the same page for everyone, it just shows more sections if you're a coach.
@@ -105,6 +109,8 @@ Same **Generate** page:
 2. Pick the source, choose a count and question type(s), click **Generate**. Watch the progress panel; **Cancel** aborts an in-flight request.
 3. Review each candidate — duplicates against your whole bank are auto-rejected and listed separately — then **Keep**/**Drop** individually or **Accept all kept**.
 
+**Refreshing scioly.org cookies without scp** (coach-only) — next to the **Scrape Sci-Oly wiki** button, a badge shows the bot-bypass cookie's freshness. If it's expired or about to be, you don't need to scp a Playwright-exported file from another machine: visit scioly.org in your own browser, solve the challenge there, open devtools and run `document.cookie`, then paste the result into the textbox and click **Save cookie**.
+
 ### Managing shared textbooks
 
 The **Shared textbooks** panel (same Generate page, any event) is for material useful across *multiple* events. Upload once; it's available from every event's Generate dropdown, split by chapter. **Detect chapters** tries the PDF's own bookmarks first, then a heading-text scan; if neither finds anything, **Set chapters manually** lets you type `Title, start page` one per line. Re-run detection any time, e.g. after replacing the file with a cleaner scan.
@@ -173,7 +179,7 @@ A matching question shows a dropdown next to each left-column item listing every
 
 ### Set up a new season
 
-A season groups events, students, and tests under one label (e.g. "2027"). Open **Club Management** from the header.
+A season groups events, students, and tests under one label (e.g. "2027"). Open **☰ → Club Management**.
 1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**.
 2. Click **Mark as current** on it — exactly one season is ever current; this is what "My Tests"/Tests dashboard/Scores default to.
 3. Add students: either one-by-one via **⚙ Settings → Manage Users** (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via ⚙ Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
@@ -271,7 +277,7 @@ If you missed the window, ask a coach for a personal makeup window — once gran
 
 Once a coach releases grades for a test, **My Tests** shows it under Past with your full results — your answers, the correct answers, and your score per question (including partial credit on matching questions). Until release, it just shows as submitted/pending, even if a volunteer has already graded the free-response parts behind the scenes.
 
-**Scores** (header link, visible to every role) shows every rostered student's named score on every graded test for the season — not just your own. You can only drill into the question-by-question detail of your *own* responses; other students' rows show the score only.
+**Scores** (☰ menu, visible to every role) shows every rostered student's named score on every graded test for the season — not just your own. You can only drill into the question-by-question detail of your *own* responses; other students' rows show the score only.
 
 ## Quick task index
 

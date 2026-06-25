@@ -170,6 +170,26 @@ def _inject_user():
     return {"current_user": getattr(g, "user", None)}
 
 
+@app.context_processor
+def _inject_nav():
+    """Accessible events for the navicon's per-event accordions
+    (templates/_user_badge.html) — same access rule index() already uses
+    (`role != "coach" and slug not in user.events`), but lighter (no per-
+    event PDF/state scan) since this now runs on every page render, not
+    just the landing page. A student's `user.events` is always empty, so
+    this naturally yields zero events for them with no extra special-
+    casing — consistent with _select_event()'s blanket student block."""
+    user = getattr(g, "user", None)
+    if user is None:
+        return {}
+    nav_events = [
+        {"slug": slug, "name": ev.name}
+        for slug, ev in sorted(EVENTS.items())
+        if not ev.archived and (user.role == "coach" or slug in user.events)
+    ]
+    return {"nav_events": nav_events}
+
+
 # Routes that mutate state via a plain HTML <form> POST (not fetch()) can't
 # attach a custom header, so they're exempt from the CSRF check below —
 # both are auth-flow routes, not data mutations, and login CSRF/logout CSRF
@@ -2068,12 +2088,39 @@ def admin_jobs_page():
 @app.route("/api/cookies/status")
 @coach_required
 def api_cookies_status():
-    """Backs the header's Anubis-cookie freshness badge (coach-only — it's
-    an operational/server concern, not something a volunteer needs surfaced).
-    Lets the coach scp a fresh `.scioly_cookies.json` from a Playwright-capable
-    machine before a scioly.org download run silently starts failing
-    mid-batch on a headless server that can't launch a browser itself."""
+    """Backs the Anubis-cookie freshness badge on the Sources page (coach-only
+    — it's an operational/server concern, not something a volunteer needs
+    surfaced). Lets the coach scp a fresh `.scioly_cookies.json` from a
+    Playwright-capable machine before a scioly.org download run silently
+    starts failing mid-batch on a headless server that can't launch a
+    browser itself — or use api_cookies_paste below instead of scp."""
     return jsonify(download_event.cookie_expiry_status() or {})
+
+
+@app.route("/api/cookies/paste", methods=["POST"])
+@coach_required
+def api_cookies_paste():
+    """Manual alternative to scp-ing a Playwright-exported cookie file: the
+    coach pastes the raw `document.cookie` string from their own browser's
+    devtools, copied right after manually clearing the Anubis challenge at
+    scioly.org. A raw paste carries no real expiry, so we assign a synthetic
+    one matching this app's documented real-world cookie lifetime (~7 days)
+    — cookie_expiry_status() then ages it down like any other cookie."""
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("cookie_string") or "").strip()
+    if not raw:
+        return jsonify({"error": "Paste a cookie string first."}), 400
+    cookies = []
+    for part in raw.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name and value:
+            cookies.append({"name": name.strip(), "value": value.strip(),
+                            "domain": "scioly.org", "path": "/",
+                            "expires": time.time() + 7 * 86400})
+    if not cookies:
+        return jsonify({"error": "Couldn't find any name=value pairs in that string."}), 400
+    download_event._save_cookies(cookies)
+    return jsonify({"ok": True, "count": len(cookies)})
 
 
 @app.route("/admin/jobs/api/list")

@@ -53,7 +53,6 @@
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Sources &amp; Generation</h1>
   <span id="status" class="muted"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
-  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
   {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
@@ -68,6 +67,16 @@
       <button id="btn_scrape" class="primary" title="Scrape the scioly.org wiki page for this event and save the markdown into texts/wiki.md">Scrape Sci-Oly wiki</button>
       <span class="muted">→ <a href="{{ wiki_url }}" target="_blank">{{ wiki_url }}</a></span>
     </div>
+    {% if current_user.role == "coach" %}
+    <div class="row-info" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="cookie_badge" class="badge badge-warn" style="display:none"
+            title="scioly.org bot-bypass cookies — needed by Scrape Sci-Oly wiki / scioly.org PDF downloads"></span>
+      <input id="cookiePasteInput" type="text"
+             placeholder="Paste cookie string from your browser (devtools: document.cookie) after solving the scioly.org challenge there"
+             style="flex:1;min-width:280px;padding:5px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px">
+      <button id="cookiePasteBtn" class="ghost" title="Save a fresh scioly.org cookie without scp-ing a Playwright-exported file">Save cookie</button>
+    </div>
+    {% endif %}
     <div class="row-info upload-form">
       <form id="upload_form" enctype="multipart/form-data">
         <label class="muted">Upload a PDF/MD/TXT:
@@ -426,6 +435,57 @@ document.getElementById("btn_scrape").addEventListener("click", async ()=>{
     });
   } finally { popBusy(); }
 });
+
+// Cookie-freshness badge + manual paste — moved here from the global header
+// (was coach-only there too) since this is where scioly.org bot-bypass
+// cookies actually get used (wiki scrape, and scioly.org PDF downloads on
+// the event page). Checked far less often than a job-progress poll: cookie
+// expiry moves in days, not seconds.
+const cookieBadgeEl = document.getElementById("cookie_badge");
+if(cookieBadgeEl){
+  async function refreshCookieBadge(){
+    try {
+      const r = await fetch(`${APP_ROOT}/api/cookies/status`);
+      const j = await r.json();
+      if(j.soonest_expires == null){
+        cookieBadgeEl.style.display = "none";
+        return;
+      }
+      const hoursLeft = (j.soonest_expires * 1000 - Date.now()) / 3600000;
+      if(j.expired || hoursLeft <= 48){
+        cookieBadgeEl.textContent = j.expired
+          ? "🍪 scioly.org cookies expired"
+          : `🍪 scioly.org cookies expire in ${Math.max(0, Math.round(hoursLeft))}h`;
+        cookieBadgeEl.className = "badge " + (j.expired ? "badge-bad" : "badge-warn");
+        cookieBadgeEl.style.display = "";
+      } else {
+        cookieBadgeEl.style.display = "none";
+      }
+    } catch(e){ /* badge just stays at its last known state */ }
+  }
+  refreshCookieBadge();
+  setInterval(refreshCookieBadge, 600000);
+
+  document.getElementById("cookiePasteBtn").addEventListener("click", async () => {
+    const input = document.getElementById("cookiePasteInput");
+    const v = input.value.trim();
+    if(!v){ setStatus("Paste a cookie string first.", "err"); return; }
+    try {
+      const r = await fetch(`${APP_ROOT}/api/cookies/paste`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({cookie_string: v}),
+      });
+      const j = await r.json();
+      if(j.ok){
+        setStatus(`Saved ${j.count} cookie(s).`, "ok");
+        input.value = "";
+        refreshCookieBadge();
+      } else {
+        setStatus("Error: " + (j.error || "unknown"), "err");
+      }
+    } catch(e){ setStatus("Error: " + e.message, "err"); }
+  });
+}
 
 document.getElementById("upload_form").addEventListener("submit", async e => {
   e.preventDefault();

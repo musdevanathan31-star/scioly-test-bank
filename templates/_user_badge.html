@@ -1,5 +1,41 @@
 {% if current_user %}
 <script>const APP_ROOT = {{ request.script_root|tojson }};</script>
+{% macro nav_event_group(label, endpoint) %}
+<div class="nav-group">
+  <button type="button" class="nav-group-toggle" data-nav-toggle>{{ label }} ▾</button>
+  <div class="nav-group-items">
+    {% for ev in nav_events %}
+    <a href="{{ url_for(endpoint, event_slug=ev.slug) }}">{{ ev.name }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endmacro %}
+{# The navicon — single consolidated entry point for every cross-page
+   destination (test bank / question bank / sources are per-event, so
+   each expands an accordion over nav_events; the rest are direct links).
+   Replaces what used to be a different scattered set of links on every
+   template (see git history for the pre-navicon layout). #}
+<div class="toolbar-group" style="position:relative">
+  <button id="navIconBtn" type="button" title="Navigate">☰</button>
+  <div id="navIconPanel" class="dropdown-panel nav-panel">
+    {% if nav_events %}
+      {{ nav_event_group("Test bank", "event_index") }}
+      {{ nav_event_group("Question bank", "browse_page") }}
+      {{ nav_event_group("Primary sources", "sources_page") }}
+    {% endif %}
+    {% if current_user.role == "coach" %}
+      <a class="nav-link" href="{{ url_for('admin_jobs_page') }}">Jobs</a>
+      <a class="nav-link" href="{{ url_for('club_management_page') }}">Club Management</a>
+    {% elif nav_events %}
+      {{ nav_event_group("Jobs", "event_jobs_page") }}
+    {% endif %}
+    {% if current_user.role in ("coach", "volunteer") %}
+      <a class="nav-link" href="{{ url_for('tests_dashboard_page') }}">Test management</a>
+    {% endif %}
+    <a class="nav-link" href="{{ url_for('scores_page') }}">Scores</a>
+    <button type="button" class="nav-link" id="navNotifBtn" style="width:100%;text-align:left">Notifications</button>
+  </div>
+</div>
 {% if current_user.role != "student" %}
 {# Jobs are entirely a question-bank-pipeline concept (PDF reprocess, scraping,
    LLM generation) — irrelevant clutter for a student, who has no bank access
@@ -8,23 +44,11 @@
    class="badge badge-warn" style="display:none;text-decoration:none"
    title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
 {% endif %}
-{% if current_user.role == "coach" %}
-<span id="cookie_badge" class="badge badge-warn" style="display:none"
-      title="scioly.org bot-bypass cookies — scp a fresh .scioly_cookies.json from a machine that can run Playwright"></span>
-{% endif %}
 <span class="muted" style="font-size:12px;margin-left:auto;display:flex;align-items:center;gap:8px">
   Signed in as <b>{{ current_user.display_name or current_user.username }}</b> ({{ current_user.role }})
-  {% if current_user.role == "coach" %}
-    <a href="{{ url_for('admin_jobs_page') }}">All jobs</a>
-    <a href="{{ url_for('club_management_page') }}">Club Management</a>
-  {% endif %}
-  {% if current_user.role in ("coach", "volunteer") %}
-    <a href="{{ url_for('tests_dashboard_page') }}">Tests</a>
-  {% endif %}
   {% if current_user.role == "student" %}
     <a href="{{ url_for('my_tests_page') }}">My Tests</a>
   {% endif %}
-  <a href="{{ url_for('scores_page') }}">Scores</a>
   <a href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys{{ ', manage users' if current_user.role == 'coach' }}">⚙ Settings</a>
   <form action="{{ url_for('logout') }}" method="post" style="display:inline;margin:0">
     <button type="submit" class="ghost" style="font-size:12px">Logout</button>
@@ -60,33 +84,32 @@
   refreshJobsBadge();
   setInterval(refreshJobsBadge, 20000);
 
-  // Cookie-freshness badge (coach-only — element doesn't exist for others).
-  // Checked far less often than the jobs badge: cookie expiry moves in days,
-  // not seconds, so there's no benefit to polling this aggressively.
-  async function refreshCookieBadge(){
-    const el = document.getElementById("cookie_badge");
-    if(!el) return;
-    try {
-      const r = await fetch(`${APP_ROOT}/api/cookies/status`);
-      const j = await r.json();
-      if(j.soonest_expires == null){
-        el.style.display = "none";
-        return;
-      }
-      const hoursLeft = (j.soonest_expires * 1000 - Date.now()) / 3600000;
-      if(j.expired || hoursLeft <= 48){
-        el.textContent = j.expired
-          ? "🍪 scioly.org cookies expired"
-          : `🍪 scioly.org cookies expire in ${Math.max(0, Math.round(hoursLeft))}h`;
-        el.className = "badge " + (j.expired ? "badge-bad" : "badge-warn");
-        el.style.display = "";
-      } else {
-        el.style.display = "none";
-      }
-    } catch(e){ /* badge just stays at its last known state */ }
+  // Navicon — toggle the transient panel, close it on any outside click,
+  // expand/collapse per-event accordions in place, and have "Notifications"
+  // close the panel then reuse the existing toast-history toggle.
+  const navBtn = document.getElementById("navIconBtn");
+  const navPanel = document.getElementById("navIconPanel");
+  if(navBtn && navPanel){
+    navBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      navPanel.classList.toggle("on");
+    });
+    document.addEventListener("click", e => {
+      if(!e.target.closest("#navIconBtn") && !e.target.closest("#navIconPanel"))
+        navPanel.classList.remove("on");
+    });
+    navPanel.querySelectorAll("[data-nav-toggle]").forEach(btn => {
+      btn.addEventListener("click", e => {
+        e.stopPropagation();
+        btn.nextElementSibling.classList.toggle("on");
+      });
+    });
+    const notifBtn = document.getElementById("navNotifBtn");
+    if(notifBtn) notifBtn.addEventListener("click", () => {
+      navPanel.classList.remove("on");
+      toggleToastHistory();
+    });
   }
-  refreshCookieBadge();
-  setInterval(refreshCookieBadge, 600000);
 })();
 </script>
 {% endif %}

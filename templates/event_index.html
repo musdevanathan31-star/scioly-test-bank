@@ -40,14 +40,8 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   <h1>{{ event_name }} — Review</h1>
   <span id="status" class="muted"></span>
   <span id="cost-badge" class="cost-badge" title="Anthropic API spend this process. Hover for details.">$0.00</span>
-  <button class="history-btn" onclick="toggleToastHistory()" title="Recent messages">Messages</button>
   <div class="toolbar-group">
-    <a href="{{ request.script_root }}/event/{{ event_slug }}/browse"><button title="Search/filter every question in the bank">Browse questions</button></a>
     <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>
-    <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
-  </div>
-  <div class="toolbar-group">
-    <a href="{{ request.script_root }}/event/{{ event_slug }}/jobs"><button title="View running/queued/recent background jobs for this event (reprocess, scio.ly, generation, …)">Jobs</button></a>
   </div>
   {% include "_user_badge.html" %}
 </header>
