@@ -1708,9 +1708,18 @@ def api_pdf(event_slug, pdfname):
     state = bqb._load_state()
     qs = state.get("questions", {}).get(pdfname, [])
     if qs and not all("page" in q for q in qs):
-        _compute_pages(pdfname, qs)
-        state.setdefault("questions", {})[pdfname] = qs
-        bqb._save_state(state)
+        # Re-check inside the transaction (not just re-using the outer
+        # `state`/`qs` snapshot) — two near-simultaneous first-loads of the
+        # same PDF could otherwise both pass this outer check, and the
+        # second save would silently replace the first one's effectively-
+        # identical computed page numbers. The double-check keeps this a
+        # write-once operation rather than turning a conditional save into
+        # an unconditional one on every page load.
+        with bqb._state_transaction() as state:
+            qs = state.get("questions", {}).get(pdfname, [])
+            if qs and not all("page" in q for q in qs):
+                _compute_pages(pdfname, qs)
+                state.setdefault("questions", {})[pdfname] = qs
     doc = _open_pdf(pdfname)
     ann = state.get("annotations", {}).get(pdfname, {})
     key_path = _key_path(bqb.BASE_DIR / pdfname)
@@ -1894,15 +1903,14 @@ def api_save(event_slug, pdfname):
                 str(fn): str(d) for fn, d in img_desc.items() if d
             }
         cleaned.append(clean_q)
-    state = bqb._load_state()
-    state.setdefault("questions", {})[pdfname] = cleaned
-    state.setdefault("manual", {})[pdfname] = {
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    ann = data.get("annotations") or {}
-    if ann:
-        state.setdefault("annotations", {})[pdfname] = ann
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        state.setdefault("questions", {})[pdfname] = cleaned
+        state.setdefault("manual", {})[pdfname] = {
+            "edited_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        ann = data.get("annotations") or {}
+        if ann:
+            state.setdefault("annotations", {})[pdfname] = ann
     return jsonify({"ok": True, "saved": len(cleaned),
                     "annotations_kept": bool(ann)})
 
@@ -2076,28 +2084,27 @@ def api_delete_all_questions(event_slug, pdfname):
     """Bulk-delete every question from a PDF, recording deletions in
     annotations so they survive Reprocess. Used by the event index page."""
     _select_event(event_slug)
-    state = bqb._load_state()
-    qs = state.get("questions", {}).get(pdfname, []) or []
-    n = len(qs)
-    # Record each as an annotation delete (or strip from `added` if user-added)
-    ann = state.setdefault("annotations", {}).setdefault(pdfname, {
-        "field_overrides": {}, "added": [], "deleted": [],
-        "image_overrides": {"assignments": {}, "detached": []},
-        "regions": [], "validations": {},
-    })
-    ann.setdefault("added", [])
-    ann.setdefault("deleted", [])
-    added_nums = {a.get("number") for a in ann["added"]}
-    for q in qs:
-        num = q.get("number")
-        if not num:
-            continue
-        if num in added_nums:
-            ann["added"] = [a for a in ann["added"] if a.get("number") != num]
-        elif num not in ann["deleted"]:
-            ann["deleted"].append(num)
-    state.setdefault("questions", {})[pdfname] = []
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        qs = state.get("questions", {}).get(pdfname, []) or []
+        n = len(qs)
+        # Record each as an annotation delete (or strip from `added` if user-added)
+        ann = state.setdefault("annotations", {}).setdefault(pdfname, {
+            "field_overrides": {}, "added": [], "deleted": [],
+            "image_overrides": {"assignments": {}, "detached": []},
+            "regions": [], "validations": {},
+        })
+        ann.setdefault("added", [])
+        ann.setdefault("deleted", [])
+        added_nums = {a.get("number") for a in ann["added"]}
+        for q in qs:
+            num = q.get("number")
+            if not num:
+                continue
+            if num in added_nums:
+                ann["added"] = [a for a in ann["added"] if a.get("number") != num]
+            elif num not in ann["deleted"]:
+                ann["deleted"].append(num)
+        state.setdefault("questions", {})[pdfname] = []
     return jsonify({"ok": True, "deleted": n})
 
 
@@ -2412,33 +2419,41 @@ def api_reprocess(event_slug, pdfname):
     as it short-circuited before any extraction call previously."""
     _select_event(event_slug)
     data = request.get_json(silent=True) or {}
-    state = bqb._load_state()
-    if data.get("discard_annotations") and (
-        state.get("annotations", {}).get(pdfname)
-        or state.get("manual", {}).get(pdfname)
-        or state.get("questions", {}).get(pdfname)
-    ):
-        # Snapshot before any of this destructive reprocess's data loss, so
-        # it's always recoverable via the restore-snapshot route below — the
-        # app never permanently discards a PDF's accumulated edits.
-        archive.snapshot_pdf_state(bqb.EVENT, pdfname, state)
-    state.setdefault("questions", {}).pop(pdfname, None)
-    state.setdefault("vision", {}).pop(pdfname, None)
-    if data.get("discard_annotations"):
-        state.setdefault("annotations", {}).pop(pdfname, None)
-        state.setdefault("manual", {}).pop(pdfname, None)
+    manual_mode = bool(data.get("manual_mode"))
     test_pdf = bqb.BASE_DIR / pdfname
     if not test_pdf.exists():
         abort(404)
-    if data.get("manual_mode"):
-        # Manual mode: skip auto-extraction; user will rebuild via region capture.
-        # Annotations have already been wiped above. Just persist an empty question list.
-        state.setdefault("questions", {})[pdfname] = []
-        bqb._save_state(state)
+    # The synchronous wipe (snapshot + pop questions/vision/annotations) and
+    # the synchronous job-target closure below each load/save state
+    # separately — they're necessarily two separate transactions (the wipe
+    # must be visible before the job queues), not one. That's fine: each
+    # half is internally atomic, and they're sequenced by this request
+    # (wipe persists before the job is even submitted), not concurrent with
+    # each other. The job closure's own load/save (out of this fix's scope —
+    # see _state_transaction()'s docstring) is unaffected.
+    with bqb._state_transaction() as state:
+        if data.get("discard_annotations") and (
+            state.get("annotations", {}).get(pdfname)
+            or state.get("manual", {}).get(pdfname)
+            or state.get("questions", {}).get(pdfname)
+        ):
+            # Snapshot before any of this destructive reprocess's data loss, so
+            # it's always recoverable via the restore-snapshot route below — the
+            # app never permanently discards a PDF's accumulated edits.
+            archive.snapshot_pdf_state(bqb.EVENT, pdfname, state)
+        state.setdefault("questions", {}).pop(pdfname, None)
+        state.setdefault("vision", {}).pop(pdfname, None)
+        if data.get("discard_annotations"):
+            state.setdefault("annotations", {}).pop(pdfname, None)
+            state.setdefault("manual", {}).pop(pdfname, None)
+        if manual_mode:
+            # Manual mode: skip auto-extraction; user will rebuild via region capture.
+            # Annotations have already been wiped above. Just persist an empty question list.
+            state.setdefault("questions", {})[pdfname] = []
+    if manual_mode:
         return jsonify({"ok": True, "n_questions": 0,
                         "discarded_annotations": True,
                         "manual_mode": True})
-    bqb._save_state(state)  # persist the pre-job wipe before the job re-reads state
 
     def _target(should_cancel, on_progress):
         _job_target_setup(event_slug)
@@ -2480,14 +2495,13 @@ def api_restore_snapshot(event_slug, pdfname):
         return jsonify({"error": str(e)}), 400
     except FileNotFoundError:
         return jsonify({"error": "snapshot not found"}), 404
-    state = bqb._load_state()
-    if snap.get("annotations") is not None:
-        state.setdefault("annotations", {})[pdfname] = snap["annotations"]
-    if snap.get("manual") is not None:
-        state.setdefault("manual", {})[pdfname] = snap["manual"]
-    if snap.get("questions") is not None:
-        state.setdefault("questions", {})[pdfname] = snap["questions"]
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        if snap.get("annotations") is not None:
+            state.setdefault("annotations", {})[pdfname] = snap["annotations"]
+        if snap.get("manual") is not None:
+            state.setdefault("manual", {})[pdfname] = snap["manual"]
+        if snap.get("questions") is not None:
+            state.setdefault("questions", {})[pdfname] = snap["questions"]
     return jsonify({"ok": True, "restored_from": filename})
 
 
@@ -2849,120 +2863,127 @@ def api_patch_question(event_slug, bucket, num):
     review page. Used by the browse-page inline editor."""
     _select_event(event_slug)
     data = request.get_json() or {}
-    state = bqb._load_state()
-    bucket_qs = state.setdefault("questions", {}).get(bucket)
-    if bucket_qs is None:
-        return jsonify({"error": f"bucket not found: {bucket}"}), 404
-    q = next((x for x in bucket_qs if str(x.get("number")) == str(num)), None)
-    if not q:
-        return jsonify({"error": f"question #{num} not in {bucket}"}), 404
+    # Validated up front (before the transaction, not inside it) — a `with`
+    # block's body returning early is a normal exit, not an exception, so
+    # the transaction would still save whatever fields were already mutated
+    # before this check if it lived inside the loop below. Pre-validating
+    # keeps a bad request a true no-op, matching the original behaviour
+    # where _save_state() was only ever called once, at the very end.
+    if "validation" in data and isinstance(data["validation"], dict):
+        status = data["validation"].get("status")
+        if status is not None and status not in _VALIDATION_STATUSES:
+            return jsonify({"error": f"invalid validation status: {status!r}"}), 400
+    with bqb._state_transaction() as state:
+        bucket_qs = state.setdefault("questions", {}).get(bucket)
+        if bucket_qs is None:
+            return jsonify({"error": f"bucket not found: {bucket}"}), 404
+        q = next((x for x in bucket_qs if str(x.get("number")) == str(num)), None)
+        if not q:
+            return jsonify({"error": f"question #{num} not in {bucket}"}), 404
 
-    edited_fields: list[str] = []
+        edited_fields: list[str] = []
 
-    # Apply edits
-    for k in ("text", "topic", "focus", "answer"):
-        if k in data:
-            q[k] = (data[k] or "").strip()
-            edited_fields.append(k)
-    if "choices" in data and isinstance(data["choices"], list):
-        q["choices"] = [{"letter": (c.get("letter") or "").upper()[:1],
-                         "text": (c.get("text") or "").strip()}
-                        for c in data["choices"]
-                        if (c.get("text") or "").strip()]
-        for i, c in enumerate(q["choices"]):
-            c["letter"] = chr(ord("A") + i)
-        edited_fields.append("choices")
-    if "matching" in data:
-        m = data["matching"]
-        if m is None:
-            q.pop("matching", None)
-            q.pop("qtype", None)
-        elif isinstance(m, dict):
-            q["matching"] = {
-                "left":  [{"label": str(it.get("label") or ""),
-                           "text": (it.get("text") or "").strip(),
-                           "image": it.get("image") or None}
-                          for it in (m.get("left") or [])],
-                "right": [{"label": str(it.get("label") or ""),
-                           "text": (it.get("text") or "").strip(),
-                           "image": it.get("image") or None}
-                          for it in (m.get("right") or [])],
-                "pairs": {str(k): str(v) for k, v in (m.get("pairs") or {}).items()},
-            }
-            q["qtype"] = "matching"
-        edited_fields.append("matching")
-        edited_fields.append("qtype")
-    if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
-        cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
-                   if str(d or "").strip()}
-        q["image_descriptions"] = cleaned
-        edited_fields.append("image_descriptions")
-    if "validation" in data:
-        v = data["validation"]
-        if v is None:
-            # "(unset)" in the manual validation dropdown — clear any
-            # existing AI or human verdict outright.
-            q.pop("validation", None)
-        elif isinstance(v, dict):
-            status = v.get("status")
-            if status is not None and status not in _VALIDATION_STATUSES:
-                return jsonify({"error": f"invalid validation status: {status!r}"}), 400
-            # Either the AI path (validated_by="ai", set right after the
-            # stateless /api/validate-question call) or a human's own
-            # verdict (validated_by="human") — whichever happens most
-            # recently simply overwrites this field, by design: a human can
-            # always override a stale AI verdict, and re-running AI
-            # Validate can override a human's.
-            q["validation"] = {
-                "status": status,
-                "rationale": v.get("rationale") or "",
-                "validated_by": v.get("validated_by") or "human",
-                **({"source": v["source"]} if v.get("source") else {}),
-                **({"correct_answer": v["correct_answer"]} if v.get("correct_answer") else {}),
-            }
-        edited_fields.append("validation")
+        # Apply edits
+        for k in ("text", "topic", "focus", "answer"):
+            if k in data:
+                q[k] = (data[k] or "").strip()
+                edited_fields.append(k)
+        if "choices" in data and isinstance(data["choices"], list):
+            q["choices"] = [{"letter": (c.get("letter") or "").upper()[:1],
+                             "text": (c.get("text") or "").strip()}
+                            for c in data["choices"]
+                            if (c.get("text") or "").strip()]
+            for i, c in enumerate(q["choices"]):
+                c["letter"] = chr(ord("A") + i)
+            edited_fields.append("choices")
+        if "matching" in data:
+            m = data["matching"]
+            if m is None:
+                q.pop("matching", None)
+                q.pop("qtype", None)
+            elif isinstance(m, dict):
+                q["matching"] = {
+                    "left":  [{"label": str(it.get("label") or ""),
+                               "text": (it.get("text") or "").strip(),
+                               "image": it.get("image") or None}
+                              for it in (m.get("left") or [])],
+                    "right": [{"label": str(it.get("label") or ""),
+                               "text": (it.get("text") or "").strip(),
+                               "image": it.get("image") or None}
+                              for it in (m.get("right") or [])],
+                    "pairs": {str(k): str(v) for k, v in (m.get("pairs") or {}).items()},
+                }
+                q["qtype"] = "matching"
+            edited_fields.append("matching")
+            edited_fields.append("qtype")
+        if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
+            cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
+                       if str(d or "").strip()}
+            q["image_descriptions"] = cleaned
+            edited_fields.append("image_descriptions")
+        if "validation" in data:
+            v = data["validation"]
+            if v is None:
+                # "(unset)" in the manual validation dropdown — clear any
+                # existing AI or human verdict outright.
+                q.pop("validation", None)
+            elif isinstance(v, dict):
+                status = v.get("status")
+                # Already validated above, before the transaction opened.
+                # Either the AI path (validated_by="ai", set right after the
+                # stateless /api/validate-question call) or a human's own
+                # verdict (validated_by="human") — whichever happens most
+                # recently simply overwrites this field, by design: a human can
+                # always override a stale AI verdict, and re-running AI
+                # Validate can override a human's.
+                q["validation"] = {
+                    "status": status,
+                    "rationale": v.get("rationale") or "",
+                    "validated_by": v.get("validated_by") or "human",
+                    **({"source": v["source"]} if v.get("source") else {}),
+                    **({"correct_answer": v["correct_answer"]} if v.get("correct_answer") else {}),
+                }
+            edited_fields.append("validation")
 
-    if edited_fields:
-        # Server-stamped, never client-supplied — g.user is the authenticated
-        # session set by _require_login, so this can't be spoofed by the
-        # request body the way a "lastEditedBy" field in `data` could be.
-        q["lastEditedBy"] = g.user.username
-        q["lastEditedDateTime"] = datetime.now().isoformat(timespec="seconds")
-        edited_fields += ["lastEditedBy", "lastEditedDateTime"]
+        if edited_fields:
+            # Server-stamped, never client-supplied — g.user is the authenticated
+            # session set by _require_login, so this can't be spoofed by the
+            # request body the way a "lastEditedBy" field in `data` could be.
+            q["lastEditedBy"] = g.user.username
+            q["lastEditedDateTime"] = datetime.now().isoformat(timespec="seconds")
+            edited_fields += ["lastEditedBy", "lastEditedDateTime"]
 
-    # Record into the annotations payload so reprocess preserves the edit
-    ann = state.setdefault("annotations", {}).setdefault(bucket, {})
-    overrides = ann.setdefault("field_overrides", {})
-    overrides[str(num)] = {**overrides.get(str(num), {}),
-                           **{k: q.get(k) for k in edited_fields}}
-    state.setdefault("manual", {})[bucket] = {
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    bqb._save_state(state)
+        # Record into the annotations payload so reprocess preserves the edit
+        ann = state.setdefault("annotations", {}).setdefault(bucket, {})
+        overrides = ann.setdefault("field_overrides", {})
+        overrides[str(num)] = {**overrides.get(str(num), {}),
+                               **{k: q.get(k) for k in edited_fields}}
+        state.setdefault("manual", {})[bucket] = {
+            "edited_at": datetime.now().isoformat(timespec="seconds"),
+        }
     return jsonify({"ok": True, "question": q})
 
 
 @app.route("/event/<event_slug>/api/q/<bucket>/<num>", methods=["DELETE"])
 def api_delete_question(event_slug, bucket, num):
     _select_event(event_slug)
-    state = bqb._load_state()
-    bucket_qs = state.get("questions", {}).get(bucket)
-    if not bucket_qs:
-        return jsonify({"error": "bucket not found"}), 404
-    before = len(bucket_qs)
-    state["questions"][bucket] = [q for q in bucket_qs
-                                   if str(q.get("number")) != str(num)]
-    if len(state["questions"][bucket]) == before:
-        return jsonify({"error": "question not found"}), 404
-    # Persist annotation so reprocess respects the deletion
-    ann = state.setdefault("annotations", {}).setdefault(bucket, {})
-    deleted = set(ann.get("deleted") or [])
-    deleted.add(str(num))
-    ann["deleted"] = sorted(deleted)
-    state.setdefault("manual", {})[bucket] = {
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        bucket_qs = state.get("questions", {}).get(bucket)
+        if not bucket_qs:
+            return jsonify({"error": "bucket not found"}), 404
+        before = len(bucket_qs)
+        state["questions"][bucket] = [q for q in bucket_qs
+                                       if str(q.get("number")) != str(num)]
+        if len(state["questions"][bucket]) == before:
+            return jsonify({"error": "question not found"}), 404
+        # Persist annotation so reprocess respects the deletion
+        ann = state.setdefault("annotations", {}).setdefault(bucket, {})
+        deleted = set(ann.get("deleted") or [])
+        deleted.add(str(num))
+        ann["deleted"] = sorted(deleted)
+        state.setdefault("manual", {})[bucket] = {
+            "edited_at": datetime.now().isoformat(timespec="seconds"),
+        }
     return jsonify({"ok": True, "removed": str(num)})
 
 
@@ -3004,30 +3025,29 @@ def api_q_upload_image(event_slug, bucket, num):
     ext = raw.rsplit(".", 1)[-1].lower() if "." in raw else ""
     if ext not in {"png", "jpg", "jpeg", "gif", "svg", "webp"}:
         return jsonify({"error": "only PNG/JPG/GIF/SVG/WebP"}), 400
-    state = bqb._load_state()
-    q, _ = _find_question(state, bucket, num)
-    if q is None:
-        return jsonify({"error": "question not found"}), 404
-    safe_name = secure_filename(_slug_image_name(bucket, num, ext, "up"))
-    bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
-    dest = bqb.EVENT.image_dir / safe_name
-    if ext == "svg":
-        # Sanitize before it ever touches disk rather than save-then-rewrite.
-        dest.write_text(_sanitize_svg(f.read().decode("utf-8", errors="replace")),
-                         encoding="utf-8")
-    else:
-        f.save(str(dest))
-    q.setdefault("images", []).append(safe_name)
-    desc = (request.form.get("description") or "").strip()
-    if desc:
-        q.setdefault("image_descriptions", {})[safe_name] = desc
-    # Drop the pending-description sentinel if it was filled by this upload
-    if q.get("image_descriptions", {}).get("__pending__") and desc:
-        q["image_descriptions"].pop("__pending__", None)
-    state.setdefault("manual", {})[bucket] = {
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        q, _ = _find_question(state, bucket, num)
+        if q is None:
+            return jsonify({"error": "question not found"}), 404
+        safe_name = secure_filename(_slug_image_name(bucket, num, ext, "up"))
+        bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
+        dest = bqb.EVENT.image_dir / safe_name
+        if ext == "svg":
+            # Sanitize before it ever touches disk rather than save-then-rewrite.
+            dest.write_text(_sanitize_svg(f.read().decode("utf-8", errors="replace")),
+                             encoding="utf-8")
+        else:
+            f.save(str(dest))
+        q.setdefault("images", []).append(safe_name)
+        desc = (request.form.get("description") or "").strip()
+        if desc:
+            q.setdefault("image_descriptions", {})[safe_name] = desc
+        # Drop the pending-description sentinel if it was filled by this upload
+        if q.get("image_descriptions", {}).get("__pending__") and desc:
+            q["image_descriptions"].pop("__pending__", None)
+        state.setdefault("manual", {})[bucket] = {
+            "edited_at": datetime.now().isoformat(timespec="seconds"),
+        }
     return jsonify({"ok": True, "image": safe_name, "size": dest.stat().st_size})
 
 
@@ -3043,25 +3063,24 @@ def api_q_save_svg(event_slug, bucket, num):
     desc = (data.get("description") or "").strip()
     if not svg or not svg.lower().startswith("<svg"):
         return jsonify({"error": "no <svg> markup in body"}), 400
-    state = bqb._load_state()
-    q, _ = _find_question(state, bucket, num)
-    if q is None:
-        return jsonify({"error": "question not found"}), 404
-    bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
-    # Save the SVG itself — Pillow can't render arbitrary SVG; we rely on the
-    # browser to show .svg directly via the existing IMG_BASE route. Storing
-    # SVG (not PNG) keeps it crisp at any zoom.
-    fname = _slug_image_name(bucket, num, "svg", "gen")
-    dest = bqb.EVENT.image_dir / fname
-    dest.write_text(svg, encoding="utf-8")
-    q.setdefault("images", []).append(fname)
-    if desc:
-        q.setdefault("image_descriptions", {})[fname] = desc
-    q.get("image_descriptions", {}).pop("__pending__", None)
-    state.setdefault("manual", {})[bucket] = {
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        q, _ = _find_question(state, bucket, num)
+        if q is None:
+            return jsonify({"error": "question not found"}), 404
+        bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
+        # Save the SVG itself — Pillow can't render arbitrary SVG; we rely on the
+        # browser to show .svg directly via the existing IMG_BASE route. Storing
+        # SVG (not PNG) keeps it crisp at any zoom.
+        fname = _slug_image_name(bucket, num, "svg", "gen")
+        dest = bqb.EVENT.image_dir / fname
+        dest.write_text(svg, encoding="utf-8")
+        q.setdefault("images", []).append(fname)
+        if desc:
+            q.setdefault("image_descriptions", {})[fname] = desc
+        q.get("image_descriptions", {}).pop("__pending__", None)
+        state.setdefault("manual", {})[bucket] = {
+            "edited_at": datetime.now().isoformat(timespec="seconds"),
+        }
     return jsonify({"ok": True, "image": fname, "size": len(svg.encode("utf-8"))})
 
 
@@ -3096,20 +3115,19 @@ def api_q_pick_image(event_slug, bucket, num):
     rect = fitz.Rect(x * f, y * f, (x + w) * f, (y + h) * f)
     b64 = region_image_b64(page, rect, dpi=300)
 
-    state = bqb._load_state()
-    q, _ = _find_question(state, bucket, num)
-    if q is None:
-        return jsonify({"error": "question not found"}), 404
-    bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
-    fname = _slug_image_name(bucket, num, "png", "pick")
-    dest = bqb.EVENT.image_dir / fname
-    dest.write_bytes(base64.b64decode(b64))
-    q.setdefault("images", []).append(fname)
-    q.get("image_descriptions", {}).pop("__pending__", None)
-    state.setdefault("manual", {})[bucket] = {
-        "edited_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    bqb._save_state(state)
+    with bqb._state_transaction() as state:
+        q, _ = _find_question(state, bucket, num)
+        if q is None:
+            return jsonify({"error": "question not found"}), 404
+        bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
+        fname = _slug_image_name(bucket, num, "png", "pick")
+        dest = bqb.EVENT.image_dir / fname
+        dest.write_bytes(base64.b64decode(b64))
+        q.setdefault("images", []).append(fname)
+        q.get("image_descriptions", {}).pop("__pending__", None)
+        state.setdefault("manual", {})[bucket] = {
+            "edited_at": datetime.now().isoformat(timespec="seconds"),
+        }
     return jsonify({"ok": True, "image": fname, "size": dest.stat().st_size})
 
 
@@ -4048,34 +4066,37 @@ def api_generate_accept(event_slug):
     # All LLM-generated questions live in a synthetic "PDF" bucket so they
     # appear alongside real ones in the question bank and in the markdown.
     cache_key = f"_generated_{bqb.EVENT.slug}.pdf"
-    state = bqb._load_state()
-    bucket = list(state.get("questions", {}).get(cache_key, []))
+    # Reading the global next-Q# and writing the new questions must happen
+    # in one transaction — otherwise two concurrent accept calls could both
+    # compute the same next_num from the same stale snapshot and mint
+    # colliding question numbers.
+    with bqb._state_transaction() as state:
+        bucket = list(state.get("questions", {}).get(cache_key, []))
 
-    # Pick next available numeric Q#. Synthetic buckets (`_generated_*`,
-    # `_scioly_*`) draw from the GLOBAL pool across every bucket in the event,
-    # so a generated question can never collide with a PDF-extracted question
-    # bearing the same number — even though the browse view already shows the
-    # bucket badge, a globally-unique number means any backend op that ever
-    # uses number-only (or any future export) is safe.
-    next_num = _next_global_q_number(state)
+        # Pick next available numeric Q#. Synthetic buckets (`_generated_*`,
+        # `_scioly_*`) draw from the GLOBAL pool across every bucket in the event,
+        # so a generated question can never collide with a PDF-extracted question
+        # bearing the same number — even though the browse view already shows the
+        # bucket badge, a globally-unique number means any backend op that ever
+        # uses number-only (or any future export) is safe.
+        next_num = _next_global_q_number(state)
 
-    label = f"Generated · {source_name}"
-    added = 0
-    for cand in accepted:
-        if not isinstance(cand, dict):
-            continue
-        bucket.append(qgen.candidate_to_question(cand, str(next_num), label))
-        next_num += 1
-        added += 1
+        label = f"Generated · {source_name}"
+        added = 0
+        for cand in accepted:
+            if not isinstance(cand, dict):
+                continue
+            bucket.append(qgen.candidate_to_question(cand, str(next_num), label))
+            next_num += 1
+            added += 1
 
-    # Only persist the synthetic bucket if something actually landed in it —
-    # otherwise an empty `_generated_<slug>.pdf` key lingers in state forever.
-    if added:
-        state.setdefault("questions", {})[cache_key] = bucket
-        state.setdefault("manual", {})[cache_key] = {
-            "edited_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        bqb._save_state(state)
+        # Only persist the synthetic bucket if something actually landed in it —
+        # otherwise an empty `_generated_<slug>.pdf` key lingers in state forever.
+        if added:
+            state.setdefault("questions", {})[cache_key] = bucket
+            state.setdefault("manual", {})[cache_key] = {
+                "edited_at": datetime.now().isoformat(timespec="seconds"),
+            }
     return jsonify({"ok": True, "added": added, "bucket_total": len(bucket),
                     "bucket": cache_key})
 
@@ -4119,94 +4140,96 @@ def api_import_generated(event_slug):
         return jsonify({"error": "no candidates"}), 400
 
     cache_key = f"_generated_{bqb.EVENT.slug}.pdf"
-    state = bqb._load_state()
-    bucket = list(state.get("questions", {}).get(cache_key, []))
+    # Same one-transaction requirement as api_generate_accept() above — the
+    # global next-Q# read and the bucket write must not straddle two
+    # separate lock acquisitions.
+    with bqb._state_transaction() as state:
+        bucket = list(state.get("questions", {}).get(cache_key, []))
 
-    # Dedup against the ENTIRE bank (all buckets), same as the Generate flow.
-    existing: list[dict] = []
-    for qs in state.get("questions", {}).values():
-        existing.extend(qs)
+        # Dedup against the ENTIRE bank (all buckets), same as the Generate flow.
+        existing: list[dict] = []
+        for qs in state.get("questions", {}).values():
+            existing.extend(qs)
 
-    next_num = _next_global_q_number(state)
-    added = 0
-    rejected_duplicates = 0
-    rejected_invalid = 0
-    accepted_this_batch: list[dict] = []
-    added_questions: list[dict] = []
+        next_num = _next_global_q_number(state)
+        added = 0
+        rejected_duplicates = 0
+        rejected_invalid = 0
+        accepted_this_batch: list[dict] = []
+        added_questions: list[dict] = []
 
-    for cand in raw_candidates:
-        if not isinstance(cand, dict):
-            rejected_invalid += 1
-            continue
-        text = (cand.get("text") or "").strip()
-        if len(text) < 12:
-            rejected_invalid += 1
-            continue
-        text = bqb._strip_points(text)
-        ans = bqb._strip_points(cand.get("answer") or "")
-        choices: list[dict] = []
-        for c in (cand.get("choices") or []):
-            if isinstance(c, dict):
-                ctxt = bqb._strip_points(c.get("text") or "")
-                if ctxt:
-                    choices.append({"letter": (c.get("letter") or "").upper()[:1], "text": ctxt})
-        for i, c in enumerate(choices):
-            c["letter"] = chr(ord("A") + i)
+        for cand in raw_candidates:
+            if not isinstance(cand, dict):
+                rejected_invalid += 1
+                continue
+            text = (cand.get("text") or "").strip()
+            if len(text) < 12:
+                rejected_invalid += 1
+                continue
+            text = bqb._strip_points(text)
+            ans = bqb._strip_points(cand.get("answer") or "")
+            choices: list[dict] = []
+            for c in (cand.get("choices") or []):
+                if isinstance(c, dict):
+                    ctxt = bqb._strip_points(c.get("text") or "")
+                    if ctxt:
+                        choices.append({"letter": (c.get("letter") or "").upper()[:1], "text": ctxt})
+            for i, c in enumerate(choices):
+                c["letter"] = chr(ord("A") + i)
 
-        is_dup, matched = qgen.is_duplicate({"text": text}, existing + accepted_this_batch)
-        if is_dup:
-            rejected_duplicates += 1
-            continue
+            is_dup, matched = qgen.is_duplicate({"text": text}, existing + accepted_this_batch)
+            if is_dup:
+                rejected_duplicates += 1
+                continue
 
-        topic = cand.get("topic") or "Other / General"
-        if topic not in bqb.EVENT.topics:
-            topic = classify_topic(text) or "Other / General"
+            topic = cand.get("topic") or "Other / General"
+            if topic not in bqb.EVENT.topics:
+                topic = classify_topic(text) or "Other / General"
 
-        # Carry through a textual diagram description if the external source
-        # provided one — under either of two field names, since hand-written
-        # / other-LLM JSON doesn't follow our internal "image_description"
-        # naming. qgen.candidate_to_question() turns this into a pending
-        # diagram hint that seeds the "Generate diagram" chat.
-        image_description = (
-            cand.get("image_description") or cand.get("image_context") or ""
-        ).strip()
+            # Carry through a textual diagram description if the external source
+            # provided one — under either of two field names, since hand-written
+            # / other-LLM JSON doesn't follow our internal "image_description"
+            # naming. qgen.candidate_to_question() turns this into a pending
+            # diagram hint that seeds the "Generate diagram" chat.
+            image_description = (
+                cand.get("image_description") or cand.get("image_context") or ""
+            ).strip()
 
-        normalized = {
-            "type":              cand.get("type") or ("mc" if choices else "short"),
-            "topic":             topic,
-            "text":              text,
-            "choices":           choices,
-            "answer":            ans,
-            "rationale":         (cand.get("rationale") or "").strip(),
-            "source_snippet":    (cand.get("source_snippet") or "").strip()[:240],
-            "image_description": image_description,
-        }
-        q = qgen.candidate_to_question(normalized, str(next_num), "Imported")
-        if mark_validated:
-            q["validation"] = {
-                "status":               "correct",
-                "correct_answer":       None,
-                "rationale":            normalized["rationale"] or "Marked validated on import.",
-                "source":               "Imported (manually marked validated)",
-                "validated_at":         datetime.now().isoformat(timespec="seconds"),
-                "model":                "import",
-                "text_at_validation":   q["text"][:300],
-                "answer_at_validation": q["answer"],
+            normalized = {
+                "type":              cand.get("type") or ("mc" if choices else "short"),
+                "topic":             topic,
+                "text":              text,
+                "choices":           choices,
+                "answer":            ans,
+                "rationale":         (cand.get("rationale") or "").strip(),
+                "source_snippet":    (cand.get("source_snippet") or "").strip()[:240],
+                "image_description": image_description,
             }
-        bucket.append(q)
-        accepted_this_batch.append(normalized)
-        added_questions.append(q)
-        next_num += 1
-        added += 1
+            q = qgen.candidate_to_question(normalized, str(next_num), "Imported")
+            if mark_validated:
+                q["validation"] = {
+                    "status":               "correct",
+                    "correct_answer":       None,
+                    "rationale":            normalized["rationale"] or "Marked validated on import.",
+                    "source":               "Imported (manually marked validated)",
+                    "validated_at":         datetime.now().isoformat(timespec="seconds"),
+                    "model":                "import",
+                    "text_at_validation":   q["text"][:300],
+                    "answer_at_validation": q["answer"],
+                }
+            bucket.append(q)
+            accepted_this_batch.append(normalized)
+            added_questions.append(q)
+            next_num += 1
+            added += 1
 
-    # Only persist the synthetic bucket if something actually landed in it —
-    # otherwise an empty `_generated_<slug>.pdf` key lingers in state forever.
-    if added:
-        state.setdefault("questions", {})[cache_key] = bucket
-        state.setdefault("manual", {})[cache_key] = {
-            "edited_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        bqb._save_state(state)
+        # Only persist the synthetic bucket if something actually landed in it —
+        # otherwise an empty `_generated_<slug>.pdf` key lingers in state forever.
+        if added:
+            state.setdefault("questions", {})[cache_key] = bucket
+            state.setdefault("manual", {})[cache_key] = {
+                "edited_at": datetime.now().isoformat(timespec="seconds"),
+            }
     return jsonify({
         "ok": True,
         "added": added,
@@ -4350,54 +4373,54 @@ def api_scioly_accept(event_slug):
         return jsonify({"error": "no candidates"}), 400
 
     bucket_key = _scioly_bucket_key()
-    state = bqb._load_state()
-    bucket = list(state.get("questions", {}).get(bucket_key, []))
+    # Same one-transaction requirement as api_generate_accept() above.
+    with bqb._state_transaction() as state:
+        bucket = list(state.get("questions", {}).get(bucket_key, []))
 
-    # See api_generate_accept comment — synthetic-bucket numbers are drawn
-    # from the event-wide pool so they don't collide with PDF-extracted ones.
-    next_num = _next_global_q_number(state)
+        # See api_generate_accept comment — synthetic-bucket numbers are drawn
+        # from the event-wide pool so they don't collide with PDF-extracted ones.
+        next_num = _next_global_q_number(state)
 
-    added = 0
-    for cand in accepted:
-        if not isinstance(cand, dict):
-            continue
-        q = {
-            "number":   str(next_num),
-            "topic":    cand.get("topic") or "Other / General",
-            "focus":    (cand.get("focus") or "").strip(),
-            "text":     (cand.get("text") or "").strip(),
-            "choices":  list(cand.get("choices") or []),
-            "answer":   (cand.get("answer") or "").strip(),
-            "images":   [],
-            "source":   cand.get("source") or "scio.ly",
-            "year":     cand.get("year", "") or "",
-            "division": cand.get("division", "") or "",
-            "page":     1,
-            "_scioly_id": cand.get("_scioly_id"),
-        }
-        v = cand.get("validation")
-        if v:
-            q["validation"] = v
-        # Carry quality_flag + reviewer_note from the UI editor so the user can
-        # find these later in the bank and finish the review.
-        flag = (cand.get("_flag") or cand.get("quality_flag") or "").strip()
-        note = (cand.get("_reviewer_note") or cand.get("reviewer_note") or "").strip()
-        if flag:
-            q["quality_flag"] = flag        # "likely-wrong" | "definitely-wrong" | "needs-review"
-        if note:
-            q["reviewer_note"] = note
-        bucket.append(q)
-        next_num += 1
-        added += 1
+        added = 0
+        for cand in accepted:
+            if not isinstance(cand, dict):
+                continue
+            q = {
+                "number":   str(next_num),
+                "topic":    cand.get("topic") or "Other / General",
+                "focus":    (cand.get("focus") or "").strip(),
+                "text":     (cand.get("text") or "").strip(),
+                "choices":  list(cand.get("choices") or []),
+                "answer":   (cand.get("answer") or "").strip(),
+                "images":   [],
+                "source":   cand.get("source") or "scio.ly",
+                "year":     cand.get("year", "") or "",
+                "division": cand.get("division", "") or "",
+                "page":     1,
+                "_scioly_id": cand.get("_scioly_id"),
+            }
+            v = cand.get("validation")
+            if v:
+                q["validation"] = v
+            # Carry quality_flag + reviewer_note from the UI editor so the user can
+            # find these later in the bank and finish the review.
+            flag = (cand.get("_flag") or cand.get("quality_flag") or "").strip()
+            note = (cand.get("_reviewer_note") or cand.get("reviewer_note") or "").strip()
+            if flag:
+                q["quality_flag"] = flag        # "likely-wrong" | "definitely-wrong" | "needs-review"
+            if note:
+                q["reviewer_note"] = note
+            bucket.append(q)
+            next_num += 1
+            added += 1
 
-    # Only persist the synthetic bucket if something actually landed in it —
-    # otherwise an empty `_scioly_<slug>.pdf` key lingers in state forever.
-    if added:
-        state.setdefault("questions", {})[bucket_key] = bucket
-        state.setdefault("manual", {})[bucket_key] = {
-            "edited_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        bqb._save_state(state)
+        # Only persist the synthetic bucket if something actually landed in it —
+        # otherwise an empty `_scioly_<slug>.pdf` key lingers in state forever.
+        if added:
+            state.setdefault("questions", {})[bucket_key] = bucket
+            state.setdefault("manual", {})[bucket_key] = {
+                "edited_at": datetime.now().isoformat(timespec="seconds"),
+            }
     return jsonify({"ok": True, "added": added,
                     "bucket_total": len(bucket), "bucket": bucket_key})
 

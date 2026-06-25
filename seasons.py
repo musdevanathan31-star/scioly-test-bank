@@ -20,6 +20,7 @@ os.replace writes, one lock per file for concurrent writers.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -54,18 +55,14 @@ class Season:
         return self.label or self.season_id
 
 
-def _load_seasons() -> dict[str, Season]:
-    # Reads and writes share the same lock (not just writes) — on Windows,
-    # os.replace() targeting a file another thread currently has open for
-    # read can fail with PermissionError; mirrors build_question_bank.py's
-    # _load_state()/_save_state(), which both acquire the same per-event lock.
-    with _seasons_lock:
-        if not SEASONS_FILE.exists():
-            return {}
-        try:
-            data = json.loads(SEASONS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+def _load_seasons_unlocked() -> dict[str, Season]:
+    # Caller must already hold _seasons_lock.
+    if not SEASONS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SEASONS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
     out: dict[str, Season] = {}
     for season_id, d in data.items():
         try:
@@ -83,22 +80,47 @@ def _load_seasons() -> dict[str, Season]:
     return out
 
 
+def _save_seasons_unlocked(seasons: dict[str, Season]) -> None:
+    # Caller must already hold _seasons_lock.
+    data = {
+        s.season_id: {
+            "label": s.label,
+            "event_slugs": list(s.event_slugs),
+            "is_current": s.is_current,
+            "archived": s.archived,
+            "created_at": s.created_at,
+            "created_by": s.created_by,
+        }
+        for s in seasons.values()
+    }
+    tmp = SEASONS_FILE.with_suffix(SEASONS_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, SEASONS_FILE)
+
+
+def _load_seasons() -> dict[str, Season]:
+    # Reads and writes share the same lock (not just writes) — on Windows,
+    # os.replace() targeting a file another thread currently has open for
+    # read can fail with PermissionError.
+    with _seasons_lock:
+        return _load_seasons_unlocked()
+
+
 def _save_seasons(seasons: dict[str, Season]) -> None:
     with _seasons_lock:
-        data = {
-            s.season_id: {
-                "label": s.label,
-                "event_slugs": list(s.event_slugs),
-                "is_current": s.is_current,
-                "archived": s.archived,
-                "created_at": s.created_at,
-                "created_by": s.created_by,
-            }
-            for s in seasons.values()
-        }
-        tmp = SEASONS_FILE.with_suffix(SEASONS_FILE.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, SEASONS_FILE)
+        _save_seasons_unlocked(seasons)
+
+
+@contextlib.contextmanager
+def _seasons_transaction():
+    """Hold _seasons_lock across the full load -> mutate -> save cycle —
+    see auth.py's _users_transaction() for the lost-update bug this avoids
+    (two mutators loading the same pre-mutation snapshot, last save wins).
+    Save only runs if the `with`-block body doesn't raise."""
+    with _seasons_lock:
+        seasons = _load_seasons_unlocked()
+        yield seasons
+        _save_seasons_unlocked(seasons)
 
 
 def load_seasons() -> dict[str, Season]:
@@ -124,22 +146,21 @@ def create_season(season_id: str, label: str = "", event_slugs: list[str] | None
     season_id = (season_id or "").strip()
     if not season_id:
         raise ValueError("season_id is required")
-    seasons = _load_seasons()
-    if season_id in seasons:
-        raise ValueError(f"season {season_id!r} already exists")
     event_slugs = [s for s in (event_slugs or [])]
     unknown = [s for s in event_slugs if s not in events_mod.EVENTS]
     if unknown:
         raise ValueError(f"unknown event slug(s): {', '.join(unknown)}")
-    season = Season(
-        season_id=season_id,
-        label=(label or "").strip(),
-        event_slugs=tuple(event_slugs),
-        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        created_by=created_by,
-    )
-    seasons[season_id] = season
-    _save_seasons(seasons)
+    with _seasons_transaction() as seasons:
+        if season_id in seasons:
+            raise ValueError(f"season {season_id!r} already exists")
+        season = Season(
+            season_id=season_id,
+            label=(label or "").strip(),
+            event_slugs=tuple(event_slugs),
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            created_by=created_by,
+        )
+        seasons[season_id] = season
     return season
 
 
@@ -151,41 +172,39 @@ def update_season_events(season_id: str, event_slugs: list[str]) -> Season:
     never-silently-destroy-data convention everywhere else."""
     import events as events_mod
 
-    seasons = _load_seasons()
-    existing = seasons.get(season_id)
-    if existing is None:
-        raise ValueError(f"unknown season {season_id!r}")
     unknown = [s for s in event_slugs if s not in events_mod.EVENTS]
     if unknown:
         raise ValueError(f"unknown event slug(s): {', '.join(unknown)}")
-    updated = replace(existing, event_slugs=tuple(event_slugs))
-    seasons[season_id] = updated
-    _save_seasons(seasons)
+    with _seasons_transaction() as seasons:
+        existing = seasons.get(season_id)
+        if existing is None:
+            raise ValueError(f"unknown season {season_id!r}")
+        updated = replace(existing, event_slugs=tuple(event_slugs))
+        seasons[season_id] = updated
     return updated
 
 
 def set_current_season(season_id: str) -> Season:
     """Flips is_current on the target and unsets it everywhere else — the
     "exactly one current season" invariant lives here, nowhere else."""
-    seasons = _load_seasons()
-    if season_id not in seasons:
-        raise ValueError(f"unknown season {season_id!r}")
-    for sid, s in seasons.items():
-        if s.is_current and sid != season_id:
-            seasons[sid] = replace(s, is_current=False)
-    seasons[season_id] = replace(seasons[season_id], is_current=True)
-    _save_seasons(seasons)
-    return seasons[season_id]
+    with _seasons_transaction() as seasons:
+        if season_id not in seasons:
+            raise ValueError(f"unknown season {season_id!r}")
+        for sid, s in seasons.items():
+            if s.is_current and sid != season_id:
+                seasons[sid] = replace(s, is_current=False)
+        seasons[season_id] = replace(seasons[season_id], is_current=True)
+        result = seasons[season_id]
+    return result
 
 
 def _set_archived(season_id: str, archived: bool) -> Season:
-    seasons = _load_seasons()
-    existing = seasons.get(season_id)
-    if existing is None:
-        raise ValueError(f"unknown season {season_id!r}")
-    updated = replace(existing, archived=archived)
-    seasons[season_id] = updated
-    _save_seasons(seasons)
+    with _seasons_transaction() as seasons:
+        existing = seasons.get(season_id)
+        if existing is None:
+            raise ValueError(f"unknown season {season_id!r}")
+        updated = replace(existing, archived=archived)
+        seasons[season_id] = updated
     return updated
 
 
@@ -201,22 +220,47 @@ def unarchive_season(season_id: str) -> Season:
 # Per-season roster: season_id -> event_slug -> [usernames]
 # ---------------------------------------------------------------------------
 
+def _load_rosters_unlocked() -> dict:
+    # Caller must already hold _rosters_lock.
+    if not ROSTERS_FILE.exists():
+        return {}
+    try:
+        return json.loads(ROSTERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_rosters_unlocked(data: dict) -> None:
+    # Caller must already hold _rosters_lock.
+    tmp = ROSTERS_FILE.with_suffix(ROSTERS_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, ROSTERS_FILE)
+
+
 def _load_rosters() -> dict:
     # Same read/write-share-one-lock fix as _load_seasons() above.
     with _rosters_lock:
-        if not ROSTERS_FILE.exists():
-            return {}
-        try:
-            return json.loads(ROSTERS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        return _load_rosters_unlocked()
 
 
 def _save_rosters(data: dict) -> None:
     with _rosters_lock:
-        tmp = ROSTERS_FILE.with_suffix(ROSTERS_FILE.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, ROSTERS_FILE)
+        _save_rosters_unlocked(data)
+
+
+@contextlib.contextmanager
+def _rosters_transaction():
+    """Hold _rosters_lock across the full load -> mutate -> save cycle —
+    see _seasons_transaction()/auth.py's _users_transaction() for why.
+    Critically, add_to_roster() must do its read-merge-write *inside one*
+    of these transactions rather than composing get_roster() + set_roster()
+    (two separate transactions) — otherwise two coaches adding different
+    students to the same roster around the same time would still race,
+    even with set_roster() itself made atomic."""
+    with _rosters_lock:
+        data = _load_rosters_unlocked()
+        yield data
+        _save_rosters_unlocked(data)
 
 
 def get_roster(season_id: str, event_slug: str) -> list[str]:
@@ -237,19 +281,28 @@ def set_roster(season_id: str, event_slug: str, usernames: list[str]) -> None:
         raise ValueError(f"unknown season {season_id!r}")
     if event_slug not in season.event_slugs:
         raise ValueError(f"{event_slug!r} is not in season {season_id!r}'s event lineup")
-    data = _load_rosters()
-    data.setdefault(season_id, {})[event_slug] = list(dict.fromkeys(usernames))  # dedupe, preserve order
-    _save_rosters(data)
+    with _rosters_transaction() as data:
+        data.setdefault(season_id, {})[event_slug] = list(dict.fromkeys(usernames))  # dedupe, preserve order
 
 
 def add_to_roster(season_id: str, event_slug: str, usernames: list[str]) -> None:
     """Additive variant of set_roster — unions into whatever's already on
     the roster rather than replacing it. Used by the CSV bulk-import (Part
     2), which must never wipe existing roster entries a CSV upload didn't
-    mention."""
-    current = get_roster(season_id, event_slug)
-    merged = list(dict.fromkeys(current + list(usernames)))
-    set_roster(season_id, event_slug, merged)
+    mention.
+
+    Reads and writes inside a single transaction (rather than composing
+    get_roster() + set_roster(), two separate transactions) so two
+    concurrent additive imports to the same event don't lose one's
+    usernames to the other's overwrite."""
+    season = get_season(season_id)
+    if season is None:
+        raise ValueError(f"unknown season {season_id!r}")
+    if event_slug not in season.event_slugs:
+        raise ValueError(f"{event_slug!r} is not in season {season_id!r}'s event lineup")
+    with _rosters_transaction() as data:
+        current = data.setdefault(season_id, {}).get(event_slug) or []
+        data[season_id][event_slug] = list(dict.fromkeys(list(current) + list(usernames)))
 
 
 def copy_roster_forward(from_season_id: str, to_season_id: str,

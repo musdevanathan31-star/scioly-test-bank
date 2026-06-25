@@ -19,6 +19,7 @@ os.replace writes, one lock for concurrent writers.
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import json
 import os
@@ -68,19 +69,14 @@ class User:
         return self.role == "coach" or slug in self.events
 
 
-def _load() -> dict[str, User]:
-    # Reads and writes share the same lock (not just writes) — on Windows,
-    # os.replace() targeting a file another thread currently has open for
-    # read can fail with PermissionError. Matters more now that
-    # create_users_bulk() (seasons.py's CSV import) calls create_user() —
-    # i.e. _load()-then-_save() — in a tight loop.
-    with _users_lock:
-        if not USERS_FILE.exists():
-            return {}
-        try:
-            data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+def _load_unlocked() -> dict[str, User]:
+    # Caller must already hold _users_lock.
+    if not USERS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
     users: dict[str, User] = {}
     for username, d in data.items():
         try:
@@ -97,23 +93,61 @@ def _load() -> dict[str, User]:
     return users
 
 
+def _save_unlocked(users: dict[str, User]) -> None:
+    # Caller must already hold _users_lock.
+    data = {
+        u.username: {
+            "password_hash": u.password_hash,
+            "role": u.role,
+            "events": list(u.events),
+            "disabled": u.disabled,
+            "display_name": u.display_name,
+        }
+        for u in users.values()
+    }
+    # Atomic write: tempfile + os.replace, same as events.py's
+    # _save_custom_events — a crash mid-write never corrupts the file.
+    tmp = USERS_FILE.with_suffix(USERS_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, USERS_FILE)
+
+
+def _load() -> dict[str, User]:
+    # Reads and writes share the same lock (not just writes) — on Windows,
+    # os.replace() targeting a file another thread currently has open for
+    # read can fail with PermissionError.
+    with _users_lock:
+        return _load_unlocked()
+
+
 def _save(users: dict[str, User]) -> None:
     with _users_lock:
-        data = {
-            u.username: {
-                "password_hash": u.password_hash,
-                "role": u.role,
-                "events": list(u.events),
-                "disabled": u.disabled,
-                "display_name": u.display_name,
-            }
-            for u in users.values()
-        }
-        # Atomic write: tempfile + os.replace, same as events.py's
-        # _save_custom_events — a crash mid-write never corrupts the file.
-        tmp = USERS_FILE.with_suffix(USERS_FILE.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, USERS_FILE)
+        _save_unlocked(users)
+
+
+@contextlib.contextmanager
+def _users_transaction():
+    """Hold _users_lock across the full load -> mutate -> save cycle.
+
+    A mutator that did `_load()` then `_save()` as two separate calls had a
+    window between them where the lock was released — two near-simultaneous
+    mutators could both load the same pre-mutation snapshot and whichever
+    saved last would silently overwrite the other's change (a lost update,
+    proven by a 15-thread concurrent create_user() stress test that only
+    persisted 1 of 15 accounts). Matters in practice: gunicorn runs this app
+    with multiple threads per worker (see deploy/qbank.service), and
+    create_users_bulk() (seasons.py's CSV import) calls create_user() in a
+    tight loop, so two genuinely concurrent mutators is a likely outcome,
+    not just a theoretical race.
+
+    The save only runs if the `with`-block body completes without raising —
+    a mutator that raises ValueError after the yield (e.g. "username already
+    exists") leaves the file untouched, same as before this change.
+    """
+    with _users_lock:
+        users = _load_unlocked()
+        yield users
+        _save_unlocked(users)
 
 
 def load_users() -> dict[str, User]:
@@ -155,17 +189,16 @@ def create_user(
         raise ValueError(f"role must be one of {ROLES}")
     if not password or len(password) < 8:
         raise ValueError("password must be at least 8 characters")
-    users = _load()
-    if username in users:
-        raise ValueError(f"username {username!r} already exists")
-    user = User(
-        username=username,
-        password_hash=generate_password_hash(password),
-        role=role,
-        events=tuple(events or ()),
-    )
-    users[username] = user
-    _save(users)
+    with _users_transaction() as users:
+        if username in users:
+            raise ValueError(f"username {username!r} already exists")
+        user = User(
+            username=username,
+            password_hash=generate_password_hash(password),
+            role=role,
+            events=tuple(events or ()),
+        )
+        users[username] = user
     return user
 
 
@@ -265,20 +298,19 @@ def update_user(
     events: list[str] | None = None,
     disabled: bool | None = None,
 ) -> User:
-    users = _load()
-    existing = users.get(username)
-    if existing is None:
-        raise ValueError(f"unknown user {username!r}")
-    updated = User(
-        username=existing.username,
-        password_hash=existing.password_hash,
-        role=role if role is not None else existing.role,
-        events=tuple(events) if events is not None else existing.events,
-        disabled=disabled if disabled is not None else existing.disabled,
-        display_name=existing.display_name,
-    )
-    users[username] = updated
-    _save(users)
+    with _users_transaction() as users:
+        existing = users.get(username)
+        if existing is None:
+            raise ValueError(f"unknown user {username!r}")
+        updated = User(
+            username=existing.username,
+            password_hash=existing.password_hash,
+            role=role if role is not None else existing.role,
+            events=tuple(events) if events is not None else existing.events,
+            disabled=disabled if disabled is not None else existing.disabled,
+            display_name=existing.display_name,
+        )
+        users[username] = updated
     return updated
 
 
@@ -298,24 +330,23 @@ def change_own_password(username: str, current_password: str, new_password: str)
     (admin_app.py's Update/Restart/Rollback/Set-threads gate). Unlike
     update_user() (coach-only, never touches password_hash by design), this
     is the one path that can change a password outside the CLI."""
-    users = _load()
-    existing = users.get(username)
-    if existing is None:
-        raise ValueError(f"unknown user {username!r}")
-    if not check_password_hash(existing.password_hash, current_password):
-        raise WrongPasswordError("current password is incorrect")
-    if not new_password or len(new_password) < 8:
-        raise ValueError("new password must be at least 8 characters")
-    updated = User(
-        username=existing.username,
-        password_hash=generate_password_hash(new_password),
-        role=existing.role,
-        events=existing.events,
-        disabled=existing.disabled,
-        display_name=existing.display_name,
-    )
-    users[username] = updated
-    _save(users)
+    with _users_transaction() as users:
+        existing = users.get(username)
+        if existing is None:
+            raise ValueError(f"unknown user {username!r}")
+        if not check_password_hash(existing.password_hash, current_password):
+            raise WrongPasswordError("current password is incorrect")
+        if not new_password or len(new_password) < 8:
+            raise ValueError("new password must be at least 8 characters")
+        updated = User(
+            username=existing.username,
+            password_hash=generate_password_hash(new_password),
+            role=existing.role,
+            events=existing.events,
+            disabled=existing.disabled,
+            display_name=existing.display_name,
+        )
+        users[username] = updated
     return updated
 
 
@@ -323,20 +354,19 @@ def set_display_name(username: str, display_name: str) -> User:
     """Self-service display-name change — no current-password check, since
     this is a cosmetic UI label, not a security-sensitive field (see
     User.display_name's docstring)."""
-    users = _load()
-    existing = users.get(username)
-    if existing is None:
-        raise ValueError(f"unknown user {username!r}")
-    updated = User(
-        username=existing.username,
-        password_hash=existing.password_hash,
-        role=existing.role,
-        events=existing.events,
-        disabled=existing.disabled,
-        display_name=(display_name or "").strip()[:80],
-    )
-    users[username] = updated
-    _save(users)
+    with _users_transaction() as users:
+        existing = users.get(username)
+        if existing is None:
+            raise ValueError(f"unknown user {username!r}")
+        updated = User(
+            username=existing.username,
+            password_hash=existing.password_hash,
+            role=existing.role,
+            events=existing.events,
+            disabled=existing.disabled,
+            display_name=(display_name or "").strip()[:80],
+        )
+        users[username] = updated
     return updated
 
 
@@ -356,11 +386,10 @@ def delete_user(username: str) -> None:
     """Permanently remove an account from auth_users.json. Only ever call
     this from an operator CLI/script run directly on the server — the web
     app uses disable_user/enable_user instead, never this."""
-    users = _load()
-    if username not in users:
-        raise ValueError(f"unknown user {username!r}")
-    del users[username]
-    _save(users)
+    with _users_transaction() as users:
+        if username not in users:
+            raise ValueError(f"unknown user {username!r}")
+        del users[username]
 
 
 def bootstrap_first_coach() -> None:

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -2535,27 +2536,62 @@ def _migrate_state(state: dict) -> dict:
     return state
 
 
-def _load_state() -> dict:
+def _load_state_unlocked() -> dict:
+    # Caller must already hold _state_lock().
     state_file = _ev().state_file
+    if state_file.exists():
+        try:
+            data = json.loads(state_file.read_text(encoding="utf-8"))
+            return _migrate_state(data)
+        except Exception:
+            pass
+    return _migrate_state({"questions": {}, "vision": {}})
+
+
+def _save_state_unlocked(state: dict) -> None:
+    # Caller must already hold _state_lock().
+    state["_schema_version"] = STATE_SCHEMA_VERSION
+    state_file = _ev().state_file
+    tmp = state_file.with_suffix(state_file.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, state_file)
+
+
+def _load_state() -> dict:
     with _state_lock():
-        if state_file.exists():
-            try:
-                data = json.loads(state_file.read_text(encoding="utf-8"))
-                return _migrate_state(data)
-            except Exception:
-                pass
-        return _migrate_state({"questions": {}, "vision": {}})
+        return _load_state_unlocked()
 
 
 def _save_state(state: dict) -> None:
     """Atomically persist `state`. Writes to a sibling .tmp file then os.replace
     so a crash/interrupt mid-write never leaves a half-written JSON on disk."""
-    state["_schema_version"] = STATE_SCHEMA_VERSION
-    state_file = _ev().state_file
     with _state_lock():
-        tmp = state_file.with_suffix(state_file.suffix + ".tmp")
-        tmp.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
-        os.replace(tmp, state_file)
+        _save_state_unlocked(state)
+
+
+@contextlib.contextmanager
+def _state_transaction():
+    """Hold the current event's _state_lock() across the full
+    load -> mutate -> save cycle — see auth.py's _users_transaction() for the
+    lost-update bug this avoids: a route handler that did `state =
+    _load_state()` then `_save_state(state)` as two separate calls left the
+    lock released in between, so two near-simultaneous edits to the same
+    event's question bank (e.g. two annotation saves, or an autosave PATCH
+    racing a reprocess-cancel) could each load the same pre-mutation
+    snapshot and the later save would silently overwrite the earlier one.
+
+    Deliberately NOT used by process_pair()'s OCR-job checkpoint saves —
+    that function is handed a `state` snapshot once and holds it (and keeps
+    re-saving it) for the entire duration of a potentially multi-minute
+    vision pipeline run. Wrapping that in one lock acquisition would block
+    every other request against the same event's state file for the whole
+    job; it's a separate, harder problem than the short request-handler
+    load/mutate/save pairs this transaction targets. Save only runs if the
+    `with`-block body doesn't raise."""
+    with _state_lock():
+        state = _load_state_unlocked()
+        yield state
+        _save_state_unlocked(state)
 
 # ---------------------------------------------------------------------------
 # Entry point

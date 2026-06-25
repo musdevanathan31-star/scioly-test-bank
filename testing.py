@@ -25,6 +25,7 @@ reasoning on why a season's event lineup never touches bank-access either.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -54,21 +55,73 @@ def _lock_for(path: Path) -> threading.RLock:
         return lk
 
 
-def _load_json(path: Path, default):
+def _load_json_unlocked(path: Path, default):
+    # Caller must already hold _lock_for(path).
     if not path.exists():
         return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _save_json_unlocked(path: Path, data) -> None:
+    # Caller must already hold _lock_for(path).
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _load_json(path: Path, default):
     with _lock_for(path):
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return default
+        return _load_json_unlocked(path, default)
 
 
 def _save_json(path: Path, data) -> None:
     with _lock_for(path):
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        os.replace(tmp, path)
+        _save_json_unlocked(path, data)
+
+
+@contextlib.contextmanager
+def _windows_transaction():
+    """Hold WINDOWS_FILE's lock across the full load -> mutate -> save cycle
+    — see auth.py's _users_transaction() for the lost-update bug this avoids
+    (two mutators loading the same pre-mutation snapshot, last save wins).
+    Save only runs if the `with`-block body doesn't raise."""
+    with _lock_for(WINDOWS_FILE):
+        raw = _load_json_unlocked(WINDOWS_FILE, {})
+        windows = {wid: _dict_to_window(d) for wid, d in raw.items()}
+        yield windows
+        _save_json_unlocked(WINDOWS_FILE, {wid: _window_to_dict(w) for wid, w in windows.items()})
+
+
+@contextlib.contextmanager
+def _tests_transaction():
+    """Same as _windows_transaction(), for TESTS_FILE."""
+    with _lock_for(TESTS_FILE):
+        raw = _load_json_unlocked(TESTS_FILE, {})
+        tests = {tid: _dict_to_test(d) for tid, d in raw.items()}
+        yield tests
+        _save_json_unlocked(TESTS_FILE, {tid: _test_to_dict(t) for tid, t in tests.items()})
+
+
+@contextlib.contextmanager
+def _responses_transaction():
+    """Same as _windows_transaction(), for RESPONSES_FILE — by far the
+    highest-write-volume file (every student's autosave every few seconds
+    during a live window), so this is the most exposed instance of the
+    lost-update race in this module. Mutators that need to read-then-merge
+    (save_answer's answers dict, set_manual_grade's manual_grade dict) must
+    do the read and the write inside the SAME transaction, not via a
+    separate get_response() call followed by _save_response() — composing
+    two transactions reopens the same race one level up (two answers saved
+    around the same time would still drop one)."""
+    with _lock_for(RESPONSES_FILE):
+        raw = _load_json_unlocked(RESPONSES_FILE, {})
+        data = {tid: {u: _dict_to_response(d) for u, d in by_user.items()} for tid, by_user in raw.items()}
+        yield data
+        out = {tid: {u: _response_to_dict(r) for u, r in by_user.items()} for tid, by_user in data.items()}
+        _save_json_unlocked(RESPONSES_FILE, out)
 
 
 def _now_iso() -> str:
@@ -120,10 +173,6 @@ def load_windows() -> dict[str, TestWindow]:
     return {wid: _dict_to_window(d) for wid, d in raw.items()}
 
 
-def _save_windows(windows: dict[str, TestWindow]) -> None:
-    _save_json(WINDOWS_FILE, {wid: _window_to_dict(w) for wid, w in windows.items()})
-
-
 def get_window(window_id: str) -> TestWindow | None:
     return load_windows().get(window_id)
 
@@ -146,15 +195,14 @@ def create_window(season_id: str, opens_at: str, closes_at: str,
     if opens_at >= closes_at:
         raise ValueError("opens_at must be before closes_at")
 
-    windows = load_windows()
     window_id = uuid.uuid4().hex
     window = TestWindow(
         window_id=window_id, season_id=season_id, label=label,
         opens_at=opens_at, closes_at=closes_at, event_slugs=tuple(event_slugs),
         created_at=_now_iso(), created_by=created_by,
     )
-    windows[window_id] = window
-    _save_windows(windows)
+    with _windows_transaction() as windows:
+        windows[window_id] = window
     for slug in event_slugs:
         _ensure_test(window_id, season_id, slug, created_by)
     return window
@@ -167,45 +215,43 @@ def update_window(window_id: str, label: str | None = None, opens_at: str | None
     on the active dashboard view) — never destroys data."""
     import seasons as seasons_mod
 
-    windows = load_windows()
-    existing = windows.get(window_id)
-    if existing is None:
-        raise ValueError(f"unknown window {window_id!r}")
-    new_opens = opens_at if opens_at is not None else existing.opens_at
-    new_closes = closes_at if closes_at is not None else existing.closes_at
-    if new_opens >= new_closes:
-        raise ValueError("opens_at must be before closes_at")
-    new_slugs = existing.event_slugs
-    if event_slugs is not None:
-        season = seasons_mod.get_season(existing.season_id)
-        unknown = [s for s in event_slugs if season and s not in season.event_slugs]
-        if unknown:
-            raise ValueError(f"event slug(s) not in season {existing.season_id!r}'s lineup: {', '.join(unknown)}")
-        new_slugs = tuple(event_slugs)
-    updated = replace(
-        existing,
-        label=label if label is not None else existing.label,
-        opens_at=new_opens, closes_at=new_closes, event_slugs=new_slugs,
-    )
-    windows[window_id] = updated
-    _save_windows(windows)
+    with _windows_transaction() as windows:
+        existing = windows.get(window_id)
+        if existing is None:
+            raise ValueError(f"unknown window {window_id!r}")
+        new_opens = opens_at if opens_at is not None else existing.opens_at
+        new_closes = closes_at if closes_at is not None else existing.closes_at
+        if new_opens >= new_closes:
+            raise ValueError("opens_at must be before closes_at")
+        new_slugs = existing.event_slugs
+        if event_slugs is not None:
+            season = seasons_mod.get_season(existing.season_id)
+            unknown = [s for s in event_slugs if season and s not in season.event_slugs]
+            if unknown:
+                raise ValueError(f"event slug(s) not in season {existing.season_id!r}'s lineup: {', '.join(unknown)}")
+            new_slugs = tuple(event_slugs)
+        updated = replace(
+            existing,
+            label=label if label is not None else existing.label,
+            opens_at=new_opens, closes_at=new_closes, event_slugs=new_slugs,
+        )
+        windows[window_id] = updated
     for slug in new_slugs:
         _ensure_test(window_id, existing.season_id, slug, existing.created_by)
     return updated
 
 
 def update_window_assignments(window_id: str, event_slug: str, usernames: list[str]) -> TestWindow:
-    windows = load_windows()
-    existing = windows.get(window_id)
-    if existing is None:
-        raise ValueError(f"unknown window {window_id!r}")
-    if event_slug not in existing.event_slugs:
-        raise ValueError(f"{event_slug!r} is not part of window {window_id!r}")
-    assignments = dict(existing.assignments)
-    assignments[event_slug] = list(usernames)
-    updated = replace(existing, assignments=assignments)
-    windows[window_id] = updated
-    _save_windows(windows)
+    with _windows_transaction() as windows:
+        existing = windows.get(window_id)
+        if existing is None:
+            raise ValueError(f"unknown window {window_id!r}")
+        if event_slug not in existing.event_slugs:
+            raise ValueError(f"{event_slug!r} is not part of window {window_id!r}")
+        assignments = dict(existing.assignments)
+        assignments[event_slug] = list(usernames)
+        updated = replace(existing, assignments=assignments)
+        windows[window_id] = updated
     return updated
 
 
@@ -266,10 +312,6 @@ def load_tests() -> dict[str, Test]:
     return {tid: _dict_to_test(d) for tid, d in raw.items()}
 
 
-def _save_tests(tests: dict[str, Test]) -> None:
-    _save_json(TESTS_FILE, {tid: _test_to_dict(t) for tid, t in tests.items()})
-
-
 def get_test(test_id: str) -> Test | None:
     return load_tests().get(test_id)
 
@@ -290,38 +332,44 @@ def _ensure_test(window_id: str, season_id: str, event_slug: str, created_by: st
     already exist — never overwrites an existing Test (re-adding an event
     that already has a Test, e.g. after it was removed and re-added to a
     window, must not wipe out a test someone already built)."""
+    # Fast-path check outside the lock (the common case: the test already
+    # exists, so no write is needed). Re-checked inside the transaction
+    # below to close the race where two threads both see "doesn't exist yet"
+    # and would otherwise create two Test records for the same pair.
     existing = get_test_for(window_id, event_slug)
     if existing is not None:
         return existing
-    tests = load_tests()
-    test_id = uuid.uuid4().hex
-    t = Test(test_id=test_id, window_id=window_id, season_id=season_id, event_slug=event_slug,
-              created_at=_now_iso(), created_by=created_by)
-    tests[test_id] = t
-    _save_tests(tests)
-    return t
+    with _tests_transaction() as tests:
+        existing = next((t for t in tests.values()
+                         if t.window_id == window_id and t.event_slug == event_slug), None)
+        if existing is not None:
+            return existing
+        test_id = uuid.uuid4().hex
+        t = Test(test_id=test_id, window_id=window_id, season_id=season_id, event_slug=event_slug,
+                  created_at=_now_iso(), created_by=created_by)
+        tests[test_id] = t
+        return t
 
 
 def update_test_kept(test_id: str, kept: list, edited_by: str = "") -> Test:
     """Autosave for the test-builder's persistent kept-set. Rejects once the
     test is no longer "building" (published/live and beyond) — edits past
     that point must go through the explicit unpublish exception path."""
-    tests = load_tests()
-    existing = tests.get(test_id)
-    if existing is None:
-        raise ValueError(f"unknown test {test_id!r}")
-    if existing.status != "building":
-        raise ValueError(f"test is {existing.status!r}, not editable — unpublish first")
-    cleaned = []
-    for item in kept:
-        cleaned.append({
-            "bucket": item.get("bucket", ""),
-            "number": str(item.get("number", "")),
-            "max_points": float(item.get("max_points") or 1),
-        })
-    updated = replace(existing, kept=cleaned, last_edited_by=edited_by, last_edited_at=_now_iso())
-    tests[test_id] = updated
-    _save_tests(tests)
+    with _tests_transaction() as tests:
+        existing = tests.get(test_id)
+        if existing is None:
+            raise ValueError(f"unknown test {test_id!r}")
+        if existing.status != "building":
+            raise ValueError(f"test is {existing.status!r}, not editable — unpublish first")
+        cleaned = []
+        for item in kept:
+            cleaned.append({
+                "bucket": item.get("bucket", ""),
+                "number": str(item.get("number", "")),
+                "max_points": float(item.get("max_points") or 1),
+            })
+        updated = replace(existing, kept=cleaned, last_edited_by=edited_by, last_edited_at=_now_iso())
+        tests[test_id] = updated
     return updated
 
 
@@ -359,48 +407,47 @@ def publish_test(test_id: str, published_by: str = "") -> dict:
     """
     import build_question_bank as bqb
 
-    tests = load_tests()
-    existing = tests.get(test_id)
-    if existing is None:
-        raise ValueError(f"unknown test {test_id!r}")
-    if existing.status != "building":
-        raise ValueError(f"test is already {existing.status!r}")
-    if not existing.kept:
-        raise ValueError("cannot publish an empty test — keep at least one question first")
+    with _tests_transaction() as tests:
+        existing = tests.get(test_id)
+        if existing is None:
+            raise ValueError(f"unknown test {test_id!r}")
+        if existing.status != "building":
+            raise ValueError(f"test is already {existing.status!r}")
+        if not existing.kept:
+            raise ValueError("cannot publish an empty test — keep at least one question first")
 
-    bqb.set_event(existing.event_slug)
-    state = bqb._load_state()
-    questions_by_bucket = state.get("questions", {})
-    contexts = bqb._all_contexts()  # {"bucket::id": Context}
+        bqb.set_event(existing.event_slug)
+        state = bqb._load_state()
+        questions_by_bucket = state.get("questions", {})
+        contexts = bqb._all_contexts()  # {"bucket::id": Context}
 
-    snapshot: list[dict] = []
-    snapshot_contexts: dict[str, dict] = {}
-    skipped: list[dict] = []
-    for item in existing.kept:
-        bucket, number = item.get("bucket", ""), str(item.get("number", ""))
-        bank_q = next((q for q in (questions_by_bucket.get(bucket) or [])
-                       if str(q.get("number")) == number), None)
-        if bank_q is None:
-            skipped.append({"bucket": bucket, "number": number})
-            continue
-        entry = _snapshot_one_question(bank_q, bucket, float(item.get("max_points") or 1))
-        snapshot.append(entry)
-        ctx_id = bank_q.get("context_id")
-        if ctx_id:
-            ctx_key = f"{bucket}::{ctx_id}"
-            ctx = contexts.get(ctx_key)
-            if ctx:
-                snapshot_contexts[ctx_key] = ctx
+        snapshot: list[dict] = []
+        snapshot_contexts: dict[str, dict] = {}
+        skipped: list[dict] = []
+        for item in existing.kept:
+            bucket, number = item.get("bucket", ""), str(item.get("number", ""))
+            bank_q = next((q for q in (questions_by_bucket.get(bucket) or [])
+                           if str(q.get("number")) == number), None)
+            if bank_q is None:
+                skipped.append({"bucket": bucket, "number": number})
+                continue
+            entry = _snapshot_one_question(bank_q, bucket, float(item.get("max_points") or 1))
+            snapshot.append(entry)
+            ctx_id = bank_q.get("context_id")
+            if ctx_id:
+                ctx_key = f"{bucket}::{ctx_id}"
+                ctx = contexts.get(ctx_key)
+                if ctx:
+                    snapshot_contexts[ctx_key] = ctx
 
-    if not snapshot:
-        raise ValueError("every kept question was removed from the bank — nothing to publish")
+        if not snapshot:
+            raise ValueError("every kept question was removed from the bank — nothing to publish")
 
-    updated = replace(
-        existing, status="published", snapshot=snapshot, snapshot_contexts=snapshot_contexts,
-        published_at=_now_iso(), published_by=published_by,
-    )
-    tests[test_id] = updated
-    _save_tests(tests)
+        updated = replace(
+            existing, status="published", snapshot=snapshot, snapshot_contexts=snapshot_contexts,
+            published_at=_now_iso(), published_by=published_by,
+        )
+        tests[test_id] = updated
     return {"test": updated, "skipped": skipped}
 
 
@@ -411,29 +458,27 @@ def unpublish_test(test_id: str) -> Test:
     itself only enforces the status precondition, not the timing/response
     guardrails, since those need the TestWindow and Response data this
     module-level function isn't handed."""
-    tests = load_tests()
-    existing = tests.get(test_id)
-    if existing is None:
-        raise ValueError(f"unknown test {test_id!r}")
-    if existing.status not in ("published", "live"):
-        raise ValueError(f"test is {existing.status!r}, not published/live")
-    updated = replace(existing, status="building", snapshot=None, snapshot_contexts={},
-                       published_at=None, published_by=None, live_at=None, live_by=None)
-    tests[test_id] = updated
-    _save_tests(tests)
+    with _tests_transaction() as tests:
+        existing = tests.get(test_id)
+        if existing is None:
+            raise ValueError(f"unknown test {test_id!r}")
+        if existing.status not in ("published", "live"):
+            raise ValueError(f"test is {existing.status!r}, not published/live")
+        updated = replace(existing, status="building", snapshot=None, snapshot_contexts={},
+                           published_at=None, published_by=None, live_at=None, live_by=None)
+        tests[test_id] = updated
     return updated
 
 
 def go_live_test(test_id: str, live_by: str = "") -> Test:
-    tests = load_tests()
-    existing = tests.get(test_id)
-    if existing is None:
-        raise ValueError(f"unknown test {test_id!r}")
-    if existing.status != "published":
-        raise ValueError(f"test is {existing.status!r}, must be 'published' first")
-    updated = replace(existing, status="live", live_at=_now_iso(), live_by=live_by)
-    tests[test_id] = updated
-    _save_tests(tests)
+    with _tests_transaction() as tests:
+        existing = tests.get(test_id)
+        if existing is None:
+            raise ValueError(f"unknown test {test_id!r}")
+        if existing.status != "published":
+            raise ValueError(f"test is {existing.status!r}, must be 'published' first")
+        updated = replace(existing, status="live", live_at=_now_iso(), live_by=live_by)
+        tests[test_id] = updated
     return updated
 
 
@@ -443,23 +488,22 @@ def set_test_overrides(test_id: str, student_username: str, opens_at: str | None
     makeup-window override for one student on one test. A personal override
     is an INDEPENDENT clock from the class-wide window, not an extension of
     it — see effective_window()."""
-    tests = load_tests()
-    existing = tests.get(test_id)
-    if existing is None:
-        raise ValueError(f"unknown test {test_id!r}")
-    overrides = dict(existing.overrides)
-    if opens_at is None and closes_at is None:
-        overrides.pop(student_username, None)
-    else:
-        if not opens_at or not closes_at or opens_at >= closes_at:
-            raise ValueError("opens_at must be before closes_at")
-        overrides[student_username] = {
-            "opens_at": opens_at, "closes_at": closes_at,
-            "granted_by": granted_by, "granted_at": _now_iso(), "reason": reason,
-        }
-    updated = replace(existing, overrides=overrides)
-    tests[test_id] = updated
-    _save_tests(tests)
+    with _tests_transaction() as tests:
+        existing = tests.get(test_id)
+        if existing is None:
+            raise ValueError(f"unknown test {test_id!r}")
+        overrides = dict(existing.overrides)
+        if opens_at is None and closes_at is None:
+            overrides.pop(student_username, None)
+        else:
+            if not opens_at or not closes_at or opens_at >= closes_at:
+                raise ValueError("opens_at must be before closes_at")
+            overrides[student_username] = {
+                "opens_at": opens_at, "closes_at": closes_at,
+                "granted_by": granted_by, "granted_at": _now_iso(), "reason": reason,
+            }
+        updated = replace(existing, overrides=overrides)
+        tests[test_id] = updated
     return updated
 
 
@@ -543,11 +587,6 @@ def _load_all_responses() -> dict[str, dict[str, Response]]:
     return {tid: {u: _dict_to_response(d) for u, d in by_user.items()} for tid, by_user in raw.items()}
 
 
-def _save_all_responses(data: dict[str, dict[str, Response]]) -> None:
-    out = {tid: {u: _response_to_dict(r) for u, r in by_user.items()} for tid, by_user in data.items()}
-    _save_json(RESPONSES_FILE, out)
-
-
 def get_response(test_id: str, username: str) -> Response | None:
     return _load_all_responses().get(test_id, {}).get(username)
 
@@ -556,41 +595,51 @@ def get_responses_for_test(test_id: str) -> dict[str, Response]:
     return _load_all_responses().get(test_id, {})
 
 
-def _save_response(r: Response) -> None:
-    data = _load_all_responses()
-    data.setdefault(r.test_id, {})[r.student_username] = r
-    _save_all_responses(data)
-
-
 def start_or_get_response(test_id: str, username: str, num_questions: int) -> Response:
     """First call for a given (test, student) creates the Response with a
     freshly shuffled question_order, stored immediately so it never
     changes again for this student on this test — content stays identical
     for everyone, only display order is per-student and stable across
-    reloads."""
+    reloads.
+
+    The existence check and the create must happen inside one transaction
+    (not get_response() followed by a separate save) — otherwise two
+    near-simultaneous first-loads for the same student would each shuffle
+    their own order and the second save would silently replace the first,
+    leaving the student's already-rendered page out of sync with what's on
+    disk."""
     import random
 
-    existing = get_response(test_id, username)
-    if existing is not None:
-        return existing
-    order = list(range(num_questions))
-    random.shuffle(order)
-    r = Response(student_username=username, test_id=test_id, question_order=order,
-                 started_at=_now_iso(), last_saved_at=_now_iso())
-    _save_response(r)
-    return r
+    with _responses_transaction() as data:
+        by_user = data.setdefault(test_id, {})
+        existing = by_user.get(username)
+        if existing is not None:
+            return existing
+        order = list(range(num_questions))
+        random.shuffle(order)
+        r = Response(student_username=username, test_id=test_id, question_order=order,
+                     started_at=_now_iso(), last_saved_at=_now_iso())
+        by_user[username] = r
+        return r
 
 
 def save_answer(test_id: str, username: str, number: str, answer_payload: dict) -> Response:
-    existing = get_response(test_id, username)
-    if existing is None:
-        raise ValueError("no in-progress response — load the test first")
-    if existing.status != "in_progress":
-        raise ValueError(f"response is already {existing.status!r} — can't edit further")
-    answers = dict(existing.answers)
-    answers[str(number)] = answer_payload
-    updated = replace(existing, answers=answers, last_saved_at=_now_iso())
-    _save_response(updated)
+    """Merges one question's answer into the student's `answers` dict. Reads
+    the existing response and writes the merged result inside the same
+    transaction — composing a separate get_response() + save would still
+    lose answers (two autosave requests close together would each merge
+    into their own stale copy of `answers`, and the second save would wipe
+    out whatever the first one added)."""
+    with _responses_transaction() as data:
+        existing = (data.get(test_id) or {}).get(username)
+        if existing is None:
+            raise ValueError("no in-progress response — load the test first")
+        if existing.status != "in_progress":
+            raise ValueError(f"response is already {existing.status!r} — can't edit further")
+        answers = dict(existing.answers)
+        answers[str(number)] = answer_payload
+        updated = replace(existing, answers=answers, last_saved_at=_now_iso())
+        data.setdefault(test_id, {})[username] = updated
     return updated
 
 
@@ -627,27 +676,28 @@ def submit_response(test_id: str, username: str, snapshot: list, now: datetime |
     (never trusting client-side grading), sets status. FRQ items are left
     for manual grading (Part 5) — grading_status is derived on read from
     whether every FRQ has a manual_grade, not stored here."""
-    existing = get_response(test_id, username)
-    if existing is None:
-        raise ValueError("no in-progress response to submit")
-    if existing.status != "in_progress":
-        raise ValueError(f"already {existing.status!r}")
-    auto_grade = {}
-    for q in snapshot:
-        number = str(q.get("number"))
-        answer = existing.answers.get(number)
-        if not answer:
-            continue
-        if q.get("qtype") == "mcq":
-            auto_grade[number] = _grade_mcq(answer.get("picked"), q.get("correct_answer", ""))
-        elif q.get("qtype") == "matching":
-            auto_grade[number] = _grade_matching(q.get("matching") or {}, answer.get("picks") or {},
-                                                 float(q.get("max_points") or 1))
-        # frq: no auto-grade entry — graded manually (Part 5)
-    updated = replace(existing, auto_grade=auto_grade,
-                      status="auto_submitted_late" if late else "submitted",
-                      submitted_at=_now_iso())
-    _save_response(updated)
+    with _responses_transaction() as data:
+        existing = (data.get(test_id) or {}).get(username)
+        if existing is None:
+            raise ValueError("no in-progress response to submit")
+        if existing.status != "in_progress":
+            raise ValueError(f"already {existing.status!r}")
+        auto_grade = {}
+        for q in snapshot:
+            number = str(q.get("number"))
+            answer = existing.answers.get(number)
+            if not answer:
+                continue
+            if q.get("qtype") == "mcq":
+                auto_grade[number] = _grade_mcq(answer.get("picked"), q.get("correct_answer", ""))
+            elif q.get("qtype") == "matching":
+                auto_grade[number] = _grade_matching(q.get("matching") or {}, answer.get("picks") or {},
+                                                     float(q.get("max_points") or 1))
+            # frq: no auto-grade entry — graded manually (Part 5)
+        updated = replace(existing, auto_grade=auto_grade,
+                          status="auto_submitted_late" if late else "submitted",
+                          submitted_at=_now_iso())
+        data.setdefault(test_id, {})[username] = updated
     return updated
 
 
@@ -673,16 +723,17 @@ def set_manual_grade(test_id: str, student_username: str, number: str, points_ea
                      max_points: float, graded_by: str = "", comment: str = "") -> Response:
     if not (0 <= points_earned <= max_points):
         raise ValueError(f"points_earned must be between 0 and {max_points}")
-    resp = get_response(test_id, student_username)
-    if resp is None:
-        raise ValueError("no response on file for this student")
-    manual_grade = dict(resp.manual_grade)
-    manual_grade[str(number)] = {
-        "points_earned": points_earned, "points_possible": max_points,
-        "graded_by": graded_by, "graded_at": _now_iso(), "comment": comment,
-    }
-    updated = replace(resp, manual_grade=manual_grade)
-    _save_response(updated)
+    with _responses_transaction() as data:
+        resp = (data.get(test_id) or {}).get(student_username)
+        if resp is None:
+            raise ValueError("no response on file for this student")
+        manual_grade = dict(resp.manual_grade)
+        manual_grade[str(number)] = {
+            "points_earned": points_earned, "points_possible": max_points,
+            "graded_by": graded_by, "graded_at": _now_iso(), "comment": comment,
+        }
+        updated = replace(resp, manual_grade=manual_grade)
+        data.setdefault(test_id, {})[student_username] = updated
     return updated
 
 
@@ -697,14 +748,12 @@ def release_grades(test_id: str, snapshot: list, released_by: str = "") -> int:
     disabled, never trusting client state)."""
     if not test_grading_complete(test_id, snapshot):
         raise ValueError("not every free-response question has been graded yet")
-    data = _load_all_responses()
-    by_user = data.get(test_id, {})
-    count = 0
-    for username, r in by_user.items():
-        if r.status not in ("submitted", "auto_submitted_late"):
-            continue
-        by_user[username] = replace(r, released=True, released_at=_now_iso(), released_by=released_by)
-        count += 1
-    data[test_id] = by_user
-    _save_all_responses(data)
+    with _responses_transaction() as data:
+        by_user = data.setdefault(test_id, {})
+        count = 0
+        for username, r in list(by_user.items()):
+            if r.status not in ("submitted", "auto_submitted_late"):
+                continue
+            by_user[username] = replace(r, released=True, released_at=_now_iso(), released_by=released_by)
+            count += 1
     return count
