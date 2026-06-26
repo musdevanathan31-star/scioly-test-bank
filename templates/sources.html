@@ -71,7 +71,7 @@
       <span id="cookie_badge" class="badge badge-warn" style="display:none"
             title="scioly.org bot-bypass cookies — needed by Scrape Sci-Oly wiki / scioly.org PDF downloads"></span>
       <input id="cookiePasteInput" type="text"
-             placeholder="Paste cookie string from your browser (devtools: document.cookie) after solving the scioly.org challenge there"
+             placeholder="Paste ALL scioly.org cookies from DevTools → Application/Storage → Cookies (not document.cookie — it can't see the httpOnly session cookies you need)"
              style="flex:1;min-width:280px;padding:5px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px">
       <button id="cookiePasteBtn" class="ghost" title="Save a fresh scioly.org cookie without scp-ing a Playwright-exported file">Save cookie</button>
     </div>
