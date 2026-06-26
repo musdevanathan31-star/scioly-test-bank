@@ -79,6 +79,31 @@ _UA = (
 )
 
 
+def _has_unsolved_anubis_challenge_cookie(cookies: list[dict] | None) -> bool:
+    """True if any cookie is an Anubis auth JWT whose *unverified* payload
+    says action=CHALLENGE — the token Anubis issues the instant a page
+    loads, before its JS proof-of-work finishes, never a "you passed" one.
+    Pasting this cookie can never work; common cause is a script/ad blocker
+    (e.g. Brave Shields) preventing the challenge script from completing."""
+    import base64
+    import json as _json
+
+    for c in cookies or []:
+        if "anubis" not in (c.get("name") or "").lower():
+            continue
+        parts = (c.get("value") or "").split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            padded = parts[1] + "=" * (-len(parts[1]) % 4)
+            payload = _json.loads(base64.urlsafe_b64decode(padded))
+        except Exception:
+            continue
+        if payload.get("action") == "CHALLENGE":
+            return True
+    return False
+
+
 def scrape_wiki(event: Event, cookies: list[dict] | None = None) -> Path:
     """
     Fetch the scioly.org wiki page for `event`, convert to markdown,
@@ -106,6 +131,17 @@ def scrape_wiki(event: Event, cookies: list[dict] | None = None) -> Path:
     r = sess.get(url, timeout=30)
     ctype = r.headers.get("content-type", "")
     if "not a bot" in r.text[:600].lower() or "anubis" in r.text[:600].lower():
+        if _has_unsolved_anubis_challenge_cookie(cookies):
+            raise RuntimeError(
+                "Anubis bot challenge — the pasted cookie is Anubis's "
+                "unsolved-challenge token, not a passed one (a script/ad "
+                "blocker like Brave Shields likely prevented the page's JS "
+                "challenge from completing). Reload the wiki page with all "
+                "blockers off for scioly.org, wait for it to finish loading, "
+                "then re-copy the cookie — or run `python download_event.py "
+                f"--event {event.slug} --reauth` on a machine with a real "
+                "browser/Playwright."
+            )
         raise RuntimeError(
             "Anubis bot challenge — run `python download_event.py --event "
             f"{event.slug} --reauth` to refresh cookies, then retry."
