@@ -345,7 +345,11 @@ _MC_MARKER_LINE = re.compile(r"^[A-Ea-e][\.\)]$")
 # (scrape_scioly, qgen) don't need to import the entire pipeline just to call
 # strip_points. The aliases below keep the long-standing _strip_points name
 # available for backwards compatibility with existing tests + callers.
-from text_utils import strip_points as _strip_points, _POINTS_RE  # noqa: E402
+from text_utils import (  # noqa: E402
+    strip_points as _strip_points,
+    normalize_unicode as _normalize_unicode,
+    _POINTS_RE,
+)
 
 
 def _is_noise(line: str) -> bool:
@@ -421,6 +425,7 @@ def split_choices_by_lines(raw: str) -> tuple[str, list[dict]]:
     """
     if not raw:
         return raw, []
+    raw = _normalize_unicode(raw)
     lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n")]
     lines = [ln for ln in lines if ln]
     if len(lines) < 2:
@@ -466,6 +471,7 @@ def split_choices(text: str) -> tuple[str, list[dict]]:
       2. PDF stripped some letters (e.g. only "b." and "d." survived) — the
          missing options are inferred from the surviving order.
     """
+    text = _normalize_unicode(text)
     matches = list(_MC_OPTION.finditer(text))
     if len(matches) < 2:
         return text, []
@@ -672,6 +678,7 @@ def split_column_items(raw: str, label_charset: str) -> list[dict]:
     what it actually affects (positional fallback only)."""
     if not raw:
         return []
+    raw = _normalize_unicode(raw)
     lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n")]
     lines = [_PLACEHOLDER_BLANK_RE.sub("", ln) for ln in lines]
     lines = [ln for ln in lines if ln]
@@ -2035,7 +2042,13 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
         return []
 
     # ---- text extraction (one entry per page) ----
-    page_texts = [page.get_text("text") for page in doc]
+    # normalize_unicode() strips invisible Unicode bidi-control characters
+    # some PDF generators wrap every text run in (observed: scioly.org's
+    # disease_detectives bakingsoda 2026 test) — without this, every
+    # "^"-anchored regex downstream (Q_START, ANS_LINE, MC-option markers)
+    # silently fails to match since "^" no longer lines up with the first
+    # visible character.
+    page_texts = [_normalize_unicode(page.get_text("text")) for page in doc]
     has_text = any(p.strip() for p in page_texts)
 
     questions: list[dict] = []

@@ -446,6 +446,29 @@ def test_split_column_items_bakingsoda_right_column_real_fixture():
         "to see if they develop illness.")
 
 
+def test_split_column_items_strips_bidi_control_chars_real_fixture():
+    # Real specimen (disease_detectives bakingsoda 2026 test, p.2): PyMuPDF
+    # extracts every text run wrapped in invisible Unicode bidi override
+    # marks (U+202D LRO before, U+202C PDF after) — confirmed via the
+    # debug_extraction.py tool against the live PDF. Before normalize_unicode()
+    # was wired into split_column_items(), _PLACEHOLDER_BLANK_RE's "^_{2,}"
+    # anchor silently failed to match (U+202D sits before the "_"), leaving
+    # every item's text polluted with both the placeholder and the bidi marks.
+    # Built with chr() rather than embedding literal invisible characters in
+    # this source file (fragile — editors/tools can silently drop them).
+    LRO, PDF_MARK = chr(0x202D), chr(0x202C)
+    raw = "\n".join(
+        f"{LRO}___ {term}{PDF_MARK}" for term in ("Eradication", "Vector", "Isolation")
+    )
+    assert chr(0x202D) in raw  # sanity: the test fixture actually contains the bug trigger
+    items = bqb.split_column_items(raw, "numeric")
+    assert items == [
+        {"label": "1", "text": "Eradication", "image": None},
+        {"label": "2", "text": "Vector", "image": None},
+        {"label": "3", "text": "Isolation", "image": None},
+    ]
+
+
 def test_split_column_items_vert1ran_left_column_real_fixture():
     items = bqb.split_column_items(_VERT1RAN_LEFT_RAW, "numeric")
     assert len(items) == 15
