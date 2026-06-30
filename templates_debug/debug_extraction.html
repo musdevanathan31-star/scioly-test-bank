@@ -1,0 +1,170 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Extraction Debug Tool — LOCAL ONLY</title>
+<style>
+body{font:14px/1.4 system-ui,sans-serif;margin:0;background:#f5f5f5;color:#222}
+header{background:#7a1f1f;color:#fff;padding:10px 18px;font-weight:600}
+header .warn{font-weight:400;font-size:12px;opacity:.85;margin-left:10px}
+.wrap{padding:18px;max-width:1100px;margin:0 auto}
+a{color:#1a5fb4}
+ul.plain{list-style:none;padding:0}
+ul.plain li{padding:6px 0;border-bottom:1px solid #ddd}
+.row{display:flex;gap:16px;align-items:flex-start}
+.col{flex:1;min-width:0}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.toolbar button,.toolbar select,.toolbar input{padding:5px 10px;border:1px solid #ccc;border-radius:4px;font:inherit}
+.toolbar button.active{background:#1a5fb4;color:#fff;border-color:#1a5fb4}
+#stage{position:relative;display:inline-block;border:1px solid #ccc;background:#fff}
+#pageImg{display:block;max-width:100%}
+#selRect{position:absolute;border:2px dashed #d33;background:rgba(221,51,51,.12);display:none;pointer-events:none}
+pre{background:#1e1e1e;color:#d8d8d8;padding:12px;border-radius:6px;overflow:auto;max-height:70vh;font-size:12px}
+.hint{color:#666;font-size:12px;margin-bottom:8px}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.badge.ok{background:#e3f4e9;color:#1a7a34}
+.badge.bad{background:#fde7e6;color:#a32020}
+</style></head>
+<body>
+<header>🔧 Manual-extraction debug tool <span class="warn">LOCAL DEBUG ONLY — never deployed, never touches production data beyond reading your local PDFs</span></header>
+<div class="wrap">
+
+{% if mode == "events" %}
+  <h2>Pick an event</h2>
+  <ul class="plain">
+    {% for ev in events %}
+    <li><a href="/event/{{ ev.slug }}">{{ ev.name }}</a> <span class="hint">({{ ev.slug }})</span></li>
+    {% endfor %}
+  </ul>
+
+{% elif mode == "pdfs" %}
+  <p><a href="/">← events</a></p>
+  <h2>{{ event.name }} — test PDFs</h2>
+  {% if not pdfs %}<p class="hint">No test PDFs found in this event's directory.</p>{% endif %}
+  <ul class="plain">
+    {% for p in pdfs %}
+    <li><a href="/event/{{ event.slug }}/pdf/{{ p }}">{{ p }}</a></li>
+    {% endfor %}
+  </ul>
+
+{% elif mode == "debug" %}
+  <p><a href="/event/{{ event.slug }}">← {{ event.name }} PDFs</a></p>
+  <h2>{{ pdfname }}</h2>
+  <div class="toolbar">
+    <button id="prevPage">← page</button>
+    <span>Page <input id="pageNum" type="number" min="1" max="{{ page_count }}" value="{{ pno }}" style="width:60px"> / {{ page_count }}</span>
+    <button id="nextPage">page →</button>
+    <span style="margin-left:16px">Mode:</span>
+    <button data-mode="region" class="modeBtn active">Region (text/MCQ)</button>
+    <button data-mode="column" class="modeBtn">Column (matching)</button>
+    <button data-mode="vision" class="modeBtn">Vision</button>
+    <span id="visionColumnWrap" style="display:none">
+      column charset:
+      <select id="visionColumnMode">
+        <option value="">off (region vision)</option>
+        <option value="numeric">numeric</option>
+        <option value="alpha">alpha</option>
+      </select>
+    </span>
+    <button id="dumpBtn" style="margin-left:16px">Dump full-page text/dict</button>
+    {% if not vision_available %}<span class="badge bad">no ANTHROPIC_API_KEY — vision mode will fail</span>{% endif %}
+  </div>
+  <p class="hint">Drag a rectangle on the page below. Region/Column run instantly (pure Python); Vision calls Haiku and may take a few seconds.</p>
+  <div class="row">
+    <div class="col">
+      <div id="stage">
+        <img id="pageImg" src="/event/{{ event.slug }}/pdf/{{ pdfname }}/page/{{ pno }}.png">
+        <div id="selRect"></div>
+      </div>
+    </div>
+    <div class="col">
+      <pre id="result">(drag a rectangle to see results)</pre>
+    </div>
+  </div>
+
+<script>
+const SLUG = {{ event.slug|tojson }};
+const PDFNAME = {{ pdfname|tojson }};
+let PNO = {{ pno }};
+const PAGE_COUNT = {{ page_count }};
+let mode = "region";
+
+function goToPage(n){
+  n = Math.max(1, Math.min(n, PAGE_COUNT));
+  location.href = `/event/${SLUG}/pdf/${PDFNAME}?page=${n}`;
+}
+document.getElementById("prevPage").addEventListener("click", () => goToPage(PNO - 1));
+document.getElementById("nextPage").addEventListener("click", () => goToPage(PNO + 1));
+document.getElementById("pageNum").addEventListener("change", e => goToPage(parseInt(e.target.value) || 1));
+
+document.querySelectorAll(".modeBtn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".modeBtn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    mode = btn.dataset.mode;
+    document.getElementById("visionColumnWrap").style.display = mode === "vision" ? "" : "none";
+  });
+});
+
+const resultEl = document.getElementById("result");
+function showResult(obj){
+  resultEl.textContent = JSON.stringify(obj, null, 2);
+}
+
+document.getElementById("dumpBtn").addEventListener("click", async () => {
+  resultEl.textContent = "loading...";
+  const r = await fetch(`/event/${SLUG}/pdf/${PDFNAME}/page/${PNO}/debug/dump`);
+  showResult(await r.json());
+});
+
+const img = document.getElementById("pageImg");
+const selRect = document.getElementById("selRect");
+const stage = document.getElementById("stage");
+let dragStart = null;
+
+img.addEventListener("mousedown", e => {
+  e.preventDefault();
+  const r = img.getBoundingClientRect();
+  dragStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+  selRect.style.display = "block";
+  selRect.style.left = dragStart.x + "px";
+  selRect.style.top = dragStart.y + "px";
+  selRect.style.width = "0px"; selRect.style.height = "0px";
+});
+document.addEventListener("mousemove", e => {
+  if(!dragStart) return;
+  const r = img.getBoundingClientRect();
+  const cx = e.clientX - r.left, cy = e.clientY - r.top;
+  const x1 = Math.min(dragStart.x, cx), y1 = Math.min(dragStart.y, cy);
+  const x2 = Math.max(dragStart.x, cx), y2 = Math.max(dragStart.y, cy);
+  selRect.style.left = x1 + "px"; selRect.style.top = y1 + "px";
+  selRect.style.width = (x2 - x1) + "px"; selRect.style.height = (y2 - y1) + "px";
+});
+document.addEventListener("mouseup", async e => {
+  if(!dragStart) return;
+  const r = img.getBoundingClientRect();
+  const cx = e.clientX - r.left, cy = e.clientY - r.top;
+  const x = Math.min(dragStart.x, cx), y = Math.min(dragStart.y, cy);
+  const w = Math.abs(cx - dragStart.x), h = Math.abs(cy - dragStart.y);
+  dragStart = null;
+  if(w < 4 || h < 4){ selRect.style.display = "none"; return; }
+
+  const body = { x, y, w, h, dpi: 120 };
+  let url;
+  if(mode === "region") url = `/event/${SLUG}/pdf/${PDFNAME}/page/${PNO}/debug/region`;
+  else if(mode === "column") url = `/event/${SLUG}/pdf/${PDFNAME}/page/${PNO}/debug/column`;
+  else {
+    url = `/event/${SLUG}/pdf/${PDFNAME}/page/${PNO}/debug/vision`;
+    const cm = document.getElementById("visionColumnMode").value;
+    if(cm) body.column_mode = cm;
+  }
+  resultEl.textContent = "loading...";
+  try {
+    const resp = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    showResult(await resp.json());
+  } catch(err){
+    resultEl.textContent = "error: " + err.message;
+  }
+});
+</script>
+{% endif %}
+
+</div>
+</body></html>
