@@ -260,7 +260,7 @@ The box runs **one worker process per school** and **one background job at a tim
 Two things in the UI tell you what's happening without asking anyone:
 
 - **`👥 3 active`** in the page header — people who did something on this server in the last 5 minutes, across all schools' events, not just yours. During a test window it also breaks out how many are students taking a test, which is the heaviest thing this server ever does. No badge means it's just you.
-- **`👥 2 here now`** next to an event on the landing page, and on the event's own page — someone else is working in that event right now. Worth a message before you reprocess the PDF they may be mid-review on.
+- **`👥 2 others here`** next to an event on the landing page, and on the event's own page — other people are working in that event right now. You're never counted in this one, so any number you see is someone else. Worth a message before you reprocess the PDF they may be mid-review on.
 
 Alongside them, **`⏳ 1 job running`** tells you the queue is already occupied. Seeing that plus a couple of active people is the moment to hold off on a bulk reprocess for a few minutes — nothing will break if you don't, it'll just all be slower for everyone, including you.
 

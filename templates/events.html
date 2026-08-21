@@ -55,8 +55,8 @@
             {%- endif %}
             {%- if r.n_active %}
             <span class="muted" style="font-size:11px"
-                  title="People active in this event in the last 5 minutes — including you if you were just in it. Worth a look before starting a reprocess or generation run someone else is also waiting on.">
-              · 👥 {{ r.n_active }} here now</span>
+                  title="Other people active in this event in the last 5 minutes (you are never counted). Worth a look before starting a reprocess or generation run someone else is also waiting on.">
+              · 👥 {{ r.n_active }} other{{ "" if r.n_active == 1 else "s" }} here</span>
             {%- endif %}
             {%- if r.n_unrecognized %}
             <a href="{{ request.script_root }}/event/{{ r.slug }}/scan" class="badge badge-warn"

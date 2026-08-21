@@ -39,10 +39,11 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
   <a href="{{ request.script_root }}/" title="Back to event list" style="font-size:18px">←</a>
   <h1>{{ event_name }} — Review</h1>
   <span id="status" class="muted"></span>
-  {%- if n_active and n_active > 1 %}
-  {# >1 only: on an event page you are always one of the people "here", so
-     a permanent "1 here now" would tell the viewer nothing. #}
-  <span class="badge" title="People active in this event in the last 5 minutes, including you. Someone else may already be reprocessing or generating here.">👥 {{ n_active }} here now</span>
+  {%- if n_active %}
+  {# The viewer is excluded at the source (presence.active_by_event's
+     exclude_user), so any number here means other people — same rule and
+     same wording as the landing page. #}
+  <span class="badge" title="Other people active in this event in the last 5 minutes. Someone else may already be reprocessing or generating here.">👥 {{ n_active }} other{{ "" if n_active == 1 else "s" }} here</span>
   {%- endif %}
   <div class="toolbar-group">
     <a href="{{ request.script_root }}/event/{{ event_slug }}/quiz"><button title="Take a timed practice quiz from a filtered subset">Quiz</button></a>

@@ -88,6 +88,30 @@ def test_leaving_one_event_does_not_expire_another_users_entry():
     assert presence.active_by_event(now=T0 + W + 1) == {"anatomy": 1}
 
 
+def test_viewer_is_excluded_from_their_own_event_counts():
+    # The number answers "is someone ELSE in here". Counting yourself makes
+    # "1 other here" appear for an event only you have visited, which is
+    # exactly the noise the header badge's >1 rule exists to avoid.
+    presence.touch_event("anatomy", "sarah", now=T0)
+    assert presence.active_by_event(exclude_user="sarah", now=T0) == {}
+    presence.touch_event("anatomy", "mukund", now=T0)
+    assert presence.active_by_event(exclude_user="sarah", now=T0) == {"anatomy": 1}
+    assert presence.active_by_event(exclude_user="mukund", now=T0) == {"anatomy": 1}
+
+
+def test_exclusion_is_per_event_not_global():
+    # Being in one event must not remove you from a different event's count
+    # for someone else, nor suppress an event you were never in.
+    presence.touch_event("anatomy", "sarah", now=T0)
+    presence.touch_event("ecology", "mukund", now=T0)
+    assert presence.active_by_event(exclude_user="sarah", now=T0) == {"ecology": 1}
+
+
+def test_exclude_user_defaults_to_counting_everyone():
+    presence.touch_event("anatomy", "sarah", now=T0)
+    assert presence.active_by_event(now=T0) == {"anatomy": 1}
+
+
 def test_event_presence_is_separate_from_server_wide_presence():
     # touch_event alone must not invent a server-wide active user: the two
     # stamps come from different hooks (_select_event vs _require_login),

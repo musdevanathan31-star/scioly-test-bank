@@ -87,16 +87,27 @@ def active_summary(*, now: float | None = None) -> dict:
     }
 
 
-def active_by_event(*, now: float | None = None) -> dict[str, int]:
+def active_by_event(*, exclude_user: str | None = None,
+                    now: float | None = None) -> dict[str, int]:
     """slug -> number of distinct users active in that event. Only events
     with at least one active user appear; callers treat a missing slug as
-    zero rather than needing the full event list passed in."""
+    zero rather than needing the full event list passed in.
+
+    `exclude_user` drops the viewer from their own counts, which is how
+    both callers use it: these numbers exist to answer "is someone else in
+    here", so counting yourself makes "1 here" mean nothing at all on the
+    landing page and forces the event page to compare against 1 instead of
+    0. Excluding at the source keeps one meaning -- other people -- in
+    every place the number is shown.
+    """
     ts = time.time() if now is None else now
     cutoff = ts - WINDOW_SECONDS
     counts: dict[str, int] = {}
     with _lock:
         _prune_unlocked(cutoff)
-        for (slug, _username) in _events:
+        for (slug, username) in _events:
+            if username == exclude_user:
+                continue
             counts[slug] = counts.get(slug, 0) + 1
     return counts
 

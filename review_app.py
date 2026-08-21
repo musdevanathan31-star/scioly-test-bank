@@ -754,7 +754,7 @@ def index():
         return redirect(url_for("my_tests_page"))
     rows = []
     archived_rows = []
-    active_by_event = presence.active_by_event()
+    active_by_event = presence.active_by_event(exclude_user=g.user.username)
     for slug, ev in sorted(EVENTS.items()):
         if g.user.role != "coach" and slug not in g.user.events:
             continue
@@ -776,9 +776,8 @@ def index():
             "base_dir": relative_data_path(ev.base_dir),
             "is_builtin": is_builtin(slug),
             "n_unrecognized": _count_unrecognized(ev),
-            # Includes the viewer if they were just in this event, which is
-            # correct for "how many people are in here" — the landing-page
-            # template subtracts nothing and says "N here now" plainly.
+            # Other people only — see presence.active_by_event's
+            # exclude_user note.
             "n_active": active_by_event.get(slug, 0),
         })
     return render_template("events.html", rows=rows, archived_rows=archived_rows)
@@ -1736,12 +1735,13 @@ def score_detail_page(test_id, student_username):
 def event_index(event_slug):
     _select_event(event_slug)
     # _select_event above has already stamped this request, so the viewer
-    # is included — matching the landing page, where "here now" also counts
-    # you.
-    return render_template("event_index.html",
-                            event_slug=event_slug,
-                            event_name=bqb.EVENT.name,
-                            n_active=presence.active_by_event().get(event_slug, 0))
+    # must be excluded or they would always count themselves.
+    return render_template(
+        "event_index.html",
+        event_slug=event_slug,
+        event_name=bqb.EVENT.name,
+        n_active=presence.active_by_event(
+            exclude_user=g.user.username).get(event_slug, 0))
 
 
 @app.route("/event/<event_slug>/review/<pdfname>")
