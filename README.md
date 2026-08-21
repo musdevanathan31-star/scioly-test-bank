@@ -624,6 +624,12 @@ Do this when "`df -h` for disk headroom" above stops being reassuring — moving
 
 Repeat per-instance — `DATA_ROOT` is set in each instance's own `.env`, so e.g. NCMS and CHS can have entirely independent data locations (or share one, if you point both at the same mount and their slugs don't collide).
 
+### Measuring server capacity (load testing)
+
+"How many students can be logged in and taking a test at once" isn't computable from CPU/RAM specs, because the actual ceiling is a write-contention point, not raw compute: every answer autosave (fired on every MCQ click/matching pick, no debounce — see `templates/test_take.html`) round-trips **one** global file, `testing.py`'s `RESPONSES_FILE` (`test_responses.json`, every response for every test ever, not per-test), inside **one** global `threading.RLock` shared by every student on every test (`_responses_transaction()`). `--workers` is hard-locked to 1 for the same reason (see [`deploy/qbank.service`](deploy/qbank.service)'s header and "Why `--threads` is admin-app-configurable but `--workers` never is" above) — you can only add `--threads`, never worker processes, without a lock redesign. So the only reliable way to know the ceiling on a given box is to measure it directly against that endpoint.
+
+[`loadtest_students.py`](loadtest_students.py) does that: given a throwaway published+live test (created by hand first — see [HOWTO.md's "Measuring server capacity"](HOWTO.md#measuring-server-capacity-load-testing) for the full walkthrough), it logs in increasing numbers of synthetic `loadtest_*` students concurrently and has them answer-save every question, printing p50/p95/max latency and error rate per step until one crosses a threshold — that step is the practical ceiling. It talks real HTTP to a real running instance rather than importing `review_app.py` in-process, since the whole point is exercising gunicorn's actual concurrency; run it against the real deployed box, off-hours, not just a local stand-in, if the number needs to reflect real hardware.
+
 ### Provisioning a new host
 
 [`deploy/provision-host.sh`](deploy/provision-host.sh) turns a bare RHEL box into a server that can run this app. Everything above in "Deploying", "Running multiple independent instances" and "Production deployment (current state)" describes the same bring-up in prose; this script *is* that prose, executable and idempotent:
