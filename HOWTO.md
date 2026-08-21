@@ -280,11 +280,65 @@ Once a coach releases grades for a test, **My Tests** shows it under Past with y
 
 **Scores** (☰ menu, visible to every role) shows every rostered student's named score on every graded test for the season — not just your own. You can only drill into the question-by-question detail of your *own* responses; other students' rows show the score only.
 
+## For the server operator — moving to a new machine
+
+Not a role in the app; this is the person with root on the box. `README.md` has the reasoning and the per-script detail, `spec.md` §18 has the design rationale — this is the checklist to work through in order, top to bottom.
+
+**Before you start**, on the old host:
+
+```
+sudo deploy/migrate-secrets.sh --check
+```
+
+It lists every secret file this host has (presence, owner, mode — never contents) and, below that, the secrets that aren't files at all. Read that second list properly. If the restic repository password exists only in `/opt/qbank/backup/.env` on a box you're about to decommission, every S3 snapshot goes permanently unreadable with it.
+
+**1. Provision the new box.** Get the repo onto it, then:
+
+```
+sudo deploy/provision-host.sh --dry-run
+```
+
+Read the plan, then run it without `--dry-run`. It's idempotent — re-run it as often as you like. It creates accounts, directories, venvs, systemd units, the `/usr/local/sbin` action scripts and the sudoers grants. It does not write secrets, does not install Caddy, and does not start anything.
+
+**2. Move the secrets.** On the old host:
+
+```
+sudo deploy/migrate-secrets.sh --export /root/qbank-secrets.age
+```
+
+You'll be prompted for a passphrase (`age`, or `gpg` if `age` isn't installed). `scp` the file to the new host, then there:
+
+```
+sudo deploy/migrate-secrets.sh --import /root/qbank-secrets.age
+```
+
+This must come *after* provisioning — it applies ownership by account name, and the accounts have to exist.
+
+**3. Move the data.** `restic restore` for the bulk data, `git clone` of the databank repo for the extracted JSON/markdown. Then open each instance's `.env` and **fix `DATA_ROOT`** — it came from the old host and still points at the old host's path. This is the single most common way a migration ends with an app that starts cleanly and shows zero questions.
+
+**4. Verify, before cutting over.**
+
+```
+sudo deploy/migrate-secrets.sh --check
+sudo systemctl start qbank.service qbank-chs.service admin-app.service caddy
+```
+
+Load each school's landing page and compare the question counts against the old box. **Nothing automates this comparison** — check unit states, listening ports, event counts and per-event question counts by hand. "The service started" is not the same as "it works."
+
+**5. Cut over.** Only once the new box genuinely serves: move the router's WAN 80/443 port-forward to the new LAN IP, and update the gateway's Dynamic DNS target if it's pinned to a particular host. Leave the old box installed but stopped — that's your rollback, and it costs nothing to keep for a week.
+
+**Note on the cutover window**: anything a coach saves on the old box after your final data sync is lost when you flip. Either stop the old instances before that last sync, or plan to re-sync and accept a short outage.
+
+**6. Clean up.** Delete the secrets bundle from both hosts (`shred -u`). Rotate anything that was exposed during the move.
+
 ## Quick task index
 
 | Task | Who | Where |
 |---|---|---|
 | Bootstrap the very first account | operator (CLI) | `python auth.py --create-coach` |
+| Provision a brand-new server box | operator (root) | `sudo deploy/provision-host.sh --dry-run`, then for real |
+| Inventory this host's secrets | operator (root) | `sudo deploy/migrate-secrets.sh --check` |
+| Move the server to a new machine | operator (root) | "For the server operator" above |
 | Change your password or display name | Coach, Volunteer | ☰ → Settings → My Account |
 | Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
 | Create/disable a user | Coach | ☰ → Club Management → Manage Users |

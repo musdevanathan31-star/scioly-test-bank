@@ -27,6 +27,8 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
   - [Admin app](#admin-app)
 - [Maintaining the server](#maintaining-the-server)
   - [Migrating an instance's data to a new `DATA_ROOT`](#migrating-an-instances-data-to-a-new-data_root-one-time-as-needed)
+  - [Provisioning a new host](#provisioning-a-new-host)
+  - [Moving to a different machine (host-to-host)](#moving-to-a-different-machine-host-to-host)
 - [Security hardening](#security-hardening)
 - [CLI reference](#cli-reference)
 - [Adding a new event](#adding-a-new-event)
@@ -608,6 +610,50 @@ Do this when "`df -h` for disk headroom" above stops being reassuring — moving
 6. **If you've set up backups for this instance**: add the instance's `.env` as a trailing argument to its two cron lines (see ["Backups"](#backups)) so the backup scripts start resolving `DATA_ROOT` instead of looking in the now-empty app directory.
 
 Repeat per-instance — `DATA_ROOT` is set in each instance's own `.env`, so e.g. NCMS and CHS can have entirely independent data locations (or share one, if you point both at the same mount and their slugs don't collide).
+
+### Provisioning a new host
+
+[`deploy/provision-host.sh`](deploy/provision-host.sh) turns a bare RHEL box into a server that can run this app. Everything above in "Deploying", "Running multiple independent instances" and "Production deployment (current state)" describes the same bring-up in prose; this script *is* that prose, executable and idempotent:
+
+```
+sudo deploy/provision-host.sh --dry-run     # see the whole plan, change nothing
+sudo deploy/provision-host.sh
+```
+
+It creates the per-instance system users, `qbank-admin` (plus its `systemd-journal` membership) and `qbank-deploy`; the directory tree and the `/var/log` files the non-root scripts append to; the shared venv and `qbank-deploy`'s separate one; the code sync; `/opt/qbank-src` and `/opt/qbank-deploy/update-from-github.sh`; the four root-owned action scripts in `/usr/local/sbin`; and both `sudoers.d` files, each `visudo -c` validated before installation so a typo can't lock the box out of sudo.
+
+Instances come from [`deploy/instances.conf`](deploy/instances.conf) — the same single source of truth `_apply-update.sh` and the admin app already read — so adding a school never means editing this script. **Per-instance systemd units are generated from [`deploy/qbank.service`](deploy/qbank.service) as a template** rather than copied and hand-edited: the `--workers 1`/`--threads`/`--timeout` flags then live in exactly one place, and a second school can't silently drift from the first. For the first instance the generated unit is byte-identical to the template, which is a cheap sanity check that the substitutions are behaving.
+
+Every step checks before it creates, so re-running is safe — after a partial failure, after adding an instance, or just to confirm the box still matches. Re-running reports each item as created or already present.
+
+**What it deliberately doesn't do**, because each needs a human decision or a secret — it prints them as a closing checklist instead:
+
+- **Download the Caddy binary.** If `/usr/local/bin/caddy` is already there it sets `cap_net_bind_service` and installs the Caddyfile; if not it prints the steps. A provisioning script that fetches a binary off the internet and runs it as root is a supply-chain hole, and this project's whole update mechanism is built around not having one (see [`update-from-github.sh`](deploy/update-from-github.sh)'s header).
+- **Write any `.env`, `auth_users.json`, or password hash.** That's `migrate-secrets.sh` below, or a hand-written `.env` on a greenfield box.
+- **Start the services.** Units are enabled, not started: with no `.env` they'd only crash-loop and hand you a misleading first impression.
+- **DNS, the router's port-forward, and the backup cron lines.**
+
+One asymmetry worth knowing: the shared venv is left **root-owned**. Nothing writes to it at runtime, and an instance account that can't modify its own interpreter is one less way for an app-level bug to become persistence — the cost is that dependency bumps now need `sudo /opt/qbank/venv/bin/pip install -r ...`.
+
+### Moving to a different machine (host-to-host)
+
+Data backups restore an instance's *content*. They deliberately restore none of its *identity* — `.env`, `auth_users.json`, the admin password hash and the backup credentials are excluded from both mechanisms (see ["Backups"](#backups)), because they're too sensitive for an unattended pipeline writing to GitHub and S3. A host rebuilt from backups alone therefore either won't start or starts and logs everyone out. [`deploy/secrets-manifest.conf`](deploy/secrets-manifest.conf) is the list that closes that gap, in one place instead of scattered across these docs, and [`deploy/migrate-secrets.sh`](deploy/migrate-secrets.sh) acts on it.
+
+Order matters — provisioning creates the accounts the secrets must be owned by:
+
+1. **On the old host, take inventory**: `sudo deploy/migrate-secrets.sh --check`. Reports every manifest file's presence, owner and mode (never its contents), and prints the secrets that aren't files at all — the restic password above all, which if it exists only on a box you're about to decommission takes every S3 snapshot with it.
+2. **Provision the new host**: `sudo deploy/provision-host.sh --dry-run`, read it, then run it for real.
+3. **Export from the old host**: `sudo deploy/migrate-secrets.sh --export /root/qbank-secrets.age`. Tars the manifest files and encrypts them with `age -p` (or `gpg --symmetric`); you type the passphrase. There is no mode that writes an unencrypted bundle — this file crosses a network and tends to sit in `/root` on both ends.
+4. **Copy and import**: `scp` it across, then `sudo deploy/migrate-secrets.sh --import /root/qbank-secrets.age`. It refuses any archive member the manifest doesn't name (so a tampered bundle can't drop a file elsewhere), moves aside anything it would overwrite, and re-applies ownership **by name** — system accounts get different numeric UIDs on a fresh box, so a faithful uid-preserving extract is exactly the wrong thing here.
+5. **Restore the data**: `restic restore` for bulk, `git clone` of the databank repo for extracted JSON/markdown. Then **fix `DATA_ROOT` in each `.env`** — it came from the old box and still points at the old box's path.
+6. **Verify**: `sudo deploy/migrate-secrets.sh --check` on the new host, then start the services and load each landing page.
+7. **Cut over**: only once the new box serves correctly, move the router's port-forward (and the UCG's Dynamic DNS target, if it's bound to a specific host). Leave the old box intact but stopped for a while — that's your rollback.
+8. **Then clean up**: delete the secrets bundle from both hosts, and rotate anything that was exposed during the move.
+
+**Two gaps this does not close, stated plainly rather than left to be discovered:**
+
+- **No automated parity check.** Nothing compares unit states, listening ports, event counts and question counts between old and new before you flip the port-forward. Do it by hand.
+- **Writes during the cutover window.** Anything a coach saves on the old box after the final data sync is lost when you flip. Either stop the old instances before the last sync, or re-run the sync and accept the outage.
 
 ## Security hardening
 
