@@ -18,6 +18,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [Files](#files)
 - [Workflow](#workflow)
 - [The cache & annotations](#the-cache--annotations)
+- [Who's active right now](#whos-active-right-now)
 - [Cost notes](#cost-notes)
 - [Configuration](#configuration)
   - [Separating app code from data (`DATA_ROOT`)](#separating-app-code-from-data-data_root)
@@ -214,6 +215,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `common_ui.py` | Shared CSS/JS (design tokens, modal/badge/toolbar components, `confirmModal()`, job-progress modal) — imported by both `review_app.py` and `admin_app.py` so the two Flask processes render an identical look without duplicating the stylesheet |
 | `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
 | `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`, `event_scan`, `settings`) |
+| `presence.py` | In-memory active-user registry behind the header badge and the landing page's per-event counts — see "Who's active right now" |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
 | `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
 | `.env.example` | Template for the Anthropic API key |
@@ -391,6 +393,17 @@ The server this app runs on is intentionally underpowered, and several operation
 - **Jobs survive a server restart's bookkeeping, but not the work itself**: job status/progress/console output is written to disk (`<event>/.qbank_jobs.json` + `<event>/.qbank_jobs/<job_id>.log`), so a `systemctl restart qbank` (every code deploy does this) doesn't erase job history — but a job that was actually running when the process died comes back as **"interrupted"**, not silently resumed. Just re-trigger the same action; PDF vision-OCR results are checkpointed page-by-page as they're produced, so re-running after an interruption only re-does the page that was in flight, not the whole PDF.
 - **Visibility**: anyone with access to an event sees that event's job history and full console output via its **Jobs** page (linked from the PDF list) — same access rule as everything else (`_select_event`), no extra restriction. Coaches additionally get a cross-event **All jobs** dashboard (`/admin/jobs`). A small badge in the header shows how many jobs are currently running/queued across whatever you can see, so a job that outlives you logging out and back in is easy to find again.
 - Short, single-LLM-call actions (validate one question, capture one region, one diagram-chat message, OCR a single page) are deliberately **not** jobs — they finish within one request and just show a normal spinner.
+
+## Who's active right now
+
+The server is intentionally underpowered and runs **one gunicorn worker per instance** (see "Deploying" — `--workers 1` is load-bearing), with a **single global job queue** on top of it. So two volunteers each kicking off a reprocess isn't twice the throughput, it's one job running and one waiting. Two lightweight indicators exist so nobody has to guess:
+
+- **A header badge on every page**: `👥 3 active`, with `(2 taking tests)` broken out when a test window is live — students are counted because a live test is exactly when the box is busiest. It's hidden at a count of 1, since that's always just you. Whole-instance, deliberately not filtered to your own events: load from an event you can't see slows you down just the same, and a bare count reveals nothing about who or where.
+- **A per-event count** on each event card on the landing page and on the event page itself — `👥 2 here now` — so you can see someone else is already working in an event before starting a long job in it.
+
+"Active" means **made a real request in the last 5 minutes**. The two header badges poll themselves every 20s, and those polls are deliberately excluded (`_PRESENCE_EXEMPT_ENDPOINTS` in `review_app.py`) — otherwise every idle open tab would count forever and the number would measure tabs, not people, while correlating with load not at all.
+
+Tracking lives in `presence.py`: in-memory, no file backing, pruned on read. Presence is worthless the moment it's stale and rebuilds itself from live traffic within one window, so persisting it would add I/O to every request to buy nothing. **This is exact only because `--workers 1`** — under more workers each would see a fraction of the traffic and every count would silently read low. That puts it on the same list as the state lock and the job queue: redesign before raising `--workers`, not after.
 
 ## Cost notes
 

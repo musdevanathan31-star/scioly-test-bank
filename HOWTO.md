@@ -253,6 +253,19 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 
 A coach can assign you to prepare or grade a test for an event — the assignment picker only offers you for an event if you already have bank-edit access to it (or you're a coach), so this normally lines up with your assigned-events list above. Click **Tests** in the header to see what you've been assigned, then **Prepare** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Prepare and publish a test" / "Run a test window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
 
+### Checking whether the server is busy before you start something big
+
+The box runs **one worker process per school** and **one background job at a time across every event**. A reprocess, a scio.ly scrape or an LLM generation run started while someone else's is already going doesn't run alongside it — it queues behind it, and you both wait.
+
+Two things in the UI tell you what's happening without asking anyone:
+
+- **`👥 3 active`** in the page header — people who did something on this server in the last 5 minutes, across all schools' events, not just yours. During a test window it also breaks out how many are students taking a test, which is the heaviest thing this server ever does. No badge means it's just you.
+- **`👥 2 here now`** next to an event on the landing page, and on the event's own page — someone else is working in that event right now. Worth a message before you reprocess the PDF they may be mid-review on.
+
+Alongside them, **`⏳ 1 job running`** tells you the queue is already occupied. Seeing that plus a couple of active people is the moment to hold off on a bulk reprocess for a few minutes — nothing will break if you don't, it'll just all be slower for everyone, including you.
+
+Neither number updates instantly; both refresh about every 20 seconds.
+
 ### What you can't do, and why
 
 | Action | Why not |
@@ -360,6 +373,8 @@ Load each school's landing page and compare the question counts against the old 
 | Import questions from JSON | Coach, Volunteer (assigned events) | Generate page → Import panel |
 | Export the bank | Coach, Volunteer (assigned events) | Browse page → Export ▾ |
 | Take a quiz | Coach, Volunteer (assigned events) | Quiz |
+| See whether the server is busy before a big job | Coach, Volunteer | `👥 N active` / `⏳ N jobs` badges in the header |
+| See who else is working in an event | Coach, Volunteer (assigned events) | Landing page → `👥 N here now` on the event row |
 | Archive/unarchive an event | Coach only | Landing page |
 | Restore a wiped reprocess | Coach, Volunteer (assigned events) | Review page → 🕘 Snapshot history |
 | Create/mark current a season | Coach | Club Management |

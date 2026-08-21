@@ -60,6 +60,7 @@ import texts as texts_mod  # noqa: E402
 import qgen  # noqa: E402
 import scrape_scioly  # noqa: E402
 import download_event  # noqa: E402
+import presence  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -149,6 +150,14 @@ app.config["SESSION_COOKIE_PATH"] = APPLICATION_ROOT or "/"
 # Routes reachable without being logged in.
 _PUBLIC_ENDPOINTS = {"login", "favicon", "static"}
 
+# Background pollers that must NOT count as activity. Both badges in
+# _user_badge.html refresh themselves every 20s, so stamping presence on
+# them would make every *open tab* permanently "active" — the number would
+# measure tabs rather than people, and would stop correlating with load at
+# all (an idle tab costs almost nothing; a reprocess costs a lot). With
+# these exempt, "active" means the user actually did something.
+_PRESENCE_EXEMPT_ENDPOINTS = {"api_jobs_active_count", "api_presence"}
+
 
 @app.before_request
 def _require_login():
@@ -162,6 +171,8 @@ def _require_login():
         session.clear()
         return redirect(url_for("login", next=request.script_root + request.path))
     g.user = user
+    if request.endpoint not in _PRESENCE_EXEMPT_ENDPOINTS:
+        presence.touch(user.username, user.role)
     return None
 
 
@@ -427,6 +438,11 @@ def _select_event(slug: str):
         abort(404, f"Event archived: {slug} — a coach can unarchive it from the landing page")
     if user is not None and not auth.user_can_access_event(user, slug):
         abort(403, f"You don't have access to {slug}")
+    # Below every access check above on purpose: this is the per-event
+    # gate, so presence can never be recorded for an event the user would
+    # have been 403'd out of.
+    if user is not None:
+        presence.touch_event(slug, user.username)
     current = bqb.current_event()
     if current is None or current.slug != slug:
         bqb.set_event(slug)
@@ -738,6 +754,7 @@ def index():
         return redirect(url_for("my_tests_page"))
     rows = []
     archived_rows = []
+    active_by_event = presence.active_by_event()
     for slug, ev in sorted(EVENTS.items()):
         if g.user.role != "coach" and slug not in g.user.events:
             continue
@@ -759,6 +776,10 @@ def index():
             "base_dir": relative_data_path(ev.base_dir),
             "is_builtin": is_builtin(slug),
             "n_unrecognized": _count_unrecognized(ev),
+            # Includes the viewer if they were just in this event, which is
+            # correct for "how many people are in here" — the landing-page
+            # template subtracts nothing and says "N here now" plainly.
+            "n_active": active_by_event.get(slug, 0),
         })
     return render_template("events.html", rows=rows, archived_rows=archived_rows)
 
@@ -1714,9 +1735,13 @@ def score_detail_page(test_id, student_username):
 @app.route("/event/<event_slug>/")
 def event_index(event_slug):
     _select_event(event_slug)
+    # _select_event above has already stamped this request, so the viewer
+    # is included — matching the landing page, where "here now" also counts
+    # you.
     return render_template("event_index.html",
                             event_slug=event_slug,
-                            event_name=bqb.EVENT.name)
+                            event_name=bqb.EVENT.name,
+                            n_active=presence.active_by_event().get(event_slug, 0))
 
 
 @app.route("/event/<event_slug>/review/<pdfname>")
@@ -2102,6 +2127,16 @@ def api_jobs_active_count():
     else:
         slugs = list(user.events)
     return jsonify(jobs.active_job_summary(slugs))
+
+
+@app.route("/api/presence")
+def api_presence():
+    """Backs the header's "N people active" badge — a whole-instance
+    number, deliberately not filtered to the caller's events the way
+    api_jobs_active_count is. The point is "is this box busy right now",
+    and load from an event you can't see counts against you just the same;
+    a bare count leaks nothing about who or where."""
+    return jsonify(presence.active_summary())
 
 
 @app.route("/admin/jobs")
