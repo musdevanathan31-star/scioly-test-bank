@@ -1,0 +1,15 @@
+{# The one definition of APP_ROOT: the reverse-proxy path prefix every
+   fetch() in this app prepends (see review_app.py's _PrefixMiddleware and
+   README's "Subpath mounting").
+
+   It lives in its own partial rather than inside _user_badge.html because
+   the test-taking page deliberately renders no header — and so, for as
+   long as this was a line inside _user_badge.html, every fetch() on
+   test_take.html threw "APP_ROOT is not defined" and a student could
+   never load a test. Any headerless page must include THIS, not the badge.
+
+   `window.` rather than `const` on purpose: a const redeclaration in a
+   second <script> is a SyntaxError that would break the whole page, so an
+   accidental double-include should be a no-op, not an outage. Bare
+   APP_ROOT references keep resolving through the global object. #}
+<script>window.APP_ROOT = {{ request.script_root|tojson }};</script>
