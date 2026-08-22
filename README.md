@@ -19,6 +19,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [Workflow](#workflow)
 - [The cache & annotations](#the-cache--annotations)
 - [Who's active right now](#whos-active-right-now)
+- [Branding an instance with a school logo](#branding-an-instance-with-a-school-logo)
 - [Optional export dependencies](#optional-export-dependencies)
 - [Cost notes](#cost-notes)
 - [Configuration](#configuration)
@@ -407,6 +408,20 @@ The server is intentionally underpowered and runs **one gunicorn worker per inst
 "Active" means **made a real request in the last 5 minutes**. The two header badges poll themselves every 20s, and those polls are deliberately excluded (`_PRESENCE_EXEMPT_ENDPOINTS` in `review_app.py`) — otherwise every idle open tab would count forever and the number would measure tabs, not people, while correlating with load not at all.
 
 Tracking lives in `presence.py`: in-memory, no file backing, pruned on read. Presence is worthless the moment it's stale and rebuilds itself from live traffic within one window, so persisting it would add I/O to every request to buy nothing. **This is exact only because `--workers 1`** — under more workers each would see a fraction of the traffic and every count would silently read low. That puts it on the same list as the state lock and the job queue: redesign before raising `--workers`, not after.
+
+## Branding an instance with a school logo
+
+Drop a logo into [`static/`](static/) and name it in that instance's `.env`:
+
+```
+SCHOOL_LOGO=ncms-logo.png
+```
+
+It then appears on the **login page**, in the **page header** next to the ☰ menu, and at the top of **Printable PDF** exports — the last of which matters most, since a printed test leaves the app entirely and has nothing else identifying whose it is.
+
+**Why `static/` and not `DATA_ROOT`**: `static/` is part of the code allow-list `_apply-update.sh` syncs, so the file deploys with the code and needs no manual copy onto the server. Every instance therefore *has* the file; it's the env var that decides who *shows* it. That's what lets one school be branded while another on the same box stays plain — leave `SCHOOL_LOGO` unset and nothing changes.
+
+Scaling preserves the image's own aspect ratio everywhere (a capped height with automatic width on the web, a fixed width with a derived height in the PDF), so a wordmark is never stretched. Bear in mind the header caps at ~30px tall: fine detail in a wide logo won't be legible there, though the login page and PDF render it much larger. Only the basename is honoured, a filename that isn't in `static/` logs a warning and renders nothing, and a logo that fails to embed never costs you the PDF export.
 
 ## Optional export dependencies
 

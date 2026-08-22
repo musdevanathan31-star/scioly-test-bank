@@ -18,6 +18,14 @@
    it to the visual left edge of the (already display:flex) header
    regardless of where this include actually sits in each template's
    header markup — no per-template restructuring needed. #}
+{%- if school_logo %}
+{# order:-1 like the navicon below, so it pins to the header's left edge
+   whatever order each template happens to include this partial in; it
+   follows the navicon because same-order flex items keep DOM order.
+   Height is capped and width left auto, so both axes scale together. #}
+<img src="{{ url_for('static', filename=school_logo) }}" alt="{{ school_name }}"
+     style="order:-1;height:30px;width:auto;margin-right:10px;flex:0 0 auto">
+{%- endif %}
 <div class="toolbar-group" style="position:relative;order:-1">
   <button id="navIconBtn" type="button" title="Navigate">☰</button>
   <div id="navIconPanel" class="dropdown-panel nav-panel">

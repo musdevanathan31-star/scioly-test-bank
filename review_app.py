@@ -183,6 +183,33 @@ def _inject_user():
 
 
 @app.context_processor
+def _inject_school_logo():
+    """Per-instance branding, opt-in via SCHOOL_LOGO in the instance's .env.
+
+    The file lives in static/ rather than DATA_ROOT because static/ is part
+    of the code allow-list _apply-update.sh syncs, so it deploys with the
+    code and needs no manual copy onto the server. Both schools therefore
+    have the file, and it is the env var -- not the file's presence -- that
+    decides who shows it, which is what keeps CHS unbranded while sharing
+    one code tree.
+
+    Only the basename is honoured: this is operator-set config rather than
+    user input, but a value that can walk out of static/ is not worth
+    allowing for the sake of a filename nobody needs to nest.
+    """
+    raw = (os.environ.get("SCHOOL_LOGO") or "").strip()
+    if not raw:
+        return {"school_logo": None}
+    name = os.path.basename(raw)
+    if not (_STATIC_DIR / name).is_file():
+        # Wrong filename is far likelier than a missing deploy, and a
+        # silently absent logo is hard to diagnose from the browser.
+        app.logger.warning("SCHOOL_LOGO=%r not found in static/ — no logo shown", raw)
+        return {"school_logo": None}
+    return {"school_logo": name}
+
+
+@app.context_processor
 def _inject_school_name():
     return {"school_name": os.environ.get("SCHOOL_NAME", "NCMS").upper()}
 
@@ -3819,7 +3846,29 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
         # reportlab.Paragraph parses XML, so escape the basics.
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    story = [
+    story = []
+    # Branding, when this instance has any. A printed test leaves the app
+    # entirely -- it goes out on paper with nothing else identifying whose
+    # it is -- so the logo earns its place here more than anywhere on screen.
+    logo_name = (os.environ.get("SCHOOL_LOGO") or "").strip()
+    if logo_name:
+        logo_path = _STATIC_DIR / os.path.basename(logo_name)
+        if logo_path.is_file():
+            try:
+                from reportlab.platypus import Image as RLImage
+                from reportlab.lib.utils import ImageReader
+                iw, ih = ImageReader(str(logo_path)).getSize()
+                # Fix the width and derive the height from the file's own
+                # aspect ratio, so the wordmark is never stretched.
+                width = 1.9 * inch
+                story.append(RLImage(str(logo_path), width=width,
+                                     height=width * ih / iw))
+                story.append(Spacer(1, 0.12 * inch))
+            except Exception as e:
+                # A broken logo must never cost someone their export.
+                app.logger.warning("Could not embed SCHOOL_LOGO in PDF: %s", e)
+
+    story += [
         Paragraph(f"{_e(bqb.EVENT.name)} — Question Bank", h1),
         Paragraph(f"{len(all_qs)} questions", meta_style),
         Spacer(1, 0.2 * inch),

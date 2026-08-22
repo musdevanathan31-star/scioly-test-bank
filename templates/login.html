@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Sign in · {{ school_name }} Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Sign in · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 body{display:flex;align-items:center;justify-content:center;min-height:100vh}
@@ -11,9 +11,17 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh}
   border:1px solid var(--line);border-radius:4px;font:inherit;font-size:14px}
 .login-box button{width:100%;padding:9px;font-size:14px}
 .login-box .err{color:var(--bad);font-size:13px;margin-bottom:12px;text-align:center}
+.login-logo{display:block;margin:0 auto 14px;max-width:230px;width:auto;
+  height:auto;max-height:110px}
 </style></head>
 <body>
 <div class="login-box">
+  {%- if school_logo %}
+  {# width:auto with a capped height scales both axes equally, so the
+     wordmark never distorts regardless of the file's own dimensions. #}
+  <img src="{{ url_for('static', filename=school_logo) }}"
+       alt="{{ school_name }}" class="login-logo">
+  {%- endif %}
   <h1>{{ school_name }} Sci-Oly Question Banks</h1>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
   <form method="post" action="{{ url_for('login', next=request.args.get('next')) }}">
