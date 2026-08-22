@@ -454,3 +454,51 @@ def test_removing_duplicates_through_the_api_keeps_one(app_ctx):
                               json={"ids": [group["id"]]})
     assert r.get_json()["result"]["count"] == 1
     assert sum(1 for rel in rels if (ta.archive_root() / rel).exists()) == 1
+
+
+def test_removing_every_duplicate_set_travels_as_a_flag(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    # More sets than a page holds, so an id list would be the wrong shape.
+    for g in range(4):
+        body = (f"SET-{g}-" * 300).encode()
+        for k in range(3):
+            p = ta.archive_root() / f"Division B/Bulk/{g}/{k}/f.pdf"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(body)
+    ta.save_index(ta.build_index())
+    before = len(ta.load_index()["duplicates"])
+    assert before >= 4
+    c = client("coach1")
+    plan = c.post("/api/archive/duplicates/preview",
+                  json={"all": True}).get_json()["plan"]
+    assert len(plan["groups"]) == before
+    r = c.post("/api/archive/duplicates/remove", json={"all": True, "ids": []})
+    assert r.status_code == 200, r.get_json()
+    # The headline count is what the coach watches; it has to reach zero.
+    assert ta.load_index()["duplicates"] == []
+    assert c.get("/api/archive/status").get_json()["duplicates"]["groups"] == 0
+
+
+def test_an_empty_selection_without_the_flag_is_still_refused(app_ctx):
+    client, _am, _slug = app_ctx
+    r = client("coach1").post("/api/archive/duplicates/remove",
+                              json={"ids": [], "all": False})
+    assert r.status_code == 400
+
+
+def test_every_set_still_respects_a_folder_scope(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    body = b"SCOPED" * 300
+    inside = "Division B/Circuit Lab/2019/UF/a.pdf"
+    outside = "Division C/_UnknownEvent/2021/States/a.pdf"
+    for rel in (inside, "Division B/Circuit Lab/2019/UF/b.pdf", outside):
+        p = ta.archive_root() / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(body)
+    ta.save_index(ta.build_index())
+    client("coach1").post("/api/archive/duplicates/remove",
+                          json={"all": True, "path": "Division B"})
+    # "Every set" is still bounded by the folder the coach was looking at.
+    assert (ta.archive_root() / outside).exists()

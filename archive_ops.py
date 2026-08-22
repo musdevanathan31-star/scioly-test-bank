@@ -311,8 +311,8 @@ def delete_empty_folders(rel: str = "", by: str = "") -> dict:
                 "count": len(removed)}
 
 
-def remove_duplicates(ids: list, scope: str = "", by: str = "",
-                      progress=None) -> dict:
+def remove_duplicates(ids: list | None, scope: str = "", by: str = "",
+                      progress=None, every: bool = False) -> dict:
     """Delete every copy but one in each named duplicate group.
 
     Takes group ids, not paths. The server re-derives what to delete from
@@ -329,8 +329,15 @@ def remove_duplicates(ids: list, scope: str = "", by: str = "",
     one directory would lose files to overwrites.
     """
     with _lock:
-        groups = ta.groups_by_hash(ids)
-        if scope:
+        if every:
+            # "Every duplicate set in the archive" travels as a flag rather
+            # than as thousands of ids in a request body. The server derives
+            # the list either way, so this changes the transport, not who
+            # decides what gets deleted.
+            groups = ta.groups_under(scope)
+        else:
+            groups = ta.groups_by_hash(ids)
+        if scope and not every:
             prefix = scope.rstrip("/") + "/"
             scoped = []
             for g in groups:

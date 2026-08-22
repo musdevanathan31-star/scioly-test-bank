@@ -85,6 +85,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     <div class="statline"><b id="dupline"></b>
       <button class="ghost" id="duptoggle">show</button></div>
     <div id="duplist" style="display:none"></div>
+    <div class="empty" id="dupallbanner" style="display:none"></div>
     <div class="dupbar" id="dupbar" style="display:none">
       <button class="ghost" id="dupall">Select all on this page</button>
       <button class="ghost" id="dupnone">Clear selection</button>
@@ -190,7 +191,7 @@ function fmtBytes(n){
 }
 
 async function refreshStatus(){
-  const r = await fetch(`${APP_ROOT}/api/archive/status`);
+  const r = await fetch(`${APP_ROOT}/api/archive/status`, {cache: "no-store"});
   const s = await r.json();
   // A volunteer has no status panel: the totals describe the whole archive,
   // most of which is not theirs to see.
@@ -605,6 +606,8 @@ document.addEventListener("click", async e => {
 
 const DUPSEL = new Set();
 let DUPSHOWN = [];
+let DUPTOTAL = 0;        // sets in the archive, not just on this page
+let DUPALL = false;      // "every set", Gmail-style, not just the page
 
 function dupRows(groups, scopeLabel){
   DUPSHOWN = groups;
@@ -628,22 +631,52 @@ function updateDupBar(){
   const btn = document.getElementById("dupremove");
   if(!btn) return;                 // volunteer: no duplicates panel at all
   const n = DUPSEL.size;
+  const banner = document.getElementById("dupallbanner");
   document.getElementById("dupselcount").textContent =
-    n ? `${n} set${n === 1 ? "" : "s"} selected` : "none selected";
-  btn.disabled = !n;
+    DUPALL ? `all ${DUPTOTAL.toLocaleString()} sets selected`
+           : (n ? `${n} set${n === 1 ? "" : "s"} selected` : "none selected");
+  btn.disabled = !n && !DUPALL;
+  // The page holds 50 sets. Selecting those and calling it "select all" is
+  // how a sweep of a few thousand sets looks like it did nothing -- the
+  // headline count barely moves. Offer the real thing, as Gmail does.
+  if(DUPTOTAL > DUPSHOWN.length && (DUPSEL.size >= DUPSHOWN.length || DUPALL)
+     && DUPSHOWN.length){
+    banner.style.display = "";
+    banner.innerHTML = DUPALL
+      ? `All <b>${DUPTOTAL.toLocaleString()}</b> sets in the archive are selected. `
+        + `<a data-dupall="page">Select just this page instead</a>`
+      : `All <b>${DUPSHOWN.length}</b> sets on this page are selected. `
+        + `<a data-dupall="every">Select all ${DUPTOTAL.toLocaleString()} sets `
+        + `in the archive</a>`;
+  } else {
+    banner.style.display = "none";
+  }
 }
 
 document.addEventListener("change", e => {
   const box = e.target.closest("input[data-dup]");
   if(!box) return;
-  if(box.checked) DUPSEL.add(box.dataset.dup); else DUPSEL.delete(box.dataset.dup);
+  if(box.checked){
+    DUPSEL.add(box.dataset.dup);
+  } else {
+    DUPSEL.delete(box.dataset.dup);
+    DUPALL = false;         // unticking one contradicts "every set"
+  }
   updateDupBar();
 });
 
 document.addEventListener("click", e => {
+  const hatch = e.target.closest("[data-dupall]");
+  if(hatch){
+    DUPALL = hatch.dataset.dupall === "every";
+    if(!DUPALL){ DUPSEL.clear(); DUPSHOWN.forEach(g => DUPSEL.add(g.id)); }
+    updateDupBar();
+    return;
+  }
   if(e.target.id === "dupall"){
     DUPSHOWN.forEach(g => DUPSEL.add(g.id));
   } else if(e.target.id === "dupnone"){
+    DUPALL = false;
     DUPSHOWN.forEach(g => DUPSEL.delete(g.id));
   } else return;
   document.querySelectorAll("input[data-dup]").forEach(b => {
@@ -651,12 +684,13 @@ document.addEventListener("click", e => {
   updateDupBar();
 });
 
-async function removeSelectedDuplicates(scope){
+async function removeSelectedDuplicates(scope, everySet){
+  const every = everySet === undefined ? DUPALL : everySet;
   const ids = [...DUPSEL];
-  if(!ids.length) return;
+  if(!ids.length && !every) return;
   const pr = await fetch(`${APP_ROOT}/api/archive/duplicates/preview`, {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ids, path: scope || ""})});
+    body: JSON.stringify({ids, all: every, path: scope || ""})});
   const pj = await pr.json();
   if(pj.error){ await confirmModal(pj.error, {confirmLabel: "OK"}); return; }
   const plan = pj.plan;
@@ -680,7 +714,7 @@ async function removeSelectedDuplicates(scope){
   try {
     const r = await fetch(`${APP_ROOT}/api/archive/duplicates/remove`, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ids, path: scope || ""})});
+      body: JSON.stringify({ids, all: every, path: scope || ""})});
     // A non-JSON body means the request failed somewhere before the app --
     // reporting that beats leaving the page looking untouched.
     j = r.ok ? await r.json()
@@ -692,6 +726,7 @@ async function removeSelectedDuplicates(scope){
   }
   if(j.error){ await confirmModal(j.error, {confirmLabel: "OK"}); return; }
   DUPSEL.clear();
+  DUPALL = false;
   updateDupBar();
   const failed = (j.result.failed || []).length;
   document.getElementById("dupmsg").textContent =
@@ -718,20 +753,22 @@ on("foldedupe", "click", async () => {
   DUPSEL.clear();
   j.groups.forEach(g => DUPSEL.add(g.id));
   DUPSHOWN = j.groups;
-  await removeSelectedDuplicates(CURRENT);
+  await removeSelectedDuplicates(CURRENT, true);
 });
 
 async function loadDuplicates(force){
   const box = document.getElementById("duplist");
   if(!force && box.style.display === "none") return;
   box.innerHTML = '<div class="empty">loading…</div>';
-  const r = await fetch(`${APP_ROOT}/api/archive/duplicates?limit=50`);
+  const r = await fetch(`${APP_ROOT}/api/archive/duplicates?limit=50`,
+                       {cache: "no-store"});
   const j = await r.json();
   const groups = Array.isArray(j.groups) ? j.groups : [];
+  DUPTOTAL = j.total || groups.length;
   box.innerHTML = dupRows(groups);
   if(j.total > groups.length){
     box.innerHTML += `<div class="empty">Showing ${groups.length} of `
-      + `${j.total.toLocaleString()} sets. Select all applies to this page.</div>`;
+      + `${j.total.toLocaleString()} sets.</div>`;
   }
   updateDupBar();
 }

@@ -3034,7 +3034,7 @@ def api_archive_tournament_names():
 def api_archive_dedupe_preview():
     """Which copy survives in each group, and which go. Touches nothing."""
     data = request.get_json() or {}
-    ids = data.get("ids")
+    ids = None if data.get("all") else data.get("ids")
     scope = (data.get("path") or "").strip()
     groups = (tournament_archive.groups_under(scope)
               if ids is None else tournament_archive.groups_by_hash(ids))
@@ -3055,11 +3055,13 @@ def api_archive_dedupe_remove():
     index, so a client cannot ask for every copy of something to go."""
     data = request.get_json() or {}
     ids = data.get("ids") or []
-    if not isinstance(ids, list) or not ids:
+    every = bool(data.get("all"))
+    if not every and (not isinstance(ids, list) or not ids):
         return jsonify({"error": "select at least one set of duplicates"}), 400
     try:
         result = archive_ops.remove_duplicates(
-            ids, scope=(data.get("path") or "").strip(), by=g.user.username)
+            ids, scope=(data.get("path") or "").strip(), by=g.user.username,
+            every=every)
     except archive_ops.ArchiveOpError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "result": result})

@@ -291,8 +291,11 @@ Two things to know:
   keeping its original archive path so nothing is lost to a name collision.
   A sweep of a few hundred files takes seconds and shows a blocking notice
   while it runs; the "sets of identical files" count updates when it
-  finishes. **Select all on this page** means exactly that — if the panel
-  says "Showing 50 of 61", it selects those 50.
+  finishes. **Select all on this page** selects the 50 sets shown — and when
+  there are more, a line appears offering **Select all N sets in the
+  archive**, the way Gmail does. Use that one if you mean the whole backlog:
+  clearing 50 sets out of a thousand barely moves the headline number and
+  reads as though nothing happened.
 - **Rebuilding** shows each step — scan folders, compare by size, hash
   candidates, save — so you can see what is finished, what is running and
   what has not started. The button stays disabled until it ends, and
