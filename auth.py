@@ -26,7 +26,7 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -329,23 +329,50 @@ def change_own_password(username: str, current_password: str, new_password: str)
     password-reconfirmation pattern for sensitive self-service actions
     (admin_app.py's Update/Restart/Rollback/Set-threads gate). Unlike
     update_user() (coach-only, never touches password_hash by design), this
-    is the one path that can change a password outside the CLI."""
+    is the one path that can change a password outside the CLI.
+
+    **Both scrypt calls happen outside _users_lock, deliberately.** They
+    cost ~80ms each, and holding the global user lock across them meant
+    password changes serialised completely: N students changing passwords
+    at once took N x 160ms, and because review_app's _require_login reads
+    the same lock via get_user() on EVERY authenticated request, that burst
+    stalled page loads and answer saves for everyone on the instance, not
+    just the students changing passwords. Measured at 8 concurrent: p50
+    0.76s, p95 1.35s, against 0.02s for an answer save.
+
+    The lock is now held only for the swap, which turns the expensive part
+    into work the thread pool can overlap. The cost is that the read and
+    the write are no longer one atomic step, so the swap re-checks that the
+    stored hash is still the one we verified against -- a compare-and-swap.
+    Without it, two concurrent changes would both verify against the same
+    starting hash and the second would silently overwrite the first, which
+    is exactly the lost-update class of bug _users_transaction() exists to
+    prevent.
+    """
+    existing = get_user(username)
+    if existing is None:
+        raise ValueError(f"unknown user {username!r}")
+    # Verified before the length check to preserve the original error
+    # precedence: a caller who gets their current password wrong is told
+    # that, whatever else is also wrong with the request.
+    if not check_password_hash(existing.password_hash, current_password):
+        raise WrongPasswordError("current password is incorrect")
+    if not new_password or len(new_password) < 8:
+        raise ValueError("new password must be at least 8 characters")
+    new_hash = generate_password_hash(new_password)
+
     with _users_transaction() as users:
-        existing = users.get(username)
-        if existing is None:
+        current = users.get(username)
+        if current is None:
             raise ValueError(f"unknown user {username!r}")
-        if not check_password_hash(existing.password_hash, current_password):
-            raise WrongPasswordError("current password is incorrect")
-        if not new_password or len(new_password) < 8:
-            raise ValueError("new password must be at least 8 characters")
-        updated = User(
-            username=existing.username,
-            password_hash=generate_password_hash(new_password),
-            role=existing.role,
-            events=existing.events,
-            disabled=existing.disabled,
-            display_name=existing.display_name,
-        )
+        if current.password_hash != existing.password_hash:
+            # Changed by someone else between our read and this write.
+            # Refusing is the safe answer: we verified against a password
+            # that is no longer current.
+            raise WrongPasswordError(
+                "password was changed elsewhere while this request was in "
+                "flight; try again")
+        updated = replace(current, password_hash=new_hash)
         users[username] = updated
     return updated
 

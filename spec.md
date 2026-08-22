@@ -1040,3 +1040,18 @@ Three words that all sounded interchangeable and were not, so they are now fixed
 **One deliberate exception**: `_LEGACY_RESPONSES_FILE` still points at `test_responses.json`. That is a historical filename on disk, not a concept — it predates this rename, and no file was ever written under an `assessment_` name at that path. Renaming the constant would aim the pre-per-file backfill at something that has never existed and silently strand every response written before that redesign. A test pins it.
 
 **Not renamed**: CSS class names (`.test-choice`, `.test-timer`) — cosmetic internals with no reader-facing meaning, where churn buys nothing.
+
+
+## 21. Why password hashing sits outside the user lock
+
+`auth.py` guards one JSON file for every account with a single `_users_lock`, and `change_own_password` used to hold it across both scrypt calls — a verify and a generate, roughly 80ms each on typical hardware.
+
+**Why that was worse than it looks.** The obvious cost is that password changes serialise: N students changing at once take N x 160ms. The real cost is that `review_app`'s `_require_login` calls `auth.get_user()` on *every* authenticated request, which takes the same lock to read. So a burst of password changes didn't just slow down password changes — it stalled page loads and answer saves for everyone on the instance. Measured with `loadtest_students.py --scenario password` at 8 concurrent: p50 0.76s, p95 1.35s, against 0.02s for an answer save. Extrapolated to a class of 40 arriving and all changing the password they were just handed, that is several seconds during which the whole app is effectively frozen.
+
+**The fix and its cost.** Both hashes now happen before the lock is taken; the lock covers only the swap. scrypt releases the GIL, so the expensive part overlaps across the thread pool instead of queueing. The same 8-concurrent measurement afterwards: p50 0.32s, p95 0.33s — and in a mixed run the answer-save path holds at 0.02s while password changes are in flight.
+
+The cost is that the read and the write are no longer one atomic step. Two concurrent changes would both verify against the same starting hash, and the second would silently overwrite the first — precisely the lost-update class of bug `_users_transaction()` exists to prevent. So the swap re-checks that the stored hash is still the one it verified against, and refuses if not. A compare-and-swap, rather than a longer lock.
+
+**Why refuse rather than retry**: the loser verified against a password that is no longer current. Retrying would mean re-verifying credentials the caller never re-supplied. Telling them to try again is the honest answer, and the race needs two people changing one account's password within ~100ms of each other to occur at all.
+
+**Still unaddressed, deliberately**: `create_user` and `create_users_bulk` have the same shape — a hash per account inside the lock — so a 30-row CSV import holds it for a couple of seconds. That is a coach doing one deliberate action at a known moment, not a class of students acting at once, so it has not been worth the same restructuring. Worth revisiting if bulk import ever moves somewhere it can collide with live testing.
