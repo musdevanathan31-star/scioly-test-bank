@@ -122,6 +122,12 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       <a href="{{ url_for('test_builder_page', test_id=et.test.test_id) }}">
         <button class="ghost">{{ "Prepare" if et.test.status == "preparing" else "View" }}</button>
       </a>
+      <a href="{{ url_for('api_export_test_markdown', test_id=et.test.test_id, which='test') }}"
+         title="Download this test as markdown, for administering it on paper">
+        <button class="ghost">&#11015; Test</button></a>
+      <a href="{{ url_for('api_export_test_markdown', test_id=et.test.test_id, which='key') }}"
+         title="Download the same questions with an answer key section after them">
+        <button class="ghost">&#11015; Key</button></a>
       {% if current_user.role == "coach" and hard_delete_enabled() %}
       <button class="ghost purge-test-btn" data-test="{{ et.test.test_id }}"
               data-label="{{ et.event_slug }} test" style="color:var(--bad)"

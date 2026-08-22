@@ -160,6 +160,25 @@ header{background:#fff;border-bottom:1px solid var(--line)}
   </h1>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
+  <button id="export_btn" title="Export questions — choose scope and format">Export ▾</button>
+  <span id="hdr_sel_count" class="badge" style="display:none"
+        title="Questions ticked on this page. Export ▾ can export exactly these."></span>
+  <div id="export_menu" class="dropdown-panel" style="padding:6px 0;min-width:270px">
+    <div style="padding:6px 14px;border-bottom:1px solid var(--line)">
+      <div class="muted" style="font-size:11px;margin-bottom:4px">Which questions</div>
+      <label style="font-size:12px;display:block"><input type="radio" name="exp_scope" value="all" checked> Everything in the bank</label>
+      <label style="font-size:12px;display:block"><input type="radio" name="exp_scope" value="filtered"> Filtered set (<span id="exp_n_filtered">0</span>)</label>
+      <label style="font-size:12px;display:block"><input type="radio" name="exp_scope" value="selected"> Selected only (<span id="exp_n_selected">0</span>)</label>
+    </div>
+    <div class="muted" style="font-size:11px;padding:6px 14px 2px">Format</div>
+    <button class="ghost" data-export="csv" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV</button>
+    <button class="ghost" data-export="json" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON</button>
+    <button class="ghost" data-export="md-plain" title="Questions and answers as they appear in the bank" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — plain</button>
+    <button class="ghost" data-export="md-key" title="Questions first, then a separate answer-key section — print the top half as a test, keep the rest" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — key at end</button>
+    <button class="ghost" data-export="md-inline" title="Each answer immediately under its own question" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — answers inline</button>
+    <button class="ghost" data-export="apkg" title="Anki deck, sub-decked by topic. Whole bank only. Requires server-side `pip install genanki`." style="display:block;width:100%;text-align:left;padding:6px 14px">Anki deck <span class="muted">(whole bank)</span></button>
+    <button class="ghost" data-export="pdf" title="Printable PDF, answer key at the end. Whole bank only. Requires server-side `pip install reportlab`." style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF <span class="muted">(whole bank)</span></button>
+  </div>
   {% include "_user_badge.html" %}
 </header>
 <div class="layout">
@@ -241,16 +260,6 @@ header{background:#fff;border-bottom:1px solid var(--line)}
           <option value="length-asc">Length (shortest first)</option>
           <option value="edited">Recently edited first</option>
         </select>
-      </div>
-      <button id="export_btn" title="Export the currently filtered set">Export ▾</button>
-      <div id="export_menu" class="dropdown-panel" style="padding:6px 0">
-        <button class="ghost" data-export="csv" title="Download every question in the bank as CSV" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV (everything)</button>
-        <button class="ghost" data-export="json" title="Download every question in the bank as JSON" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON (everything)</button>
-        <button class="ghost" data-export="csv-filtered" title="Download only the questions visible after applying the current filters (CSV)" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV (filtered set)</button>
-        <button class="ghost" data-export="json-filtered" title="Download only the questions visible after applying the current filters (JSON)" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON (filtered set)</button>
-        <button class="ghost" data-export="markdown-filtered" title="Download only the questions visible after applying the current filters (Markdown)" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown (filtered set)</button>
-        <button class="ghost" data-export="apkg" title="Download every question as an Anki deck (.apkg) — sub-decked by topic. Requires server-side `pip install genanki`." style="display:block;width:100%;text-align:left;padding:6px 14px">Anki deck (everything)</button>
-        <button class="ghost" data-export="pdf" title="Download every question as a printable PDF, answer key at the end. Requires server-side `pip install reportlab`." style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF (everything)</button>
       </div>
     </div>
     <div id="bulk_bar" style="display:none;background:var(--accent);color:#fff;
@@ -1232,6 +1241,11 @@ function selectedQs(){
 function updateSelectionBar(){
   const sel = selectedQs();
   document.getElementById("sel_count").textContent = sel.length;
+  const hdr = document.getElementById("hdr_sel_count");
+  if(hdr){
+    hdr.textContent = `${sel.length} selected`;
+    hdr.style.display = sel.length ? "" : "none";
+  }
   document.getElementById("bulk_bar").style.display = (sel.length || FILTERED.length) ? "flex" : "none";
 }
 window.bulkAction = async function(action){
@@ -1299,11 +1313,15 @@ window.closeCompare = function(){
   document.getElementById("compare_modal").classList.remove("on");
 };
 
-// Wire export menu
+// Wire export menu — scope (which questions) is chosen separately from
+// format, so adding a layout costs one button instead of one button per
+// scope. The old flat list had already reached seven entries and would
+// have needed fifteen to cover the same ground.
 document.getElementById("export_btn").addEventListener("click", e => {
   e.stopPropagation();
   const m = document.getElementById("export_menu");
   m.classList.toggle("on");
+  refreshExportCounts();
   const r = e.target.getBoundingClientRect();
   m.style.top = (r.bottom + 4) + "px";
   m.style.right = "28px";
@@ -1312,37 +1330,114 @@ document.addEventListener("click", e => {
   if(!e.target.closest("#export_btn") && !e.target.closest("#export_menu"))
     document.getElementById("export_menu").classList.remove("on");
 });
+
+function exportScope(){
+  const el = document.querySelector('input[name="exp_scope"]:checked');
+  return el ? el.value : "all";
+}
+
+function refreshExportCounts(){
+  document.getElementById("exp_n_filtered").textContent = FILTERED.length;
+  document.getElementById("exp_n_selected").textContent = selectedQs().length;
+  // Anki and PDF are generated server-side from the whole bank, so they
+  // can't honour a scope. Disable rather than silently ignoring it — an
+  // export that quietly returns something other than what was asked for is
+  // worse than one that refuses.
+  const wholeBankOnly = exportScope() !== "all";
+  ["apkg","pdf"].forEach(k => {
+    const btn = document.querySelector(`[data-export="${k}"]`);
+    if(!btn) return;
+    btn.disabled = wholeBankOnly;
+    btn.style.opacity = wholeBankOnly ? ".45" : "";
+    btn.title = wholeBankOnly
+      ? "Generated server-side from the whole bank — switch scope to \"Everything\" to use this."
+      : btn.dataset.baseTitle || btn.title;
+  });
+}
+document.getElementById("export_menu").addEventListener("change", e => {
+  if(e.target.name === "exp_scope") refreshExportCounts();
+});
+
+function rowsForScope(){
+  const scope = exportScope();
+  if(scope === "filtered") return {rows: FILTERED, suffix: "-filtered"};
+  if(scope === "selected") return {rows: selectedQs(), suffix: "-selected"};
+  return {rows: DATA.questions, suffix: ""};
+}
+
+function csvFrom(rows){
+  const out = [["number","topic","focus","text","answer","choices","source","bucket","validation_status"]];
+  rows.forEach(q => {
+    const choices = (q.choices||[]).map(c => `${c.letter}. ${c.text}`).join(" | ");
+    const v = q.validation || {};
+    out.push([q.number, q.topic, q.focus, q.text, q.answer, choices, q.source, q._bucket, v.status || ""]);
+  });
+  return out.map(r => r.map(c => `"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
+}
+
+// Mirrors testing.py's render_questions_markdown layouts, so a bank export
+// and a printed test read the same way:
+//   "plain"  — question then its answer, as the bank holds it
+//   "key"    — every question, then one answer-key section at the end
+//   "inline" — same as plain, kept distinct so the naming matches the server
+function markdownFrom(rows, layout){
+  const esc0 = t => {
+    const s = (t || "").replace(/^\s+/, "");
+    return "#-*>|+".includes(s[0]) ? "\\" + s : (t || "");
+  };
+  let md = `# ${DATA.event_name}\n\n*${rows.length} question${rows.length === 1 ? "" : "s"}`;
+  if(exportScope() !== "all") md += ` (${exportScope()} set)`;
+  md += `*\n\n`;
+  rows.forEach((q, i) => {
+    md += `**${i+1}.** ${esc0(q.text)}\n\n`;
+    const meta = [q.source, q.topic && `topic: ${q.topic}`, q.focus && `focus: ${q.focus}`]
+      .filter(Boolean).join(" · ");
+    if(meta) md += `*${meta}*\n\n`;
+    (q.images || []).forEach(f => { md += `> *[figure: \`${f}\`]*\n\n`; });
+    if(q.choices && q.choices.length)
+      md += q.choices.map(c => `- **${c.letter}.** ${c.text}`).join("\n") + "\n\n";
+    if(layout !== "key" && q.answer) md += `**Answer:** ${q.answer}\n\n`;
+    md += "---\n\n";
+  });
+  if(layout === "key"){
+    md += `## Answer key\n\n`;
+    rows.forEach((q, i) => { md += `${i+1}. ${q.answer || "(no key recorded)"}\n`; });
+    md += "\n";
+  }
+  return md;
+}
+
 document.getElementById("export_menu").addEventListener("click", e => {
-  const kind = e.target.dataset.export;
-  if(!kind) return;
-  if(kind === "csv" || kind === "json" || kind === "apkg" || kind === "pdf"){
+  const btn = e.target.closest("[data-export]");
+  if(!btn || btn.disabled) return;
+  const kind = btn.dataset.export;
+  const scope = exportScope();
+
+  // Whole-bank CSV/JSON still go through the server route: it adds the
+  // shared case-study contexts that the client copy doesn't carry.
+  if(scope === "all" && (kind === "csv" || kind === "json" || kind === "apkg" || kind === "pdf")){
     window.location.href = `${API}/export.${kind}`;
+    document.getElementById("export_menu").classList.remove("on");
     return;
   }
-  // Filtered exports — build client-side
-  if(kind === "csv-filtered"){
-    const rows = [["number","topic","focus","text","answer","choices","source","bucket","validation_status"]];
-    FILTERED.forEach(q => {
-      const choices = (q.choices||[]).map(c => `${c.letter}. ${c.text}`).join(" | ");
-      const v = q.validation || {};
-      rows.push([q.number, q.topic, q.focus, q.text, q.answer, choices, q.source, q._bucket, v.status || ""]);
-    });
-    const csv = rows.map(r => r.map(c => `"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
-    downloadBlob(csv, "text/csv", `${EVENT_SLUG}-filtered.csv`);
-  } else if(kind === "json-filtered"){
-    downloadBlob(JSON.stringify(FILTERED, null, 2), "application/json", `${EVENT_SLUG}-filtered.json`);
-  } else if(kind === "markdown-filtered"){
-    let md = `# Filtered question bank · ${esc(DATA.event_name)}\n\n*${FILTERED.length} questions*\n\n`;
-    FILTERED.forEach((q,i) => {
-      md += `## Q${i+1} (orig #${q.number})\n*${q.source} · topic: ${q.topic}${q.focus?' · focus: '+q.focus:''}*\n\n${q.text}\n\n`;
-      if(q.choices && q.choices.length) md += q.choices.map(c => `- **${c.letter}.** ${c.text}`).join("\n") + "\n\n";
-      if(q.answer) md += `**Answer:** ${q.answer}\n\n`;
-      md += "---\n\n";
-    });
-    downloadBlob(md, "text/markdown", `${EVENT_SLUG}-filtered.md`);
+
+  const {rows, suffix} = rowsForScope();
+  if(!rows.length){
+    toast("Nothing to export in that scope.", "err");
+    return;
+  }
+  if(kind === "csv"){
+    downloadBlob(csvFrom(rows), "text/csv", `${EVENT_SLUG}${suffix}.csv`);
+  } else if(kind === "json"){
+    downloadBlob(JSON.stringify(rows, null, 2), "application/json", `${EVENT_SLUG}${suffix}.json`);
+  } else if(kind.startsWith("md-")){
+    const layout = kind.slice(3);
+    downloadBlob(markdownFrom(rows, layout), "text/markdown",
+                 `${EVENT_SLUG}${suffix}${layout === "key" ? "-with-key" : ""}.md`);
   }
   document.getElementById("export_menu").classList.remove("on");
 });
+
 function downloadBlob(content, mime, filename){
   const blob = new Blob([content], {type:mime});
   const a = document.createElement("a");

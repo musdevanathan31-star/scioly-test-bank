@@ -1273,6 +1273,9 @@ def test_builder_page(test_id):
         event_name=ev.name if ev else test.event_slug,
         window_label=window.label if window else "",
         status=test.status,
+        # Every question already committed to another test this season, so
+        # the pool can hide repeats by default — see testing.used_question_keys.
+        used_keys=sorted(testing.used_question_keys(test.season_id, test_id)),
     )
 
 
@@ -1578,6 +1581,47 @@ def test_grading_page(test_id):
     ev = EVENTS.get(test.event_slug)
     return render_template("test_grading.html", test_id=test_id,
                             event_name=ev.name if ev else test.event_slug)
+
+
+@app.route("/tests/<test_id>/export/<which>.md")
+@coach_or_volunteer_required
+def api_export_test_markdown(test_id: str, which: str):
+    """Download a test as markdown, for administering it on paper.
+
+    `which` is "test" (questions only) or "key" (questions with an answer
+    key section after them). Renders from the published snapshot when there
+    is one, so a printed key can never disagree with what students actually
+    saw; a still-preparing test renders from the live bank and is stamped
+    DRAFT so a draft print can't be mistaken for the real thing."""
+    if which not in ("test", "key"):
+        abort(404)
+    test = _select_test(test_id)
+    window = testing.get_window(test.window_id)
+    snapshot, is_draft = testing.snapshot_for_render(test)
+    if not snapshot:
+        return jsonify({"error": "this test has no questions yet"}), 400
+
+    ev = EVENTS.get(test.event_slug)
+    label = (window.label if window else "") or (window.opens_at[:10] if window else "")
+    title = f"{ev.name if ev else test.event_slug}" + (f" — {label}" if label else "")
+    if which == "key":
+        title += " — ANSWER KEY"
+    subtitle_bits = []
+    if is_draft:
+        subtitle_bits.append("**DRAFT — not published.** Rendered from the live "
+                             "question bank, so it may not match what students see.")
+    if window:
+        subtitle_bits.append(f"Window: {window.opens_at.replace('T', ' ')} "
+                             f"→ {window.closes_at.replace('T', ' ')}")
+    # Two trailing spaces before the newline is a markdown hard line break,
+    # so the DRAFT warning and the window dates stay on separate lines.
+    md = testing.render_questions_markdown(
+        snapshot, title=title, subtitle="  \n".join(subtitle_bits),
+        answers="section" if which == "key" else "none")
+
+    stem = f"{test.event_slug}-{label or test_id[:8]}-{which}".replace(" ", "_")
+    return Response(md, mimetype="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename={stem}.md"})
 
 
 @app.route("/api/tests/<test_id>/grading")

@@ -507,6 +507,168 @@ def publish_test(test_id: str, published_by: str = "") -> dict:
     return {"test": updated, "skipped": skipped}
 
 
+# ---------------------------------------------------------------------------
+# Markdown rendering — printing a test (and its key) to administer by hand
+#
+# Pure functions over a snapshot list, deliberately taking no Test/Window
+# object and touching no storage, so they are testable without building a
+# season and can be reused by anything holding questions in snapshot shape
+# (the Browse page's markdown export renders the same layouts).
+# ---------------------------------------------------------------------------
+
+#: How many blank lines to leave under a free-response question when
+#: printing the paper version. Enough to actually write in; the key gets
+#: none, since nobody writes on a key.
+_FRQ_ANSWER_LINES = 4
+
+
+def _md_escape_leading(text: str) -> str:
+    """Stop a question that happens to begin with '#' or '-' from turning
+    into a heading or list item when the markdown is rendered."""
+    stripped = (text or "").lstrip()
+    if stripped[:1] in ("#", "-", "*", ">", "|", "+"):
+        return "\\" + stripped
+    return text or ""
+
+
+def _render_question(q: dict, index: int, *, include_answers: bool) -> list[str]:
+    lines: list[str] = []
+    pts = q.get("max_points", 1)
+    unit = "pt" if pts == 1 else "pts"
+    lines.append(f"**{index}.** ({pts} {unit}) {_md_escape_leading(q.get('text', ''))}")
+    lines.append("")
+
+    # Images can't be inlined into a markdown file that has to survive being
+    # emailed or pasted somewhere — name them so whoever assembles the paper
+    # copy knows which figure belongs where, and can pull it from the
+    # event's images/ directory.
+    for fname in q.get("images") or []:
+        desc = (q.get("image_descriptions") or {}).get(fname, "")
+        lines.append(f"> *[figure: `{fname}`{' — ' + desc if desc else ''}]*")
+        lines.append("")
+
+    qtype = q.get("qtype") or "frq"
+    if qtype == "matching":
+        matching = q.get("matching") or {}
+        left = matching.get("left") or []
+        right = matching.get("right") or []
+        for item in left:
+            lines.append(f"- {item.get('label', '')}. {item.get('text', '')} ______")
+        lines.append("")
+        for item in right:
+            lines.append(f"    {item.get('label', '')}. {item.get('text', '')}")
+        lines.append("")
+        if include_answers:
+            pairs = matching.get("pairs") or {}
+            joined = ", ".join(f"{k}\u2192{v}" for k, v in sorted(pairs.items()))
+            lines.append(f"**Answer:** {joined or '(no key recorded)'}")
+            lines.append("")
+    elif q.get("choices"):
+        for choice in q["choices"]:
+            lines.append(f"- **{choice.get('letter', '?')}.** {choice.get('text', '')}")
+        lines.append("")
+        if include_answers:
+            lines.append(f"**Answer:** {q.get('correct_answer') or '(no key recorded)'}")
+            lines.append("")
+    else:
+        if include_answers:
+            lines.append(f"**Answer:** {q.get('correct_answer') or '(no key recorded)'}")
+            lines.append("")
+        else:
+            lines.extend(["" for _ in range(_FRQ_ANSWER_LINES)])
+    return lines
+
+
+def render_questions_markdown(snapshot: list, *, title: str, subtitle: str = "",
+                              answers: str = "none") -> str:
+    """Render questions as markdown.
+
+    `answers` chooses the layout, which is the whole difference between a
+    student copy and something a grader can mark from:
+      "none"    -- questions only (the test)
+      "inline"  -- each answer immediately under its question (grouped)
+      "section" -- questions first, then a separate Answer Key section, so
+                   the same document is both the test and the key without
+                   spoiling it on the way down
+    """
+    if answers not in ("none", "inline", "section"):
+        raise ValueError(f"unknown answers layout: {answers!r}")
+
+    out: list[str] = [f"# {title}", ""]
+    if subtitle:
+        out.extend([subtitle, ""])
+
+    contexts_seen: set = set()
+    for i, q in enumerate(snapshot, start=1):
+        # A shared case-study passage is printed once, above the first
+        # question that uses it, rather than repeated under each.
+        ctx = q.get("_context")
+        ctx_id = q.get("context_id")
+        if ctx and ctx_id and ctx_id not in contexts_seen:
+            contexts_seen.add(ctx_id)
+            out.append(f"> **{ctx.get('title') or 'Shared passage'}**")
+            for line in (ctx.get("text") or "").splitlines():
+                out.append(f"> {line}")
+            out.append("")
+        out.extend(_render_question(q, i, include_answers=(answers == "inline")))
+
+    if answers == "section":
+        out.extend(["---", "", "## Answer key", ""])
+        for i, q in enumerate(snapshot, start=1):
+            if (q.get("qtype") or "") == "matching":
+                pairs = (q.get("matching") or {}).get("pairs") or {}
+                val = ", ".join(f"{k}\u2192{v}" for k, v in sorted(pairs.items()))
+            else:
+                val = q.get("correct_answer") or ""
+            out.append(f"{i}. {val or '(no key recorded)'}")
+        out.append("")
+
+    total = sum(float(q.get("max_points") or 0) for q in snapshot)
+    out.extend(["---", "",
+                f"*{len(snapshot)} question{'' if len(snapshot) == 1 else 's'}, "
+                f"{total:g} point{'' if total == 1 else 's'} total.*", ""])
+    return "\n".join(out)
+
+
+def snapshot_for_render(test: "Test") -> tuple[list, bool]:
+    """The question list to print, and whether it is a draft.
+
+    A published test prints from its frozen `snapshot` -- printing from the
+    live bank instead would let a paper key disagree with what students
+    actually saw, which is the one error nobody would catch until it was
+    being graded. A test still being prepared has no snapshot, so it is
+    resolved from `kept` against the live bank and flagged as a draft for
+    the caller to stamp on the page.
+    """
+    if test.snapshot:
+        snapshot = [dict(q) for q in test.snapshot]
+        contexts = test.snapshot_contexts or {}
+        for q in snapshot:
+            ctx_id = q.get("context_id")
+            if ctx_id:
+                q["_context"] = contexts.get(f"{q.get('bucket')}::{ctx_id}")
+        return snapshot, False
+
+    import build_question_bank as bqb
+    bqb.set_event(test.event_slug)
+    state = bqb._load_state()
+    questions_by_bucket = state.get("questions", {})
+    contexts = bqb._all_contexts()
+    snapshot = []
+    for item in test.kept:
+        bucket, number = item.get("bucket", ""), str(item.get("number", ""))
+        bank_q = next((q for q in (questions_by_bucket.get(bucket) or [])
+                       if str(q.get("number")) == number), None)
+        if bank_q is None:
+            continue
+        entry = _snapshot_one_question(bank_q, bucket, float(item.get("max_points") or 1))
+        ctx_id = entry.get("context_id")
+        if ctx_id:
+            entry["_context"] = contexts.get(f"{bucket}::{ctx_id}")
+        snapshot.append(entry)
+    return snapshot, True
+
+
 def unpublish_test(test_id: str) -> Test:
     """Reverts a published/live test back to "preparing" for edits. Caller
     (review_app.py's route) is responsible for the guardrail checks (window
@@ -837,6 +999,31 @@ def delete_window_record(window_id: str) -> bool:
 def tests_for_season(season_id: str) -> list[Test]:
     """Every Test belonging to a season, across all its windows."""
     return [t for t in load_tests().values() if t.season_id == season_id]
+
+
+def used_question_keys(season_id: str, exclude_test_id: str = "") -> set[str]:
+    """`bucket::number` for every question already used by another test in
+    this season, so the builder can keep a coach from unknowingly setting
+    the same question twice in one year.
+
+    Reads both `kept` and `snapshot`: `kept` is what a test still being
+    prepared has, `snapshot` is what a published one froze, and a question
+    counts as used either way. They overlap for a published test, which the
+    set handles for free.
+
+    Scoped to the season rather than to the event because that is how reuse
+    is actually judged -- the same students sit every window in a season,
+    and nothing about a new season makes last year's questions stale.
+    """
+    used: set[str] = set()
+    for test in load_tests().values():
+        if test.season_id != season_id or test.test_id == exclude_test_id:
+            continue
+        for item in test.kept or []:
+            used.add(f"{item.get('bucket','')}::{item.get('number','')}")
+        for item in test.snapshot or []:
+            used.add(f"{item.get('bucket','')}::{item.get('number','')}")
+    return used
 
 
 def windows_for_season(season_id: str) -> list[TestWindow]:

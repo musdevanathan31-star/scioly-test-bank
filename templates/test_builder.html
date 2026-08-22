@@ -46,6 +46,9 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
           <option value="matching">Matching</option>
         </select>
         <label class="muted" style="font-size:12px"><input type="checkbox" id="f_correct_only" checked> validated correct only</label>
+        <label class="muted" style="font-size:12px"
+               title="Questions already kept or published on another test in this season. On by default so a question isn't unknowingly set twice to the same students in one year.">
+          <input type="checkbox" id="f_hide_used" checked> hide <span id="used_count">0</span> used this season</label>
       </div>
       <div class="random-bar">
         <span>🎲 Add</span>
@@ -74,6 +77,11 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 </div>
 <script>
 const TEST_ID = {{ test_id|tojson }};
+// Questions already committed to another test in this season (kept or
+// published). Rendered once at page load rather than fetched: the set only
+// changes when someone edits a *different* test, which cannot happen from
+// this page.
+const USED_KEYS = new Set({{ used_keys|tojson }});
 const EVENT_SLUG = {{ event_slug|tojson }};
 const TEST_STATUS = {{ status|tojson }};
 const API = `${APP_ROOT}/event/${EVENT_SLUG}/api`;
@@ -113,14 +121,24 @@ function questionTypeOf(q){
   return "frq";
 }
 
+function initUsedFilter(){
+  document.getElementById("used_count").textContent = USED_KEYS.size;
+  const box = document.getElementById("f_hide_used");
+  // Nothing to hide — leave the control visible but inert rather than
+  // silently unchecked, so "0 used this season" reads as information.
+  if(!USED_KEYS.size) box.disabled = true;
+}
+
 function filteredPool(){
   const search = document.getElementById("f_search").value.trim().toLowerCase();
   const topic = document.getElementById("f_topic").value;
   const type = document.getElementById("f_type").value;
   const correctOnly = document.getElementById("f_correct_only").checked;
   const keptKeys = new Set(KEPT.map(keptKey));
+  const hideUsed = document.getElementById("f_hide_used").checked;
   return POOL.filter(q => {
     if(keptKeys.has(`${q._bucket}::${q.number}`)) return false;   // already kept — don't show twice
+    if(hideUsed && USED_KEYS.has(`${q._bucket}::${q.number}`)) return false;  // used on another test this season
     if(correctOnly && q._validation_status !== "correct") return false;
     if(topic && q.topic !== topic) return false;
     if(type && questionTypeOf(q) !== type) return false;
@@ -226,16 +244,24 @@ async function flushSave(){
   }
 }
 
-["f_search","f_topic","f_type","f_correct_only"].forEach(id => {
+["f_search","f_topic","f_type","f_correct_only","f_hide_used"].forEach(id => {
   document.getElementById(id).addEventListener("input", renderPool);
   document.getElementById(id).addEventListener("change", renderPool);
 });
+initUsedFilter();
 
 document.getElementById("random_btn").addEventListener("click", () => {
   const n = parseInt(document.getElementById("random_n").value) || 0;
   if(n <= 0) return;
   const keptKeys = new Set(KEPT.map(keptKey));
-  const candidates = POOL.filter(q => q._validation_status === "correct" && !keptKeys.has(`${q._bucket}::${q.number}`));
+  // Same exclusion as filteredPool(): random-add reads POOL directly, so
+  // without this it would cheerfully hand back the very repeats the filter
+  // above is hiding.
+  const hideUsed = document.getElementById("f_hide_used").checked;
+  const candidates = POOL.filter(q =>
+    q._validation_status === "correct"
+    && !keptKeys.has(`${q._bucket}::${q.number}`)
+    && !(hideUsed && USED_KEYS.has(`${q._bucket}::${q.number}`)));
   // shuffle-and-slice
   for(let i = candidates.length - 1; i > 0; i--){
     const j = Math.floor(Math.random() * (i + 1));
