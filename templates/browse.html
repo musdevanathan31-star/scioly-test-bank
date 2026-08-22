@@ -163,7 +163,13 @@ header{background:#fff;border-bottom:1px solid var(--line)}
   <button id="export_btn" title="Export questions — choose scope and format">Export ▾</button>
   <span id="hdr_sel_count" class="badge" style="display:none"
         title="Questions ticked on this page. Export ▾ can export exactly these."></span>
-  <div id="export_menu" class="dropdown-panel" style="padding:6px 0;min-width:270px">
+  {# position:fixed + left:auto overrides .dropdown-panel's `left:0`, which
+     would otherwise combine with the `right` set below to pin both edges
+     and stretch this the full width of the page. Fixed also matches the
+     viewport coordinates getBoundingClientRect() returns. #}
+  <div id="export_menu" class="dropdown-panel"
+       style="padding:6px 0;position:fixed;left:auto;width:max-content;
+              min-width:240px;max-width:min(320px,92vw)">
     <div style="padding:6px 14px;border-bottom:1px solid var(--line)">
       <div class="muted" style="font-size:11px;margin-bottom:4px">Which questions</div>
       <label style="font-size:12px;display:block"><input type="radio" name="exp_scope" value="all" checked> Everything in the bank</label>
@@ -1322,9 +1328,15 @@ document.getElementById("export_btn").addEventListener("click", e => {
   const m = document.getElementById("export_menu");
   m.classList.toggle("on");
   refreshExportCounts();
-  const r = e.target.getBoundingClientRect();
+  // Anchor the panel's right edge to the button's, rather than a fixed
+  // inset from the window — the button sits in a header whose width varies
+  // with the event name.
+  const r = e.currentTarget.getBoundingClientRect();
   m.style.top = (r.bottom + 4) + "px";
-  m.style.right = "28px";
+  m.style.left = "auto";
+  // clientWidth, not innerWidth: the latter includes the scrollbar, which
+  // would offset the panel from the button by the scrollbar's width.
+  m.style.right = Math.max(8, document.documentElement.clientWidth - r.right) + "px";
 });
 document.addEventListener("click", e => {
   if(!e.target.closest("#export_btn") && !e.target.closest("#export_menu"))
