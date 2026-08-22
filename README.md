@@ -20,6 +20,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [The cache & annotations](#the-cache--annotations)
 - [Who's active right now](#whos-active-right-now)
 - [Branding an instance with a school logo](#branding-an-instance-with-a-school-logo)
+- [PDF page rendering and its cache](#pdf-page-rendering-and-its-cache)
 - [Optional export dependencies](#optional-export-dependencies)
 - [Cost notes](#cost-notes)
 - [Configuration](#configuration)
@@ -422,6 +423,21 @@ It then appears on the **login page**, in the **page header** next to the ☰ me
 **Why `static/` and not `DATA_ROOT`**: `static/` is part of the code allow-list `_apply-update.sh` syncs, so the file deploys with the code and needs no manual copy onto the server. Every instance therefore *has* the file; it's the env var that decides who *shows* it. That's what lets one school be branded while another on the same box stays plain — leave `SCHOOL_LOGO` unset and nothing changes.
 
 Scaling preserves the image's own aspect ratio everywhere (a capped height with automatic width on the web, a fixed width with a derived height in the PDF), so a wordmark is never stretched. Bear in mind the header caps at ~30px tall: fine detail in a wide logo won't be legible there, though the login page and PDF render it much larger. Only the basename is honoured, a filename that isn't in `static/` logs a warning and renders nothing, and a logo that fails to embed never costs you the PDF export.
+
+## PDF page rendering and its cache
+
+The review UI renders PDF pages to PNG on demand. That is real CPU on the single gunicorn worker students' answer-saves also share — measured on a real Circuit Lab PDF: 26.5ms per page at 120dpi, 72ms at 200dpi — and the review workflow re-renders the same page constantly while zooming, capturing regions and paging back and forth.
+
+Two caches sit in front of it:
+
+- **An `ETag` per page**, so a returning browser revalidates and gets a 304 with no render and no transfer (0.7ms). The tag comes from the source PDF's identity — slug, filename, page, dpi, mtime, size — not from the response body, since hashing the body would mean rendering first.
+- **A PNG on disk** at `<DATA_ROOT>/.render_cache/<event>/`, so even a cold client costs a file read (1.5ms) rather than a rasterise (43ms). Sized by `RENDER_CACHE_MAX_MB` (default 2048); least-recently-used pages are evicted past that, and `0` disables the disk layer while keeping the ETag.
+
+**Invalidation is free**: the key includes the PDF's mtime and size, so a swapped, re-uploaded or reprocessed PDF simply misses rather than needing anything to notice. `Cache-Control: private, no-cache` means "revalidate before reuse", not "don't store", so a stale page can't be shown.
+
+The cache directory is dot-prefixed on purpose — [`backup-bulk-data.sh`](deploy/backup-bulk-data.sh) and [`migrate-data-root.sh`](deploy/migrate-data-root.sh) discover directories with a bare `*/` glob, which skips dotfiles, so derived data stays out of the nightly restic snapshot and out of a `DATA_ROOT` migration without needing an exclusion list.
+
+**Note for anyone adding a render call site**: don't append a cache-busting query parameter. Two of the three used to, which is why none of this existed before — no validator can help a URL that is never requested twice.
 
 ## Optional export dependencies
 

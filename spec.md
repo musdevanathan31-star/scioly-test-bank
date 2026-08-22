@@ -1055,3 +1055,20 @@ The cost is that the read and the write are no longer one atomic step. Two concu
 **Why refuse rather than retry**: the loser verified against a password that is no longer current. Retrying would mean re-verifying credentials the caller never re-supplied. Telling them to try again is the honest answer, and the race needs two people changing one account's password within ~100ms of each other to occur at all.
 
 **Still unaddressed, deliberately**: `create_user` and `create_users_bulk` have the same shape — a hash per account inside the lock — so a 30-row CSV import holds it for a couple of seconds. That is a coach doing one deliberate action at a known moment, not a class of students acting at once, so it has not been worth the same restructuring. Worth revisiting if bulk import ever moves somewhere it can collide with live testing.
+
+
+## 22. Rendering PDF pages: caching, and why the document cache went away
+
+**The measurements this rests on**, taken on this repo's own `circuit_lab` test PDF: opening it costs 0.54ms; rendering one page costs 1.6ms at 24dpi, 26.5ms at 120dpi, 72ms at 200dpi. Cold render through the route: 43ms. Served from the disk cache: 1.5ms. A 304: 0.7ms.
+
+**Why there was nothing to cache before.** Two of the three render call sites appended `&_=${Date.now()}`, making every URL unique, and the response carried no `ETag` or `Cache-Control` at all. So every zoom, every region capture, every page-back in the review workflow was a fresh rasterise on the one worker that student answer-saves share. The cache-buster was the larger problem: no validator can help a URL that is never requested twice.
+
+**Two layers, deliberately.** The `ETag` is computed from the source file's identity (slug, name, page, dpi, mtime, size) rather than the response body — computing it from the bytes would require rendering first, which defeats the purpose. `Cache-Control: private, no-cache` means "revalidate before reuse", not "don't store": the browser keeps the bytes and asks with `If-None-Match`, so a swapped or reprocessed PDF can never show stale pages while a returning client still skips the render. Behind that, a PNG on disk turns a cold client's cost from a rasterise into a file read.
+
+**Why the disk cache is at `DATA_ROOT/.render_cache/` and dot-prefixed**: `backup-bulk-data.sh` and `migrate-data-root.sh` both discover directories with a bare `*/` glob, which skips dotfiles. Derived data therefore stays out of the nightly restic snapshot and out of a DATA_ROOT migration for free, rather than needing an exclusion list that could drift.
+
+**Why invalidation is by key rather than by eviction**: the key includes the source file's mtime and size, so replacing a PDF simply misses rather than requiring anything to notice and purge. Deleting an event does clear its shard, but only to reclaim space — never for correctness.
+
+**Why the fitz.Document LRU was deleted rather than locked.** It handed the same `Document` to all eight gunicorn threads, and PyMuPDF documents are not safe for concurrent use; the cache dict itself was an unsynchronised `OrderedDict` mutated from those threads. Two volunteers previewing the same PDF, or one browser fetching several pages at once, were enough. Locking it would have serialised every reader; deleting it costs 0.54ms per request, removes the hazard completely, and is moot in the common case now that the render usually does not happen at all. CPython frees the document when the request's locals go out of scope.
+
+**Bounding the inputs**: `dpi` is clamped to 10-400. It drives a pixmap allocation and lands in a cache key, so an unbounded value is both a memory risk and a way to fill the disk with one-off renders.

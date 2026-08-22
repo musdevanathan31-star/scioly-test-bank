@@ -240,6 +240,11 @@ def delete_event(slug: str) -> dict:
         shutil.move(str(ev.base_dir), str(dest))
         moved_to = str(dest)
     events_mod.delete_event_record(slug)
+    # Rendered-page cache is derived data keyed by the source PDF's mtime,
+    # so a stale entry could never be served — but there is no point paying
+    # disk for pages of an event that no longer exists. Removed by path
+    # rather than by calling review_app, which would be an import cycle.
+    shutil.rmtree(events_mod.DATA_ROOT / ".render_cache" / slug, ignore_errors=True)
     return {"kind": "event", "events": 1, "files": info["files"],
             "bytes": info["bytes"], "moved_to": moved_to}
 

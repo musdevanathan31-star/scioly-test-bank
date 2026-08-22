@@ -397,3 +397,19 @@ def test_bulk_prefix_delete_leaves_real_accounts_and_their_data_alone(app_module
     assert auth.get_user("realstudent") is not None
     assert assessments.get_response(assessment.assessment_id, "realstudent") is not None
     assert assessments.get_response(assessment.assessment_id, "loadtest_ab12_0000") is None
+
+
+def test_deleting_an_event_also_drops_its_rendered_page_cache(app_modules):
+    deletion, events = app_modules["deletion"], app_modules["events"]
+    events.add_custom_event("cachev", "Cache Event")
+    root = app_modules["root"]
+    mine = root / ".render_cache" / "cachev" / "ab"
+    other = root / ".render_cache" / "otherev" / "cd"
+    for d in (mine, other):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "page.png").write_bytes(b"png")
+
+    deletion.delete_event("cachev")
+
+    assert not mine.exists(), "the deleted event's cached pages should go"
+    assert (other / "page.png").exists(), "another event's cache must survive"

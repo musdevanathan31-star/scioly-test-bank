@@ -24,6 +24,8 @@ import argparse
 import base64
 import collections
 import json
+import hashlib
+import uuid
 import os
 import re
 import secrets
@@ -457,33 +459,19 @@ def _request_llm_keys() -> dict:
     return keys or llm_providers.default_keys()
 
 
-# Bounded LRU for opened fitz.Document handles. Unbounded growth was a leak
-# (60+ Anatomy PDFs ≈ tens of MB sticking around forever) AND a correctness
-# trap — switching events kept stale doc handles keyed by bare filename, so a
-# same-named PDF in a different event would return the wrong doc.
-import collections as _collections
-_PDF_CACHE_MAX = 16
-_pdf_cache: "_collections.OrderedDict[tuple[str, str], fitz.Document]" = _collections.OrderedDict()
-
-
-def _pdf_cache_evict_excess() -> None:
-    while len(_pdf_cache) > _PDF_CACHE_MAX:
-        _, doc = _pdf_cache.popitem(last=False)
-        try:
-            doc.close()
-        except Exception:
-            pass
-
-
-def _pdf_cache_clear_event(slug: str) -> None:
-    """Drop all cached PDFs belonging to one event. Called on _select_event."""
-    keys = [k for k in _pdf_cache if k[0] == slug]
-    for k in keys:
-        try:
-            _pdf_cache[k].close()
-        except Exception:
-            pass
-        del _pdf_cache[k]
+# fitz.Document handles are deliberately NOT cached across requests.
+#
+# There used to be a bounded LRU here, which handed the same Document to all
+# of gunicorn's threads. PyMuPDF Documents are not safe for concurrent use,
+# so two volunteers previewing the same PDF — or one browser fetching
+# several pages at once — shared one handle with no lock, and the cache dict
+# itself was an unsynchronised OrderedDict being mutated from those threads.
+#
+# It bought almost nothing: opening this repo's own circuit_lab test PDF
+# measures 0.54ms against 26.5ms to render a single page at 120dpi. Paying
+# 0.54ms per request removes an entire class of concurrency bug, and the
+# render cache below means the render itself usually doesn't happen at all.
+# CPython frees the Document when the request's locals go out of scope.
 
 
 def _select_event(slug: str):
@@ -558,18 +546,155 @@ def _sanitize_svg(svg_text: str) -> str:
 
 
 def _open_pdf(name: str) -> fitz.Document:
-    key = (bqb.EVENT.slug, name)
-    doc = _pdf_cache.get(key)
-    if doc is not None:
-        _pdf_cache.move_to_end(key)
-        return doc
+    return fitz.open(str(_resolve_pdf_path(name)))
+
+
+# ---------------------------------------------------------------------------
+# Rendered-page cache
+#
+# Rendering a page costs real CPU on the one gunicorn worker that students'
+# answer saves also share: measured on this repo's circuit_lab test PDF,
+# 1.6ms at 24dpi, 26.5ms at 120dpi, 72ms at 200dpi. The review workflow
+# re-renders the same page constantly — zooming, capturing regions, paging
+# back and forth — and every one of those was a fresh render, because the
+# frontend appended a cache-busting query param and the response carried no
+# validators at all.
+#
+# Two layers now sit in front of it. An ETag lets the browser skip the
+# transfer entirely (304, no render). A PNG on disk means even a cold
+# client costs a file read rather than a rasterise. DATA_ROOT has orders of
+# magnitude more room than the bank itself, so trading disk for CPU is the
+# right way round here.
+#
+# Lives at DATA_ROOT/.render_cache/, deliberately dot-prefixed: both
+# backup-bulk-data.sh and migrate-data-root.sh discover directories with a
+# bare `*/` glob, which skips dotfiles, so derived data never lands in the
+# nightly restic snapshot or gets copied on a DATA_ROOT migration.
+# ---------------------------------------------------------------------------
+
+#: 0 disables the disk cache entirely (the ETag layer still applies).
+RENDER_CACHE_MAX_MB = int(os.environ.get("RENDER_CACHE_MAX_MB") or "2048")
+_RENDER_CACHE_DIR = DATA_ROOT / ".render_cache"
+#: Sweeping the directory on every write would cost more than the renders
+#: it saves; every Nth write is enough to keep growth bounded.
+_RENDER_PRUNE_EVERY = 200
+_render_write_count = 0
+_render_prune_lock = threading.Lock()
+
+
+def _render_cache_key(path: Path, pno: int, dpi: int) -> str:
+    """Identity of one rendered page.
+
+    Includes the source file's mtime and size, so replacing a PDF (a
+    test/key swap, a re-upload, a .docx conversion) produces a different
+    key rather than serving the previous document's pages. That is why this
+    stats the file instead of trusting the filename.
+    """
+    try:
+        st = path.stat()
+        stamp = f"{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        stamp = "0:0"
+    raw = f"{bqb.EVENT.slug}\0{path.name}\0{pno}\0{dpi}\0{stamp}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _render_cache_path(key: str) -> Path:
+    """Sharded by event slug first, then by the key's first two hex chars.
+
+    The slug level is what makes per-event clearing possible at all — the
+    filename is a hash, so without it there is no way to tell one event's
+    cached pages from another's short of deleting everything.
+    """
+    return _RENDER_CACHE_DIR / bqb.EVENT.slug / key[:2] / f"{key}.png"
+
+
+def _render_cache_read(key: str) -> bytes | None:
+    if RENDER_CACHE_MAX_MB <= 0:
+        return None
+    f = _render_cache_path(key)
+    try:
+        data = f.read_bytes()
+    except OSError:
+        return None
+    # Touch so pruning can evict least-recently-USED rather than oldest-
+    # written; a page nobody opens should go before one in daily use.
+    try:
+        os.utime(f, None)
+    except OSError:
+        pass
+    return data
+
+
+def _render_cache_write(key: str, png: bytes) -> None:
+    if RENDER_CACHE_MAX_MB <= 0:
+        return
+    f = _render_cache_path(key)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        # Same tempfile + os.replace as every other write in this codebase:
+        # two threads rendering the same page must not tear a reader.
+        tmp = f.with_suffix(f".png.{uuid.uuid4().hex}.tmp")
+        tmp.write_bytes(png)
+        os.replace(tmp, f)
+    except OSError as e:
+        # A cache is an optimisation. Never fail a render over it.
+        app.logger.warning("render cache write failed: %s", e)
+        return
+    global _render_write_count
+    with _render_prune_lock:
+        _render_write_count += 1
+        due = _render_write_count % _RENDER_PRUNE_EVERY == 0
+    if due:
+        _render_cache_prune()
+
+
+def _render_cache_prune() -> None:
+    """Evict least-recently-used files until the cache is under its cap."""
+    cap = RENDER_CACHE_MAX_MB * 1024 * 1024
+    try:
+        files = [(p.stat().st_mtime, p.stat().st_size, p)
+                 for p in _RENDER_CACHE_DIR.rglob("*.png")]
+    except OSError:
+        return
+    total = sum(size for _m, size, _p in files)
+    if total <= cap:
+        return
+    files.sort()                       # oldest access first
+    for _mtime, size, path in files:
+        if total <= cap:
+            break
+        try:
+            path.unlink()
+            total -= size
+        except OSError:
+            pass
+    app.logger.info("render cache pruned to %.0f MB", total / 1024 / 1024)
+
+
+def clear_render_cache_for_event(slug: str) -> int:
+    """Drop every cached page for one event. Not needed for correctness —
+    the key already includes the source file's mtime and size, so a changed
+    PDF simply misses — but reclaiming the space is worth doing when an
+    event is deleted."""
+    removed = 0
+    for p in (_RENDER_CACHE_DIR / slug).rglob("*.png"):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _resolve_pdf_path(name: str) -> Path:
+    """The test PDF's path, 404ing if it isn't there. Split out from
+    _open_pdf so the render cache can stat the file for its key without
+    opening it."""
     path = bqb.BASE_DIR / name
     if not path.exists():
         abort(404, "PDF not found")
-    doc = fitz.open(str(path))
-    _pdf_cache[key] = doc
-    _pdf_cache_evict_excess()
-    return doc
+    return path
 
 
 def _list_test_pdfs() -> list[Path]:
@@ -610,29 +735,28 @@ def _open_target_pdf(pdfname: str, target: str) -> fitz.Document:
     actually one of *this* test's supplementary docs still 404s — the
     membership check, not just _safe_join's containment check, is what
     prevents that."""
+    return fitz.open(str(_resolve_target_path(pdfname, target)))
+
+
+def _resolve_target_path(pdfname: str, target: str) -> Path:
+    """Path resolution for the `target` param, shared by the opener above
+    and the render cache (which needs to stat the file, not open it)."""
     test_pdf = bqb.BASE_DIR / pdfname
     # "test" here is the wire value the frontend sends (?target=test, and
     # PD_PAGE_COUNTS in event_index.html), naming the TEST PDF as opposed
     # to the key or a supplementary doc. It is external-test vocabulary,
     # not the renamed Assessment concept, and must not follow that rename.
     if not target or target == "test":
-        return _open_pdf(pdfname)
+        return _resolve_pdf_path(pdfname)
     if target == "key":
         path = _key_path(test_pdf)
         if not path:
             abort(404, "No key PDF")
-    else:
-        candidate = _safe_join(bqb.BASE_DIR, target)
-        if candidate not in _supplementary_docs(test_pdf):
-            abort(404, "Not a supplementary document for this test")
-        path = candidate
-    cache_key = (bqb.EVENT.slug, path.name)
-    if cache_key not in _pdf_cache:
-        _pdf_cache[cache_key] = fitz.open(str(path))
-        _pdf_cache_evict_excess()
-    else:
-        _pdf_cache.move_to_end(cache_key)
-    return _pdf_cache[cache_key]
+        return path
+    candidate = _safe_join(bqb.BASE_DIR, target)
+    if candidate not in _supplementary_docs(test_pdf):
+        abort(404, "Not a supplementary document for this test")
+    return candidate
 
 
 def _key_path(test_pdf: Path) -> Path | None:
@@ -2053,16 +2177,45 @@ def api_pdf_supplementary(event_slug, pdfname):
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>.png")
 def api_render(event_slug, pdfname, pno):
+    """Render one page to PNG, through two caches.
+
+    An ETag lets a returning browser get a 304 with no render and no
+    transfer. A miss then checks the on-disk cache before rasterising. The
+    ETag is computed from the source file's identity rather than the
+    response body, so a 304 costs a stat rather than a render — computing it
+    from the bytes would mean rendering first, which defeats the point.
+    """
     _select_event(event_slug)
-    dpi = int(request.args.get("dpi", "120"))
+    # Bound the DPI: it lands in a cache key and drives an allocation, so
+    # an arbitrary value is both a disk-filling and a memory risk.
+    try:
+        dpi = max(10, min(400, int(request.args.get("dpi", "120"))))
+    except ValueError:
+        dpi = 120
     target = request.args.get("target", "test")
-    doc = _open_target_pdf(pdfname, target)
-    if pno < 1 or pno > doc.page_count:
-        abort(404)
-    page = doc[pno - 1]
-    mat = fitz.Matrix(dpi / 72, dpi / 72)
-    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-    return Response(pix.tobytes("png"), mimetype="image/png")
+    path = _resolve_target_path(pdfname, target)
+
+    key = _render_cache_key(path, pno, dpi)
+    etag = f'"{key}"'
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag,
+                                             "Cache-Control": "private, no-cache"})
+
+    png = _render_cache_read(key)
+    if png is None:
+        doc = fitz.open(str(path))
+        if pno < 1 or pno > doc.page_count:
+            abort(404)
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        png = doc[pno - 1].get_pixmap(matrix=mat, colorspace=fitz.csRGB).tobytes("png")
+        _render_cache_write(key, png)
+
+    # no-cache means "revalidate before reuse", not "don't store": the
+    # browser keeps the bytes and asks with If-None-Match. That keeps a
+    # swapped or reprocessed PDF from showing stale pages, while still
+    # skipping the render.
+    return Response(png, mimetype="image/png",
+                    headers={"ETag": etag, "Cache-Control": "private, no-cache"})
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page-counts")

@@ -489,7 +489,7 @@ function pd_render(){
   document.getElementById("pd_page_count").textContent = "/ " + (pageCount || "?");
   document.getElementById("pd_page_input").value = PD_PAGE;
   const img = document.getElementById("pd_img");
-  img.src = `${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${PD_PDF}/page/${PD_PAGE}.png?dpi=120&target=${encodeURIComponent(PD_TARGET)}&_=${Date.now()}`;
+  img.src = `${APP_ROOT}/event/${EVENT_SLUG}/api/pdf/${PD_PDF}/page/${PD_PAGE}.png?dpi=120&target=${encodeURIComponent(PD_TARGET)}`;
   img.style.width = PD_ZOOM + "%";
 }
 

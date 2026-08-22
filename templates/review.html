@@ -1217,7 +1217,7 @@ function questionPages(q){
 }
 
 function renderImage(){
-  const url = `${API}/pdf/${PDF}/page/${curPage}.png?dpi=120&target=${target}&_=${Date.now()}`;
+  const url = `${API}/pdf/${PDF}/page/${curPage}.png?dpi=120&target=${target}`;
   const img = document.getElementById("pageImg");
   img.src = url;
   img.style.width = PDF_ZOOM + "%";
