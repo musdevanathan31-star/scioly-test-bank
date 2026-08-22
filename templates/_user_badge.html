@@ -55,10 +55,10 @@
     {# --- Running the club ----------------------------------------------- #}
     {% if current_user.role in ("coach", "volunteer") %}
     <div class="nav-sep"></div>
-      <a class="nav-link" href="{{ url_for('assessments_dashboard_page') }}">🗓 Assessment management</a>
-      <a class="nav-link" href="{{ url_for('index') }}">🧪 Event Management</a>
+      <a class="nav-link" href="{{ url_for('assessments_dashboard_page') }}">🗓 Assessments</a>
+      <a class="nav-link" href="{{ url_for('index') }}">🧪 Events</a>
       {% if current_user.role == "coach" %}
-      <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club Management</a>
+      <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club</a>
       {% endif %}
       {# Settings closes this group for the roles that have one. It's
          available to every role, though, so a student gets it in the last

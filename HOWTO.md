@@ -12,7 +12,7 @@ Log in at `/login` with the username/password a coach gave you.
 
 ## Getting around (any role)
 
-Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Event Management** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club Management**, and **Assessment management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Assessments, Scores, Notifications, Settings, Logout.
+Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Events** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club**, and **Assessments** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Assessments, Scores, Notifications, Settings, Logout.
 
 ## Account settings (any role)
 
@@ -35,7 +35,7 @@ This prompts for a username and password and creates the first coach account dir
 
 ### Managing users
 
-Open **Club Management** from the navigation menu, then scroll to **Manage Users**. The section lists every account with its role and assigned events.
+Open **Club** from the navigation menu, then scroll to **Manage Users**. The section lists every account with its role and assigned events.
 - **+ Add a user** — expand it, fill in username/password/role, and (for volunteers) which events they can access. Click **Create user**.
 - **✎ Edit** on any row — change role or assigned events, then **Save**.
 - **⛔ Disable** — blocks that person's login and kicks any session they currently have open, immediately. Nothing about their account or work is deleted — it's fully reversible.
@@ -180,7 +180,7 @@ A matching question shows a dropdown next to each left-column item listing every
 
 ### Set up a new season
 
-A season groups events, students, and tests under one label (e.g. "2027"). Open **☰ → Club Management**.
+A season groups events, students, and tests under one label (e.g. "2027"). Open **☰ → Club**.
 1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**. If this is the very first season this instance has ever had, it's automatically marked current — no extra step needed. A second or later season is **not** auto-switched, so you can stage next year's season ahead of time without disrupting the live one.
 2. If it isn't already current, click **Mark as current** on it — exactly one season is ever current, and that's what "My Assessments" defaults to for students. If you skip this, a yellow banner appears on this page and on the Assessments dashboard ("⚠ No season is marked current…" or "⚠ You're viewing X, but Y is the current season…") — students won't see any tests until you fix it.
 3. Add students: either one-by-one via **Manage Users** on this same Club Management page (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
@@ -393,7 +393,7 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Measure how many students the server can handle at once | operator | `python loadtest_students.py --url ... --test-id ... --season-id ...` — see "Measuring server capacity" above |
 | Change your password or display name | Coach, Volunteer | ☰ → Settings → My Account |
 | Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
-| Create/disable a user | Coach | ☰ → Club Management → Manage Users |
+| Create/disable a user | Coach | ☰ → Club → Manage Users |
 | Permanently delete a user / season / event | Coach (needs `ALLOW_HARD_DELETE`) | 🗑 Delete on the relevant page |
 | Permanently delete a assessment window or test | Coach (needs `ALLOW_HARD_DELETE`) | Assessments dashboard → 🗑 |
 | Let a student retake an assessment they submitted | Coach (needs `ALLOW_HARD_DELETE`) | Grade page → 🗑 next to their name |
