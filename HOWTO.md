@@ -214,6 +214,19 @@ If a student missed the class-wide window (absence, tech issue, etc.), you can g
 2. Enter the student's username, an opens/closes datetime, and a short reason. Click **Grant**.
 3. That student can now access the test during their personal window, completely independent of whether the class-wide window is open, closed, or hasn't started yet — it doesn't extend the class window, it's a separate clock that wins outright for that one student. Use the same modal with an earlier/blank window to revoke it later if needed.
 
+### Permanently deleting things (only if enabled)
+
+Normally nothing in this app is really deleted — "Remove", "Archive" and "Disable" all set a reversible flag. On an instance where the operator has set `ALLOW_HARD_DELETE`, extra red **🗑 Delete** buttons appear for coaches: on users and seasons (Club Management), events (landing page), test windows and individual tests (Tests dashboard), and one student's response (Grade page).
+
+These really delete. Before anything happens you get a dialog stating exactly what goes with it — *"This removes: 1 test window, 1 test, 41 student responses."* Read that line; deleting one season can take a whole term of student work with it.
+
+Two specifics worth knowing:
+
+- **Deleting one student's response** on the Grade page removes only that response, so a student who submitted by accident can retake the test. Everyone else's answers, and the test itself, are untouched.
+- **Deleting an event** moves its folder of PDFs and images into a `.deleted` directory on the server rather than erasing it, so an accident is recoverable — but only by whoever administers the box, not from this app.
+
+If you don't see these buttons, the flag isn't set on your instance, which is the intended setting once you're running real tests.
+
 ### What only a coach can do, at a glance
 
 | Action | Coach | Volunteer |
@@ -379,6 +392,9 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Change your password or display name | Coach, Volunteer | ☰ → Settings → My Account |
 | Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
 | Create/disable a user | Coach | ☰ → Club Management → Manage Users |
+| Permanently delete a user / season / event | Coach (needs `ALLOW_HARD_DELETE`) | 🗑 Delete on the relevant page |
+| Permanently delete a test window or test | Coach (needs `ALLOW_HARD_DELETE`) | Tests dashboard → 🗑 |
+| Let a student retake a test they submitted | Coach (needs `ALLOW_HARD_DELETE`) | Grade page → 🗑 next to their name |
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |

@@ -741,6 +741,108 @@ def save_answer(test_id: str, username: str, number: str, answer_payload: dict) 
     return updated
 
 
+# ---------------------------------------------------------------------------
+# Hard deletion (see deletion.py, which composes these into cascades)
+#
+# These are record-level primitives only: each removes exactly its own
+# storage and nothing belonging to another module, so none of them needs an
+# import this module doesn't already have. Cascade policy -- what a season
+# owning windows actually means -- lives in deletion.py.
+#
+# Every "delete" the app itself exposes elsewhere is soft (archive/disable
+# flags, annotation-recorded question deletes). These are the real thing,
+# reachable only when ALLOW_HARD_DELETE is set; see README's "Hard delete".
+# ---------------------------------------------------------------------------
+
+def count_responses_for_test(test_id: str) -> int:
+    """How many student responses exist for a test. Counts files rather
+    than parsing them -- this only ever feeds a confirmation dialog."""
+    test_dir = RESPONSES_DIR / test_id
+    if not test_dir.is_dir():
+        return 0
+    return sum(1 for _ in test_dir.glob("*.json"))
+
+
+def delete_response(test_id: str, username: str) -> bool:
+    """Remove one student's response to one test, letting them start it
+    over. Returns False if there was nothing there."""
+    path = _response_path(test_id, username)
+    with _lock_for(path):
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
+
+def delete_responses_for_test(test_id: str) -> int:
+    """Remove every response to one test, and the test's response
+    directory with them."""
+    test_dir = RESPONSES_DIR / test_id
+    if not test_dir.is_dir():
+        return 0
+    n = 0
+    for path in list(test_dir.glob("*.json")):
+        with _lock_for(path):
+            if path.exists():
+                path.unlink()
+                n += 1
+    try:
+        test_dir.rmdir()
+    except OSError:
+        # Something unexpected is still in there -- leave it rather than
+        # forcing; the responses themselves are gone either way.
+        pass
+    return n
+
+
+def delete_responses_for_user(username: str) -> int:
+    """Remove one student's responses across every test. Used when the
+    account itself is being deleted, so their answers don't outlive them as
+    unattributable files."""
+    if not RESPONSES_DIR.is_dir():
+        return 0
+    n = 0
+    for test_dir in RESPONSES_DIR.iterdir():
+        if not test_dir.is_dir():
+            continue
+        path = test_dir / f"{username}.json"
+        with _lock_for(path):
+            if path.exists():
+                path.unlink()
+                n += 1
+    return n
+
+
+def delete_test_record(test_id: str) -> bool:
+    """Remove the Test itself. Responses are NOT touched here -- callers go
+    through deletion.py, which removes them first; deleting the test alone
+    would orphan a directory nothing can name any more."""
+    with _tests_transaction() as tests:
+        if test_id not in tests:
+            return False
+        del tests[test_id]
+        return True
+
+
+def delete_window_record(window_id: str) -> bool:
+    """Remove the TestWindow itself. Its Tests are NOT touched here -- see
+    delete_test_record's note."""
+    with _windows_transaction() as windows:
+        if window_id not in windows:
+            return False
+        del windows[window_id]
+        return True
+
+
+def tests_for_season(season_id: str) -> list[Test]:
+    """Every Test belonging to a season, across all its windows."""
+    return [t for t in load_tests().values() if t.season_id == season_id]
+
+
+def windows_for_season(season_id: str) -> list[TestWindow]:
+    return [w for w in load_windows().values() if w.season_id == season_id]
+
+
 def _grade_mcq(picked: str | None, correct_answer: str) -> dict:
     correct_raw = (correct_answer or "").strip()
     ok = bool(picked) and picked.strip().upper() == correct_raw.upper()[:1]

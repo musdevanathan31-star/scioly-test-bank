@@ -74,6 +74,10 @@
           {%- else %}
           <button class="ghost" data-edit-ev="{{ r.slug }}" title="Edit foci/topics/wiki" style="margin-right:4px">✎ Edit</button>
           <button class="ghost" data-del="{{ r.slug }}" title="Archive this event — hides it here, reversible, never touches its files on disk">🗄 Archive</button>
+          {%- if hard_delete_enabled() %}
+          <button class="ghost" data-purge-ev="{{ r.slug }}" style="color:var(--bad)"
+                  title="Permanently delete this event and deregister it. Its files are moved to the server's .deleted/ directory, not erased.">🗑 Delete</button>
+          {%- endif %}
           {%- endif %}
           {%- endif %}
         </td>
@@ -370,5 +374,14 @@ document.getElementById("ne_submit").addEventListener("click", async () => {
   setTimeout(() => { window.location.href = j.url; }, 600);
 });
 }
+</script>
+<script>
+document.addEventListener("click", async e => {
+  const btn = e.target.closest("[data-purge-ev]");
+  if(!btn) return;
+  const slug = btn.dataset.purgeEv;
+  const name = btn.closest("tr").querySelector("a").textContent.trim();
+  if(await hardDelete("event", slug, name)) location.reload();
+});
 </script>
 </body></html>

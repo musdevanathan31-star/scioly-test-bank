@@ -536,6 +536,25 @@ def archive_custom_event(slug: str) -> None:
     _set_archived(slug, True)
 
 
+def delete_event_record(slug: str) -> None:
+    """Remove an event from the registry outright, unlike archive_custom_event.
+
+    Built-ins are refused for the same reason they can't be archived: their
+    definitions live in this module's source, so removing the registry entry
+    would just be re-seeded on the next start -- a delete that silently
+    undoes itself is worse than a refusal.
+
+    The event's directory on disk is NOT touched here; deletion.py moves it
+    to the trash directory so it stays recoverable outside the app.
+    """
+    if slug in _BUILTIN_SLUGS:
+        raise ValueError("cannot delete a built-in event")
+    if slug not in EVENTS:
+        raise ValueError(f"event {slug!r} not registered")
+    del EVENTS[slug]
+    _save_custom_events()
+
+
 def unarchive_custom_event(slug: str) -> None:
     """Reverse archive_custom_event."""
     _set_archived(slug, False)

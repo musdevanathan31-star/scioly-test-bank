@@ -363,6 +363,40 @@ def copy_roster_forward(from_season_id: str, to_season_id: str,
     return copied
 
 
+def delete_season_record(season_id: str) -> bool:
+    """Remove the Season itself plus its roster entries. Windows/tests are
+    NOT touched here -- deletion.py cascades those first (this module must
+    not import testing.py; testing.py already imports this one)."""
+    removed = False
+    with _seasons_transaction() as seasons:
+        if season_id in seasons:
+            del seasons[season_id]
+            removed = True
+    with _rosters_transaction() as rosters:
+        rosters.pop(season_id, None)
+    return removed
+
+
+def remove_user_from_all_rosters(username: str) -> int:
+    """Drop a username from every roster in every season. Returns how many
+    (season, event) entries it was removed from -- fed to the confirmation
+    dialog before an account is deleted."""
+    n = 0
+    with _rosters_transaction() as rosters:
+        for _season_id, by_event in rosters.items():
+            for slug, names in by_event.items():
+                if username in names:
+                    by_event[slug] = [u for u in names if u != username]
+                    n += 1
+    return n
+
+
+def roster_entry_count(season_id: str) -> int:
+    """Total (event, student) pairs on a season's roster."""
+    with _rosters_transaction() as rosters:
+        return sum(len(v) for v in rosters.get(season_id, {}).values())
+
+
 def student_events(season_id: str, username: str) -> list[str]:
     """Reverse-lookup: every event this student is rostered on for this
     season. Computed on read (O(events), cheap at this app's scale) rather

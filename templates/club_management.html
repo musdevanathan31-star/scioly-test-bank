@@ -80,6 +80,10 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       {% if selected %}
       <button id="edit_lineup_btn">Edit lineup</button>
       {% endif %}
+      {% if selected and hard_delete_enabled() %}
+      <button id="purge_season_btn" data-season="{{ selected.season_id }}" style="color:var(--bad)"
+              title="Permanently delete this season, its test windows, its tests and every student response under it.">🗑 Delete season</button>
+      {% endif %}
     </div>
 
     <div class="new-season">
@@ -146,6 +150,10 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
             <button class="ghost" data-enable-user="{{ u.username }}" title="Re-enable this account">↩ Enable</button>
             {% else %}
             <button class="ghost" data-del-user="{{ u.username }}" title="Disable this account — blocks login, reversible, never deletes anything">⛔ Disable</button>
+            {% endif %}
+            {% if hard_delete_enabled() %}
+            <button class="ghost" data-purge-user="{{ u.username }}" style="color:var(--bad)"
+                    title="Permanently delete this account and every test response it owns. Cannot be undone.">🗑 Delete</button>
             {% endif %}
             {% endif %}
           </td>
@@ -576,5 +584,16 @@ function validateNewUserForm(){
 }
 _requiredIds.forEach(id => document.getElementById(id).addEventListener("input", validateNewUserForm));
 validateNewUserForm();
+</script>
+<script>
+document.addEventListener("click", async e => {
+  const u = e.target.closest("[data-purge-user]");
+  if(u && await hardDelete("user", u.dataset.purgeUser, u.dataset.purgeUser)) { location.reload(); return; }
+  const sBtn = e.target.closest("#purge_season_btn");
+  if(sBtn && await hardDelete("season", sBtn.dataset.season, `season ${sBtn.dataset.season}`)) {
+    // Back to the bare page: the season in the query string is gone now.
+    location.href = `${APP_ROOT}/club`;
+  }
+});
 </script>
 </body></html>

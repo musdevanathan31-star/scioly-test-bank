@@ -217,6 +217,7 @@ a{color:var(--accent);text-decoration:none}
 #  - setStatus(msg, kind?)    — back-compat shim that pipes through toast()
 #  - hotkey(combo, handler)   — `Ctrl+S`, `Esc`, `/`, etc.
 #  - confirmModal(msg, opts?) — Promise-based replacement for window.confirm()
+#  - hardDelete(kind, ident, label) — preview-then-confirm permanent delete
 COMMON_JS = r"""
 // ---- toast / history ---------------------------------------------------
 (function(){
@@ -623,5 +624,65 @@ window.openJobProgress = function({eventSlug, jobId, title}){
     onDone(cb){ doneCallback = cb; },
     close(){ modal._jpStop(); modal.style.display = "none"; },
   };
+};
+
+// ---- hardDelete: the only path in this app that destroys data ----------
+//   if(await hardDelete("season", "2027", "Season 2027")) reload();
+//
+// Always fetches the cascade preview first and puts the real counts in
+// front of the operator, because the whole risk here is a delete whose
+// size is a surprise — removing one season can mean removing hundreds of
+// student answers. Returns true if it actually deleted, false if the
+// operator backed out or the server refused (it toasts its own errors).
+//
+// Routes are gated on ALLOW_HARD_DELETE server-side; templates hide these
+// buttons via the hard_delete_enabled global, so a 403 here means the flag
+// changed under a page that was already open.
+window.hardDelete = async function(kind, ident, label){
+  let preview;
+  try {
+    const r = await fetch(`${APP_ROOT}/api/purge/${kind}/${ident}`);
+    preview = await r.json();
+    if(preview.error){ toast(preview.error, "err"); return false; }
+  } catch(e){ toast("Could not check what this would delete.", "err"); return false; }
+
+  // Only mention what this delete actually reaches — listing "0 responses"
+  // on a season that has none reads as noise and trains people to skip it.
+  const parts = [];
+  const label_for = {
+    seasons: "season", windows: "test window", tests: "test",
+    responses: "student response", roster_entries: "roster entry",
+    users: "user account", events: "event", files: "file",
+  };
+  for(const key of ["seasons","windows","tests","responses","roster_entries","users","events","files"]){
+    const n = preview[key];
+    if(!n) continue;
+    parts.push(`${n} ${label_for[key]}${n === 1 ? "" : "s"}`);
+  }
+  let msg = `Permanently delete ${label}?
+
+This removes: ${parts.join(", ") || "this record"}.`;
+  if(preview.kind === "event"){
+    msg += `
+
+The event's files are MOVED to ${preview.moves_to}, not erased — `
+         + `recoverable only from the server, not from this app.`;
+  } else {
+    msg += `
+
+This cannot be undone from the app.`;
+  }
+  if(preview.is_current){
+    msg += `
+
+Note: this is the CURRENT season.`;
+  }
+  if(!await confirmModal(msg, {danger: true, wide: true, confirmLabel: "Delete permanently"})) return false;
+
+  const r2 = await fetch(`${APP_ROOT}/api/purge/${kind}/${ident}`, {method: "DELETE"});
+  const j2 = await r2.json();
+  if(!j2.ok){ toast("Delete failed: " + (j2.error || r2.status), "err"); return false; }
+  toast(`Deleted ${label}.`, "ok");
+  return true;
 };
 """

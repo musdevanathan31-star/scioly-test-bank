@@ -61,6 +61,7 @@ import qgen  # noqa: E402
 import scrape_scioly  # noqa: E402
 import download_event  # noqa: E402
 import presence  # noqa: E402
+import deletion  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -228,6 +229,23 @@ def _check_csrf():
     if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
         abort(403, "Missing or invalid CSRF token")
     return None
+
+
+def hard_delete_required(view):
+    """Gate a route on ALLOW_HARD_DELETE being set for this instance.
+
+    Layered under @coach_required, never instead of it: the flag decides
+    whether the capability exists on this box at all, the role decides who
+    may use it. Checked per request rather than at import so flipping the
+    .env and restarting is all it takes, and so the 403 explains itself
+    instead of the route simply not existing."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not deletion.enabled():
+            abort(403, "Permanent deletion is disabled on this instance "
+                       "(set ALLOW_HARD_DELETE in its .env to enable it)")
+        return view(*args, **kwargs)
+    return wrapped
 
 
 def coach_required(view):
@@ -2127,6 +2145,40 @@ def api_jobs_active_count():
     else:
         slugs = list(user.events)
     return jsonify(jobs.active_job_summary(slugs))
+
+
+@app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])
+@coach_required
+@hard_delete_required
+def api_purge_preview(kind: str, ident: str):
+    """What deleting this would actually take with it. Always fetched
+    immediately before showing the confirmation, never cached — the
+    numbers exist to be true at the moment someone agrees to them."""
+    try:
+        return jsonify(deletion.preview(kind, *ident.split("/")))
+    except deletion.DeletionError as e:
+        return jsonify({"error": str(e)}), 400
+    except TypeError:
+        return jsonify({"error": f"wrong identifier for kind {kind!r}"}), 400
+
+
+@app.route("/api/purge/<kind>/<path:ident>", methods=["DELETE"])
+@coach_required
+@hard_delete_required
+def api_purge(kind: str, ident: str):
+    """Permanently delete. Unlike every other "delete" in this app, this
+    one means it — see deletion.py's module docstring."""
+    if kind == "user" and ident == g.user.username:
+        return jsonify({"error": "cannot delete your own account"}), 400
+    try:
+        result = deletion.delete(kind, *ident.split("/"))
+    except deletion.DeletionError as e:
+        return jsonify({"error": str(e)}), 400
+    except TypeError:
+        return jsonify({"error": f"wrong identifier for kind {kind!r}"}), 400
+    app.logger.warning("HARD DELETE %s %s by %s -> %s",
+                       kind, ident, g.user.username, result)
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/presence")
@@ -4636,6 +4688,9 @@ def api_scioly_accept(event_slug):
 # `{{ common_css|safe }}` / `{{ common_js|safe }}`.
 app.jinja_env.globals["common_css"] = _COMMON_CSS
 app.jinja_env.globals["common_js"] = _COMMON_JS
+# Lets templates hide destructive UI entirely rather than offering a
+# button that would only 403 — see deletion.py.
+app.jinja_env.globals["hard_delete_enabled"] = deletion.enabled
 
 # Runs at import time, NOT inside main() — gunicorn imports this module's
 # `app` object directly and never calls main() (see main()'s own comment

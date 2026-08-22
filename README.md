@@ -31,6 +31,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
   - [Provisioning a new host](#provisioning-a-new-host)
   - [Moving to a different machine (host-to-host)](#moving-to-a-different-machine-host-to-host)
 - [Security hardening](#security-hardening)
+  - [Hard delete (`ALLOW_HARD_DELETE`)](#hard-delete-allow_hard_delete)
 - [CLI reference](#cli-reference)
 - [Adding a new event](#adding-a-new-event)
 
@@ -215,6 +216,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `common_ui.py` | Shared CSS/JS (design tokens, modal/badge/toolbar components, `confirmModal()`, job-progress modal) — imported by both `review_app.py` and `admin_app.py` so the two Flask processes render an identical look without duplicating the stylesheet |
 | `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
 | `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`, `event_scan`, `settings`) |
+| `deletion.py` | Cascade policy for permanent deletion — previews and deletes; gated on `ALLOW_HARD_DELETE` |
 | `presence.py` | In-memory active-user registry behind the header badge and the landing page's per-event counts — see "Who's active right now" |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
 | `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
@@ -680,7 +682,7 @@ Order matters — provisioning creates the accounts the secrets must be owned by
 
 ### Nothing is ever permanently deleted through the app
 
-Every "delete" action in the UI is reversible — including for coaches. The only way to actually free disk space is an operator running a script directly on the server, never through the web app:
+**Unless [`ALLOW_HARD_DELETE`](#hard-delete-allow_hard_delete) is set** — see below. With the flag unset, which is the default and the intended production state, every "delete" action in the UI is reversible — including for coaches. The only way to actually free disk space is an operator running a script directly on the server, never through the web app:
 
 - **Reprocess → "wipe annotations" / "manual mode"** snapshots the PDF's annotations, manual-edit tracking, and question list to `<event>/.archive/<pdfname>/<timestamp>.json` (`archive.py`) *before* wiping anything. Restore any snapshot from the Reprocess dropdown's "Snapshot history" entry on the review page.
 - **"Remove" an event** (`events.py`'s `archive_custom_event`) sets an `archived` flag — it disappears from the landing page but its directory, PDFs, and state file are never touched. Unarchive it from the landing page's "Show archived events" section.
@@ -688,6 +690,29 @@ Every "delete" action in the UI is reversible — including for coaches. The onl
 - Single/bulk question delete were already soft (recorded in `annotations[...].deleted`, survive reprocess) — unchanged.
 - There's still no route that deletes an uploaded file (test/key/source/textbook PDF) at all — by design.
 - Real cleanup, when an operator actually wants it: `python archive.py --purge-snapshots-older-than-days N` removes old snapshot files from disk. Nothing equivalent exists for archived events or disabled users — handle those by hand if truly necessary.
+
+### Hard delete (`ALLOW_HARD_DELETE`)
+
+The stance above is the default and should stay the default. But a pre-production instance accumulates trial seasons, throwaway test windows and practice responses that nobody wants to keep, and clearing them by hand meant an operator editing JSON on the server. `ALLOW_HARD_DELETE=true` in an instance's `.env` turns on real deletion for:
+
+| Entity | What goes with it |
+|---|---|
+| User | their responses across every test, and their roster entries |
+| Season | its windows → tests → responses, and its rosters |
+| Event | its registry entry; **the directory is moved**, see below |
+| Test window | its tests → responses |
+| Test | its responses |
+| Student response | just that one response, so a student can retake |
+
+Three properties are what make this safe enough to exist:
+
+- **Off unless switched on.** Routes 403 and the buttons don't render. Going to production is deleting one line from `.env`, not reverting code — the capability can't quietly outlive the reason it was enabled.
+- **Nothing goes without being counted first.** Every delete fetches a preview and puts the real cascade in the confirmation: *"This removes: 1 test window, 1 test, 41 student responses."* A cascade whose size is a surprise is the failure mode worth engineering against, since deleting one season can reasonably mean deleting a term's worth of student work. A test asserts the preview and the delete report the same numbers.
+- **Event files are moved, not erased.** Deleting an event relocates its directory to `<DATA_ROOT>/.deleted/<slug>-<timestamp>/`. The app can't see it any more, but a PDF library that took a season to assemble isn't destroyed by one click in a browser. Clearing that directory stays an operator's decision, made over SSH, with restic still covering it meanwhile.
+
+Coach-only on top of the flag, you can't delete your own account, and every delete is logged at WARNING with who did it and what went. Cascade policy lives in [`deletion.py`](deletion.py); each module keeps only record-level primitives that touch its own storage.
+
+**Note on "built-in" events**: there aren't any. `circuit_lab` and `thermodynamics` ship via `_seed_default_events()` specifically so they stay editable and archivable like any user-registered event ([`events.py`](events.py)'s `_BUILTIN_SLUGS` is deliberately empty), which also means they are deletable. The refusal path exists for any event later hardcoded into the registry literal.
 
 ### Upload & request hardening
 

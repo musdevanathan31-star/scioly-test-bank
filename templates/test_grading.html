@@ -31,6 +31,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
+<script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
   <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
   <h1>Grade · {{ event_name }}</h1>
@@ -94,7 +95,9 @@ function render(){
         const grade = r.manual_grade[String(q.number)];
         return `
         <div class="answer-row" data-username="${esc(username)}" data-number="${esc(q.number)}">
-          <span class="student">${esc(username)}</span>
+          <span class="student">${esc(username)}
+            ${HARD_DELETE ? `<button type="button" class="ghost purge-resp-btn" title="Delete this student's response so they can retake the test" style="color:var(--bad);font-size:11px;padding:0 4px">&#128465;</button>` : ""}
+          </span>
           <span class="ans">${esc(answer ? answer.text : "(no answer)")}</span>
           <span class="pts">
             <button type="button" class="ghost full-btn" data-max="${q.max_points}"
@@ -133,6 +136,17 @@ function render(){
   root.querySelectorAll(".grade-input").forEach(el => {
     el.addEventListener("change", () =>
       saveGrade(el.closest(".answer-row"), parseFloat(el.value)));
+  });
+
+  root.querySelectorAll(".purge-resp-btn").forEach(el => {
+    el.addEventListener("click", async () => {
+      const row = el.closest(".answer-row");
+      const who = row.dataset.username;
+      // Scoped to (test, student): the response is the only thing removed,
+      // the test and everyone else's answers are untouched.
+      if(await hardDelete("response", `${TEST_ID}/${encodeURIComponent(who)}`,
+                          `${who}'s response`)) await load();
+    });
   });
 
   root.querySelectorAll(".full-btn").forEach(el => {

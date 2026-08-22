@@ -99,6 +99,11 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     <div class="hdr">
       <h3>{{ w.label or (w.opens_at[:10]) }}</h3>
       <span class="range">{{ w.opens_at|replace("T", " ") }} → {{ w.closes_at|replace("T", " ") }}</span>
+      {% if current_user.role == "coach" and hard_delete_enabled() %}
+      <button class="ghost purge-window-btn" data-window="{{ w.window_id }}"
+              data-label="{{ w.label or w.opens_at[:10] }}" style="color:var(--bad);margin-left:auto"
+              title="Permanently delete this test window, its tests and every student response under it.">🗑 Delete window</button>
+      {% endif %}
     </div>
     {% for et in entry.tests %}
     <div class="event-row" data-test-id="{{ et.test.test_id }}">
@@ -117,6 +122,11 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       <a href="{{ url_for('test_builder_page', test_id=et.test.test_id) }}">
         <button class="ghost">{{ "Prepare" if et.test.status == "preparing" else "View" }}</button>
       </a>
+      {% if current_user.role == "coach" and hard_delete_enabled() %}
+      <button class="ghost purge-test-btn" data-test="{{ et.test.test_id }}"
+              data-label="{{ et.event_slug }} test" style="color:var(--bad)"
+              title="Permanently delete this test and every student response to it.">🗑</button>
+      {% endif %}
       {% if et.test.status in ("live", "closed", "graded", "released") %}
       <a href="{{ url_for('test_grading_page', test_id=et.test.test_id) }}">
         <button class="ghost">Grade</button>
@@ -307,6 +317,14 @@ document.getElementById("mk_save").addEventListener("click", async () => {
     const el = document.getElementById("mk_err");
     el.style.display = ""; el.textContent = j.error || "Failed";
   }
+});
+</script>
+<script>
+document.addEventListener("click", async e => {
+  const t = e.target.closest(".purge-test-btn");
+  if(t && await hardDelete("test", t.dataset.test, t.dataset.label)) { location.reload(); return; }
+  const w = e.target.closest(".purge-window-btn");
+  if(w && await hardDelete("window", w.dataset.window, `window “${w.dataset.label}”`)) location.reload();
 });
 </script>
 </body></html>
