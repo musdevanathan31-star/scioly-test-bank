@@ -120,8 +120,8 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
          This is the thing that does, and it has to work across a whole
          subtree -- per-folder picking does not scale to hundreds of files. #}
       <button id="subimport" class="ghost">Import this folder tree…</button>
-      <span class="muted" style="font-size:12px">everything below here,
-        grouped by year and tournament</span>
+      <span class="muted" style="font-size:12px">grouped by year and
+        tournament — import one set, process it, then come back</span>
     </div>
     <div class="opsbar" id="importbar" style="display:none">
       <b id="importcount"></b>
@@ -174,7 +174,6 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
       <div id="sub_body"><div class="empty">loading…</div></div>
     </div>
     <footer>
-      <button class="ghost" id="sub_all">Select all</button>
       <button class="ghost" id="sub_none">Clear</button>
       <span class="muted" id="sub_count">none selected</span>
       <button id="sub_go" class="primary" disabled>Import selected</button>
@@ -1046,6 +1045,10 @@ document.addEventListener("click", async e => {
 
 let SUB = null;                  // last subtree payload
 const SUBSEL = new Set();        // archive-relative paths ticked
+// One tournament at a time, deliberately. Import a set, process it, come
+// back for the next: a smaller batch is a smaller thing to unpick when the
+// roles turn out to be wrong, and the event's Scan page stays readable.
+let SUBGROUP = null;
 
 function subCount(){
   return SUBSEL.size;
@@ -1072,6 +1075,7 @@ function renderSubtree(){
       ${g.files.map(f => `
         <div class="row">
           <input type="checkbox" class="pick" data-subfile="${esc(f.path)}"
+                 data-subowner="${esc(g.key)}"
                  ${SUBSEL.has(f.path) ? "checked" : ""}>
           <span class="ico">${f.name.toLowerCase().endsWith(".pdf") ? "📄" : "🖼"}</span>
           <span class="nm" title="${esc(f.path)}">${esc(f.name)}</span>
@@ -1089,28 +1093,48 @@ function renderSubtree(){
 
 function updateSubBar(){
   const n = subCount();
-  document.getElementById("sub_count").textContent =
-    n ? `${n.toLocaleString()} file${n === 1 ? "" : "s"} selected` : "none selected";
+  document.getElementById("sub_count").textContent = n
+    ? `${n.toLocaleString()} file${n === 1 ? "" : "s"} selected in ${SUBGROUP}`
+    : "none selected";
   document.getElementById("sub_go").disabled = !n;
+}
+
+function switchGroup(key){
+  // Ticking something in another tournament moves the selection there
+  // rather than accumulating across groups.
+  if(SUBGROUP !== key){
+    SUBSEL.clear();
+    SUBGROUP = key;
+    document.querySelectorAll("input[data-subgroup]").forEach(b => {
+      b.checked = false; });
+  }
+}
+
+function syncSubBoxes(){
+  document.querySelectorAll("input[data-subfile]").forEach(b => {
+    b.checked = SUBSEL.has(b.dataset.subfile); });
+  updateSubBar();
 }
 
 document.addEventListener("change", e => {
   const file = e.target.closest("input[data-subfile]");
   if(file){
+    switchGroup(file.dataset.subowner);
     if(file.checked) SUBSEL.add(file.dataset.subfile);
     else SUBSEL.delete(file.dataset.subfile);
-    updateSubBar();
+    syncSubBoxes();
     return;
   }
   const grp = e.target.closest("input[data-subgroup]");
   if(grp && SUB){
+    const wanted = grp.checked;
+    switchGroup(grp.dataset.subgroup);
+    grp.checked = wanted;
     const g = SUB.groups.find(x => x.key === grp.dataset.subgroup);
     (g ? g.files : []).forEach(f => {
-      if(grp.checked) SUBSEL.add(f.path); else SUBSEL.delete(f.path);
+      if(wanted) SUBSEL.add(f.path); else SUBSEL.delete(f.path);
     });
-    document.querySelectorAll("input[data-subfile]").forEach(b => {
-      b.checked = SUBSEL.has(b.dataset.subfile); });
-    updateSubBar();
+    syncSubBoxes();
   }
 });
 
@@ -1122,6 +1146,7 @@ async function openSubtreeImport(){
     '<div class="empty">reading the folder tree…</div>';
   document.getElementById("sub_msg").textContent = "";
   SUBSEL.clear();
+  SUBGROUP = null;
 
   // Which event? The mapping usually already knows.
   const t = await (await fetch(`${APP_ROOT}/api/archive/import/targets`
@@ -1151,6 +1176,7 @@ async function loadSubtree(){
   }
   SUB = j;
   SUBSEL.clear();
+  SUBGROUP = null;
   document.getElementById("sub_summary").textContent =
     `${j.shown.toLocaleString()} of ${j.total.toLocaleString()} file(s)`
     + (j.already_in_event
@@ -1168,21 +1194,15 @@ document.addEventListener("click", async e => {
     document.getElementById("sub").style.display = "none";
     return;
   }
-  if(e.target.id === "sub_all" && SUB){
-    SUB.groups.forEach(g => g.files.forEach(f => SUBSEL.add(f.path)));
-  } else if(e.target.id === "sub_none"){
+  if(e.target.id === "sub_none"){
     SUBSEL.clear();
-  } else if(e.target.id !== "sub_go"){
-    return;
-  }
-  if(e.target.id !== "sub_go"){
-    document.querySelectorAll("input[data-subfile]").forEach(b => {
-      b.checked = SUBSEL.has(b.dataset.subfile); });
+    SUBGROUP = null;
     document.querySelectorAll("input[data-subgroup]").forEach(b => {
       b.checked = false; });
-    updateSubBar();
+    syncSubBoxes();
     return;
   }
+  if(e.target.id !== "sub_go") return;
 
   // Import.
   const slug = document.getElementById("sub_slug").value;
@@ -1193,11 +1213,12 @@ document.addEventListener("click", async e => {
   const eventName = document.getElementById("sub_slug")
                       .selectedOptions[0].textContent;
   if(!await confirmModal(
-      `Import ${items.length.toLocaleString()} file(s) into ${eventName}?\n\n`
-      + "They move out of the archive, keeping each tournament's test and "
-      + "key together. Roles are per file — check the answer keys are marked "
-      + "as keys before importing, since a key imported as a test puts the "
-      + "answers into the question bank as questions.",
+      `Import ${items.length.toLocaleString()} file(s) from ${SUBGROUP} `
+      + `into ${eventName}?\n\n`
+      + "They move out of the archive. Roles are per file — check the answer "
+      + "keys are marked as keys before importing, since a key imported as a "
+      + "test puts the answers into the question bank as questions.\n\n"
+      + "Process this set on the event's Scan page before importing the next.",
       {wide: true, confirmLabel: "Import"})) return;
 
   busy(`Importing ${items.length.toLocaleString()} file(s)…`,
@@ -1215,6 +1236,8 @@ document.addEventListener("click", async e => {
     unbusy();
   }
   if(j.error){ await confirmModal(j.error, {confirmLabel: "OK"}); return; }
+  SUBSEL.clear();
+  SUBGROUP = null;
   const failed = (j.result.failed || []).length;
   document.getElementById("sub_msg").textContent =
     `Imported ${j.result.count.toLocaleString()} file(s) from `

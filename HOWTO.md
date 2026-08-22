@@ -411,7 +411,7 @@ Once a coach releases grades for a test, **My Assessments** shows it under Past 
 
 ## For the server operator — moving to a new machine
 
-Not a role in the app; this is the person with root on the box. `README.md` has the reasoning and the per-script detail, `spec.md` §18 has the design rationale — this is the checklist to work through in order, top to bottom.
+Not a role in the app; this is the person with root on the box. **[`MIGRATION.md`](MIGRATION.md) is the full runbook** — accounts, directories, secrets, data restore, verification, cut-over, rollback and troubleshooting. Use it for a real migration; the summary below is the shape of the job. `README.md` has the reasoning and the per-script detail, `spec.md` §18 has the design rationale.
 
 **Before you start**, on the old host:
 
@@ -489,7 +489,7 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Clear out leftover load-test accounts | operator (root) | `python deletion.py --purge-prefix loadtest_` (dry run), then `--yes` |
 | Provision a brand-new server box | operator (root) | `sudo deploy/provision-host.sh --dry-run`, then for real |
 | Inventory this host's secrets | operator (root) | `sudo deploy/migrate-secrets.sh --check` |
-| Move the server to a new machine | operator (root) | "For the server operator" above |
+| Move the server to a new machine | operator (root) | [`MIGRATION.md`](MIGRATION.md) — the full runbook |
 | Measure how many students the server can handle at once | operator | `python loadtest_students.py --url ... --test-id ... --season-id ...` — see "Measuring server capacity" above |
 | Change your password or display name | Coach, Volunteer | ☰ → Settings → My Account |
 | Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
