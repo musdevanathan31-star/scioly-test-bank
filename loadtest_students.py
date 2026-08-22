@@ -110,7 +110,7 @@ class SyntheticStudent:
 
 
 def discover_test(base_url: str, coach: requests.Session, test_id: str) -> dict:
-    r = coach.get(f"{base_url}/api/tests/{test_id}", timeout=REQUEST_TIMEOUT)
+    r = coach.get(f"{base_url}/api/assessments/{test_id}", timeout=REQUEST_TIMEOUT)
     if r.status_code != 200:
         raise LoadTestError(f"GET /api/tests/{test_id} -> HTTP {r.status_code}: {r.text[:300]}")
     test = r.json()
@@ -247,7 +247,7 @@ class SaveResult:
 def run_one_student(base_url: str, test_id: str, student: SyntheticStudent) -> list[SaveResult]:
     s = student.session
     try:
-        r = s.get(f"{base_url}/api/my-tests/{test_id}/take", timeout=REQUEST_TIMEOUT)
+        r = s.get(f"{base_url}/api/my-assessments/{test_id}/take", timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         questions = r.json().get("questions", [])
     except requests.RequestException as e:
@@ -259,7 +259,7 @@ def run_one_student(base_url: str, test_id: str, student: SyntheticStudent) -> l
         payload = {"number": str(q.get("number", "")), "answer": answer_for(q)}
         t0 = time.monotonic()
         try:
-            r = s.post(f"{base_url}/api/my-tests/{test_id}/answer", json=payload,
+            r = s.post(f"{base_url}/api/my-assessments/{test_id}/answer", json=payload,
                        headers=csrf_headers(s), timeout=REQUEST_TIMEOUT)
             elapsed = time.monotonic() - t0
             ok = r.status_code == 200 and r.json().get("ok") is True
