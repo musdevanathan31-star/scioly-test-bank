@@ -526,3 +526,57 @@ def test_a_read_only_archive_warns_both_roles(app_ctx):
     # is a mutation, and it will fail for exactly the same reason.
     assert vol["writable"] is False
     assert "total_files" not in vol
+
+
+def test_a_subtree_listing_is_scoped_to_both_ends(app_ctx):
+    client, am, slug = app_ctx
+    am.set_many({"Division B/Circuit Lab": slug})
+    import review_app
+    other = next(s for s in sorted(review_app.EVENTS) if s != slug)
+    c = client("vol1")
+    # Source they can see, event they hold: allowed.
+    ok = c.get("/api/archive/import/subtree",
+               query_string={"path": "Division B/Circuit Lab", "slug": slug})
+    assert ok.status_code == 200
+    # Event they do not hold.
+    assert c.get("/api/archive/import/subtree",
+                 query_string={"path": "Division B/Circuit Lab",
+                               "slug": other}).status_code == 400
+    # Source outside their scope.
+    assert c.get("/api/archive/import/subtree",
+                 query_string={"path": "Division C/_UnknownEvent",
+                               "slug": slug}).status_code == 404
+
+
+def test_batch_import_moves_files_across_folders(app_ctx):
+    import tournament_archive as ta
+    client, _am, slug = app_ctx
+    for rel, body in (("Division B/Circuit Lab/2019/UF/test.pdf", b"A" * 400),
+                      ("Division B/Circuit Lab/2021/States/test.pdf", b"B" * 400)):
+        p = ta.archive_root() / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(body)
+    ta.save_index(ta.build_index())
+    c = client("coach1")
+    listing = c.get("/api/archive/import/subtree",
+                    query_string={"path": "Division B/Circuit Lab",
+                                  "slug": slug}).get_json()
+    items = [{"path": f["path"], "role": f["role"]}
+             for g in listing["groups"] for f in g["files"]]
+    r = c.post("/api/archive/import/batch", json={"items": items, "slug": slug})
+    assert r.status_code == 200, r.get_json()
+    result = r.get_json()["result"]
+    assert result["count"] == len(items)
+    assert result["folders"] >= 2
+    for it in items:
+        assert not (ta.archive_root() / it["path"]).exists()
+
+
+def test_a_student_cannot_use_the_subtree_import(app_ctx):
+    client, _am, slug = app_ctx
+    c = client("stu1")
+    assert c.get("/api/archive/import/subtree",
+                 query_string={"path": "", "slug": slug}).status_code == 403
+    assert c.post("/api/archive/import/batch",
+                  json={"items": [{"path": "x", "role": "test"}],
+                        "slug": slug}).status_code == 403

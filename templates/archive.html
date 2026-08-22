@@ -115,6 +115,14 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     </div>
     {% endif %}
     <div class="rowlist" id="listing"><div class="empty">loading…</div></div>
+    <div class="opsbar">
+      {# Mapping a folder to an event does not put its files in the event.
+         This is the thing that does, and it has to work across a whole
+         subtree -- per-folder picking does not scale to hundreds of files. #}
+      <button id="subimport" class="ghost">Import this folder tree…</button>
+      <span class="muted" style="font-size:12px">everything below here,
+        grouped by year and tournament</span>
+    </div>
     <div class="opsbar" id="importbar" style="display:none">
       <b id="importcount"></b>
       <button id="importbtn" class="primary">Import into an event…</button>
@@ -144,6 +152,33 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
       <button class="ghost" id="pv_prev">‹ Prev</button>
       <span class="muted" id="pv_pageno"></span>
       <button class="ghost" id="pv_next">Next ›</button>
+    </footer>
+  </div>
+</div>
+
+<div class="overlay" id="sub" style="display:none">
+  <div class="sheet" style="max-width:1000px">
+    <header>
+      <span class="nm"><b>Import from folder tree</b></span>
+      <button class="ghost" id="sub_close">Close</button>
+    </header>
+    <div class="pvpath" id="sub_where"></div>
+    <div class="body" style="text-align:left;background:var(--bg-card)">
+      <div class="impgrid" style="margin-bottom:10px">
+        <label>Into event<select id="sub_slug"></select></label>
+        <label class="muted" style="flex-direction:row;align-items:center;gap:6px">
+          <input type="checkbox" id="sub_showall"> Show files already in the event
+        </label>
+        <span class="muted" id="sub_summary"></span>
+      </div>
+      <div id="sub_body"><div class="empty">loading…</div></div>
+    </div>
+    <footer>
+      <button class="ghost" id="sub_all">Select all</button>
+      <button class="ghost" id="sub_none">Clear</button>
+      <span class="muted" id="sub_count">none selected</span>
+      <button id="sub_go" class="primary" disabled>Import selected</button>
+      <span class="muted" id="sub_msg"></span>
     </footer>
   </div>
 </div>
@@ -1002,6 +1037,201 @@ document.addEventListener("click", async e => {
   pvClose();
   await renameWithSuggestions(folder);
 });
+
+// --- Bulk import from a folder tree ---------------------------------------
+// Mapping a folder to an event does not put its files in the event; that
+// needs an import. Doing it a folder at a time across hundreds of files is
+// not a workflow anyone finishes, so this flattens the whole subtree into
+// one list grouped by year and tournament.
+
+let SUB = null;                  // last subtree payload
+const SUBSEL = new Set();        // archive-relative paths ticked
+
+function subCount(){
+  return SUBSEL.size;
+}
+
+function renderSubtree(){
+  const box = document.getElementById("sub_body");
+  if(!SUB || !SUB.groups.length){
+    box.innerHTML = `<div class="empty">Nothing left to import here.`
+      + (SUB && SUB.already_in_event
+          ? ` ${SUB.already_in_event.toLocaleString()} file(s) are already in `
+            + `${esc(SUB.event)}.` : "")
+      + `</div>`;
+    return;
+  }
+  box.innerHTML = SUB.groups.map(g => `
+    <div class="rowlist" style="margin-bottom:10px">
+      <div class="row" style="background:var(--bg-alt)">
+        <input type="checkbox" class="pick" data-subgroup="${esc(g.key)}">
+        <span class="ico">📁</span>
+        <span class="nm"><b>${esc(g.label)}</b></span>
+        <span class="num">${g.files.length} file${g.files.length === 1 ? "" : "s"}</span>
+      </div>
+      ${g.files.map(f => `
+        <div class="row">
+          <input type="checkbox" class="pick" data-subfile="${esc(f.path)}"
+                 ${SUBSEL.has(f.path) ? "checked" : ""}>
+          <span class="ico">${f.name.toLowerCase().endsWith(".pdf") ? "📄" : "🖼"}</span>
+          <span class="nm" title="${esc(f.path)}">${esc(f.name)}</span>
+          <select data-subrole="${esc(f.path)}">
+            ${["test", "key", "supplementary", "notes"].map(r =>
+              `<option value="${r}"${r === f.role ? " selected" : ""}>${r}</option>`
+            ).join("")}
+          </select>
+          <button class="ghost" data-preview="${esc(f.path)}">Preview</button>
+          <span class="num">${fmtBytes(f.size)}</span>
+        </div>`).join("")}
+    </div>`).join("");
+  updateSubBar();
+}
+
+function updateSubBar(){
+  const n = subCount();
+  document.getElementById("sub_count").textContent =
+    n ? `${n.toLocaleString()} file${n === 1 ? "" : "s"} selected` : "none selected";
+  document.getElementById("sub_go").disabled = !n;
+}
+
+document.addEventListener("change", e => {
+  const file = e.target.closest("input[data-subfile]");
+  if(file){
+    if(file.checked) SUBSEL.add(file.dataset.subfile);
+    else SUBSEL.delete(file.dataset.subfile);
+    updateSubBar();
+    return;
+  }
+  const grp = e.target.closest("input[data-subgroup]");
+  if(grp && SUB){
+    const g = SUB.groups.find(x => x.key === grp.dataset.subgroup);
+    (g ? g.files : []).forEach(f => {
+      if(grp.checked) SUBSEL.add(f.path); else SUBSEL.delete(f.path);
+    });
+    document.querySelectorAll("input[data-subfile]").forEach(b => {
+      b.checked = SUBSEL.has(b.dataset.subfile); });
+    updateSubBar();
+  }
+});
+
+async function openSubtreeImport(){
+  const sheet = document.getElementById("sub");
+  sheet.style.display = "flex";
+  document.getElementById("sub_where").textContent = CURRENT || ARCHIVE_NAME;
+  document.getElementById("sub_body").innerHTML =
+    '<div class="empty">reading the folder tree…</div>';
+  document.getElementById("sub_msg").textContent = "";
+  SUBSEL.clear();
+
+  // Which event? The mapping usually already knows.
+  const t = await (await fetch(`${APP_ROOT}/api/archive/import/targets`
+                               + `?path=${encodeURIComponent(CURRENT)}`)).json();
+  if(t.error){ document.getElementById("sub_body").innerHTML =
+      `<div class="empty">${esc(t.error)}</div>`; return; }
+  const sel = document.getElementById("sub_slug");
+  sel.innerHTML = (t.events || []).map(e =>
+    `<option value="${esc(e.slug)}"${e.slug === t.suggested ? " selected" : ""}>`
+    + `${esc(e.name)}</option>`).join("");
+  await loadSubtree();
+}
+
+async function loadSubtree(){
+  const slug = document.getElementById("sub_slug").value;
+  const showAll = document.getElementById("sub_showall").checked ? "1" : "0";
+  document.getElementById("sub_body").innerHTML =
+    '<div class="empty">reading the folder tree…</div>';
+  const r = await fetch(`${APP_ROOT}/api/archive/import/subtree`
+                        + `?path=${encodeURIComponent(CURRENT)}`
+                        + `&slug=${encodeURIComponent(slug)}&all=${showAll}`);
+  const j = await r.json();
+  if(j.error){
+    document.getElementById("sub_body").innerHTML =
+      `<div class="empty">${esc(j.error)}</div>`;
+    return;
+  }
+  SUB = j;
+  SUBSEL.clear();
+  document.getElementById("sub_summary").textContent =
+    `${j.shown.toLocaleString()} of ${j.total.toLocaleString()} file(s)`
+    + (j.already_in_event
+        ? ` — ${j.already_in_event.toLocaleString()} already in ${j.event}, hidden`
+        : "");
+  renderSubtree();
+}
+
+document.addEventListener("change", e => {
+  if(e.target.id === "sub_slug" || e.target.id === "sub_showall") loadSubtree();
+});
+
+document.addEventListener("click", async e => {
+  if(e.target.id === "sub_close" || e.target.id === "sub"){
+    document.getElementById("sub").style.display = "none";
+    return;
+  }
+  if(e.target.id === "sub_all" && SUB){
+    SUB.groups.forEach(g => g.files.forEach(f => SUBSEL.add(f.path)));
+  } else if(e.target.id === "sub_none"){
+    SUBSEL.clear();
+  } else if(e.target.id !== "sub_go"){
+    return;
+  }
+  if(e.target.id !== "sub_go"){
+    document.querySelectorAll("input[data-subfile]").forEach(b => {
+      b.checked = SUBSEL.has(b.dataset.subfile); });
+    document.querySelectorAll("input[data-subgroup]").forEach(b => {
+      b.checked = false; });
+    updateSubBar();
+    return;
+  }
+
+  // Import.
+  const slug = document.getElementById("sub_slug").value;
+  const roles = {};
+  document.querySelectorAll("select[data-subrole]").forEach(s => {
+    roles[s.dataset.subrole] = s.value; });
+  const items = [...SUBSEL].map(p => ({path: p, role: roles[p] || "test"}));
+  const eventName = document.getElementById("sub_slug")
+                      .selectedOptions[0].textContent;
+  if(!await confirmModal(
+      `Import ${items.length.toLocaleString()} file(s) into ${eventName}?\n\n`
+      + "They move out of the archive, keeping each tournament's test and "
+      + "key together. Roles are per file — check the answer keys are marked "
+      + "as keys before importing, since a key imported as a test puts the "
+      + "answers into the question bank as questions.",
+      {wide: true, confirmLabel: "Import"})) return;
+
+  busy(`Importing ${items.length.toLocaleString()} file(s)…`,
+       "Moving them into the event and renaming to convention.");
+  let j;
+  try {
+    const r = await fetch(`${APP_ROOT}/api/archive/import/batch`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({items, slug})});
+    j = r.ok ? await r.json()
+             : {error: `The server returned ${r.status}. Nothing was imported.`};
+  } catch (err) {
+    j = {error: `The request did not complete: ${err.message}`};
+  } finally {
+    unbusy();
+  }
+  if(j.error){ await confirmModal(j.error, {confirmLabel: "OK"}); return; }
+  const failed = (j.result.failed || []).length;
+  document.getElementById("sub_msg").textContent =
+    `Imported ${j.result.count.toLocaleString()} file(s) from `
+    + `${j.result.folders} folder(s)`
+    + (failed ? `; ${failed} folder(s) failed.` : ".");
+  if(failed){
+    await confirmModal(
+      (j.result.failed || []).slice(0, 5)
+        .map(f => `  ${f.folder}\n    ${f.error}`).join("\n"),
+      {wide: true, confirmLabel: "OK"});
+  }
+  await loadSubtree();
+  await refreshStatus();
+  go(CURRENT);
+});
+
+on("subimport", "click", openSubtreeImport);
 
 (async () => {
   const s = await refreshStatus();

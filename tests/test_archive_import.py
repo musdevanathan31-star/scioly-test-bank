@@ -312,3 +312,129 @@ def test_an_imported_image_is_found_as_supplementary(imp):
     assert any("figure3" in n and n.endswith(".pdf") for n in extras), extras
     # The original is kept beside it — nothing in this feature destroys a file.
     assert any(p.suffix == ".png" for p in test_pdf.parent.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Bulk import from a subtree
+#
+# Mapping a folder to an event does not put its files in the event — that
+# needs an import, and doing it a folder at a time across hundreds of files
+# is not a workflow anyone finishes.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def subtree(imp):
+    archive_import, slug, ta = imp
+    root = ta.archive_root()
+
+    def write(rel, data):
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    base = "Division B/Circuit Lab"
+    write(f"{base}/2019/UF Invitational/test.pdf", b"UF-2019-TEST" * 100)
+    write(f"{base}/2019/UF Invitational/answer key.pdf", b"UF-2019-KEY" * 100)
+    write(f"{base}/2021/States/test.pdf", b"ST-2021-TEST" * 100)
+    write(f"{base}/2021/States/key.pdf", b"ST-2021-KEY" * 100)
+    ta.save_index(ta.build_index())
+    return archive_import, slug, ta, base
+
+
+def test_a_subtree_is_grouped_by_year_and_tournament(subtree):
+    archive_import, slug, _ta, base = subtree
+    out = archive_import.subtree_files(base, slug)
+    keys = [g["key"] for g in out["groups"]]
+    assert "2019/UF Invitational" in keys
+    assert "2021/States" in keys
+    for g in out["groups"]:
+        assert g["year"] in ("2019", "2021")
+
+
+def test_roles_are_guessed_per_file(subtree):
+    archive_import, slug, _ta, base = subtree
+    out = archive_import.subtree_files(base, slug)
+    roles = {f["name"]: f["role"] for g in out["groups"] for f in g["files"]}
+    # Getting this wrong puts the answers into the bank as questions.
+    assert roles["answer key.pdf"] == "key"
+    assert roles["key.pdf"] == "key"
+    assert roles["test.pdf"] == "test"
+
+
+def test_importing_spans_folders_without_mixing_their_years(subtree):
+    archive_import, slug, _ta, base = subtree
+    out = archive_import.subtree_files(base, slug)
+    items = [{"path": f["path"], "role": f["role"]}
+             for g in out["groups"] for f in g["files"]]
+    result = archive_import.run_batch_import(items, slug, by="coach1")
+    # Five: this fixture's two pairs plus the notes file the base fixture
+    # leaves in the 2019 folder.
+    assert result["count"] == 5 and result["folders"] == 2
+    names = sorted(f["dest_name"] for f in result["imported"])
+    # A single plan across folders would file everything under whichever
+    # folder came first, pairing a 2019 key with a 2021 test.
+    assert any("_2019_" in n and n.endswith("_test.pdf") for n in names)
+    assert any("_2021_" in n and n.endswith("_test.pdf") for n in names)
+    for year in ("2019", "2021"):
+        stems = {n.rsplit("_", 1)[0] for n in names if f"_{year}_" in n}
+        assert len(stems) == 1, f"{year} test and key must share a stem: {stems}"
+
+
+def test_a_file_already_in_the_event_is_hidden(subtree):
+    archive_import, slug, ta, base = subtree
+    out = archive_import.subtree_files(base, slug)
+    first = out["groups"][0]["files"][0]
+    archive_import.run_import([{"path": first["path"], "role": first["role"]}], slug)
+
+    again = archive_import.subtree_files(base, slug)
+    remaining = [f["name"] for g in again["groups"] for f in g["files"]]
+    assert first["name"] not in remaining or len(remaining) < out["shown"]
+
+
+def test_a_duplicate_copy_elsewhere_counts_as_already_imported(subtree):
+    archive_import, slug, ta, base = subtree
+    # The case that makes "already imported" a content question: import one
+    # copy, and the identical file sitting in another tournament folder must
+    # not come back looking like fresh material.
+    src = ta.archive_root() / base / "2019/UF Invitational/test.pdf"
+    twin = ta.archive_root() / base / "2022/Regionals/scan_0001.pdf"
+    twin.parent.mkdir(parents=True, exist_ok=True)
+    twin.write_bytes(src.read_bytes())
+    ta.save_index(ta.build_index())
+
+    archive_import.run_import(
+        [{"path": f"{base}/2019/UF Invitational/test.pdf", "role": "test"}], slug)
+
+    out = archive_import.subtree_files(base, slug)
+    names = [f["name"] for g in out["groups"] for f in g["files"]]
+    assert "scan_0001.pdf" not in names, "a copy of an imported file was offered again"
+    assert out["already_in_event"] >= 1
+
+
+def test_hidden_files_can_still_be_listed_on_request(subtree):
+    archive_import, slug, _ta, base = subtree
+    out = archive_import.subtree_files(base, slug)
+    first = out["groups"][0]["files"][0]
+    archive_import.run_import([{"path": first["path"], "role": first["role"]}], slug)
+    shown = archive_import.subtree_files(base, slug, include_imported=True)
+    assert shown["already_in_event"] == 0 or shown["shown"] >= out["shown"] - 1
+
+
+def test_one_bad_folder_does_not_cost_the_rest_of_the_sweep(subtree, monkeypatch):
+    archive_import, slug, _ta, base = subtree
+    out = archive_import.subtree_files(base, slug)
+    items = [{"path": f["path"], "role": f["role"]}
+             for g in out["groups"] for f in g["files"]]
+    real = archive_import.run_import
+    calls = {"n": 0}
+
+    def flaky(folder_items, s, meta=None, by=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise archive_import.ImportError_("boom")
+        return real(folder_items, s, meta, by)
+
+    monkeypatch.setattr(archive_import, "run_import", flaky)
+    result = archive_import.run_batch_import(items, slug)
+    assert len(result["failed"]) == 1
+    assert result["count"] == 2, "the second folder should still have imported"

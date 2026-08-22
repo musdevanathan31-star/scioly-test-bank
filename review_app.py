@@ -2940,6 +2940,59 @@ def api_archive_import():
         return jsonify({"error": f"filesystem refused: {e}"}), 500
 
 
+@app.route("/api/archive/import/subtree")
+@coach_or_volunteer_required
+def api_archive_import_subtree():
+    """Everything importable under one folder, grouped by year and tournament.
+
+    The per-folder picker does not scale: a mapped event subtree holds
+    hundreds of files across years, and importing them a folder at a time is
+    not a workflow anyone finishes. Files already in the event are hidden by
+    default and counted, because after one import the remaining duplicate
+    copies elsewhere in the archive would otherwise look like fresh material.
+    """
+    rel = (request.args.get("path") or "").strip()
+    slug = (request.args.get("slug") or "").strip()
+    if not archive_map.can_traverse(g.user, rel):
+        return jsonify({"error": f"no such folder: {rel}"}), 404
+    if g.user.role != "coach" and slug not in (g.user.events or ()):
+        return jsonify({"error": "you do not have access to that event"}), 400
+    try:
+        return jsonify(archive_import.subtree_files(
+            rel, slug,
+            include_imported=request.args.get("all") == "1"))
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/archive/import/batch", methods=["POST"])
+@coach_or_volunteer_required
+def api_archive_import_batch():
+    """Import a selection spanning several tournament folders."""
+    data = request.get_json() or {}
+    items = data.get("items") or []
+    slug = (data.get("slug") or "").strip()
+    if not items:
+        return jsonify({"error": "nothing selected"}), 400
+    try:
+        _import_allowed(items, slug)
+        result = archive_import.run_batch_import(items, slug, by=g.user.username)
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    app.logger.info("archive batch import: user=%s slug=%s files=%d folders=%d failed=%d",
+                    g.user.username, slug, result["count"], result["folders"],
+                    len(result["failed"]))
+    if not result["count"] and result["failed"]:
+        # Every folder failed: a fault, not a partial result.
+        return jsonify({"error": result["failed"][0]["error"],
+                        "failed": result["failed"]}), 400
+    return jsonify({"ok": True, "result": result})
+
+
 @app.route("/api/archive/import/targets")
 @coach_or_volunteer_required
 def api_archive_import_targets():

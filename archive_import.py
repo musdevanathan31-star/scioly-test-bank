@@ -20,6 +20,7 @@ clears every role in it.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -302,3 +303,162 @@ def run_import(items: list, slug: str, meta: dict | None = None,
                                role=entry["role"], by=by, bytes=entry["bytes"])
         plan["moved"] = moved
         return plan
+
+
+# ---------------------------------------------------------------------------
+# Bulk import from a subtree
+#
+# Importing 122 files a folder at a time is not a workflow anyone finishes.
+# This flattens a whole mapped event subtree into one list grouped by year
+# and tournament, guesses each file's role, and hides what is already in the
+# event.
+#
+# "Already imported" has to be judged by CONTENT. Import moves files, so
+# anything imported has left the archive -- but this corpus is full of
+# duplicates, so the same test usually sits in several tournament folders,
+# and the remaining copies would otherwise look like fresh material every
+# time. Matching on size then hash means a second copy of something already
+# imported is recognised however it happens to be named.
+# ---------------------------------------------------------------------------
+
+def _event_files_by_size(ev) -> dict:
+    """size -> [paths] for everything already in the event. No hashing.
+
+    Sizes are free (one stat each) and rule out almost everything: an
+    archive file whose size matches nothing in the event cannot be a copy of
+    anything in it. Hashing happens later, lazily, only for the sizes that
+    actually collide.
+    """
+    out: dict = {}
+    for folder in (ev.base_dir, ev.texts_dir):
+        if not folder.is_dir():
+            continue
+        for p in folder.iterdir():
+            try:
+                if p.is_file():
+                    out.setdefault(p.stat().st_size, []).append(p)
+            except OSError:
+                continue
+    return out
+
+
+def _already_checker(ev):
+    """Returns is_already(path, size) -> bool, hashing as little as possible.
+
+    The event side of a colliding size is hashed once and cached; the
+    archive file is hashed only when its size collides at all.
+    """
+    by_size = _event_files_by_size(ev)
+    cache: dict = {}
+
+    def hashes_for(size: int) -> set:
+        if size not in cache:
+            digests = set()
+            for p in by_size.get(size, ()):
+                d = ta._hash_file(p)
+                if d:
+                    digests.add(d)
+            cache[size] = digests
+        return cache[size]
+
+    def is_already(path, size: int) -> bool:
+        if size not in by_size:
+            return False
+        digest = ta._hash_file(path)
+        return bool(digest and digest in hashes_for(size))
+
+    return is_already
+
+
+def subtree_files(rel: str, slug: str, include_imported: bool = False) -> dict:
+    """Every importable file under `rel`, grouped by year and tournament.
+
+    Groups are keyed by the path between the subtree root and the file, which
+    is `<Year>/<Tournament>` when the tree follows the convention and
+    whatever it actually is when it does not -- this has to render a corpus
+    that violates the convention freely, so it groups by real structure
+    rather than assuming a depth.
+    """
+    ev = _event_or_raise(slug)
+    root = ta.safe_path(rel)
+    if not root.is_dir():
+        raise ImportError_(f"no such folder: {rel or '/'}")
+
+    is_already = _already_checker(ev)
+    groups: dict = {}
+    n_total = n_hidden = 0
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ta.IGNORED_NAMES]
+        here = Path(dirpath)
+        for name in sorted(filenames, key=str.lower):
+            if name in ta.IGNORED_NAMES:
+                continue
+            ext = Path(name).suffix.lower()
+            if ext not in DOC_EXTS and ext not in IMAGE_EXTS:
+                continue
+            path = here / name
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            n_total += 1
+
+            already = is_already(path, size)
+            if already and not include_imported:
+                n_hidden += 1
+                continue
+
+            frel = ta.rel_of(path)
+            group_key = here.relative_to(root).as_posix()
+            if group_key == ".":
+                group_key = ""
+            meta = path_metadata(frel.rsplit("/", 1)[0])
+            g = groups.setdefault(group_key, {
+                "key": group_key,
+                "label": group_key or "(loose files)",
+                "year": meta["year"],
+                "tournament": meta["submitter"],
+                "files": [],
+            })
+            g["files"].append({
+                "path": frel, "name": name, "size": size,
+                "role": guess_role(name), "already": already,
+            })
+
+    ordered = sorted(groups.values(), key=lambda g: g["key"].lower())
+    return {
+        "slug": slug, "event": ev.name, "root": rel,
+        "groups": ordered,
+        "total": n_total,
+        "shown": sum(len(g["files"]) for g in ordered),
+        "already_in_event": n_hidden,
+    }
+
+
+def run_batch_import(items: list, slug: str, by: str = "") -> dict:
+    """Import files spanning several tournament folders.
+
+    Runs one plan per source folder rather than one for the batch. Year,
+    division and tournament come from the path, and the filename stem that
+    ties a test to its key is derived from them -- so a single plan across
+    folders would file everything under whichever folder happened to be
+    first, and silently pair a 2019 key with a 2021 test.
+    """
+    by_folder: dict = {}
+    for item in items:
+        rel = (item.get("path") or "").strip()
+        if not rel:
+            raise ImportError_("an item is missing its path")
+        by_folder.setdefault(rel.rsplit("/", 1)[0], []).append(item)
+
+    imported, failures = [], []
+    for folder in sorted(by_folder):
+        try:
+            plan = run_import(by_folder[folder], slug, by=by)
+            imported.extend(plan["files"])
+        except (ImportError_, OSError, ValueError) as e:
+            # One bad folder must not cost the rest of a 122-file sweep.
+            failures.append({"folder": folder, "error": str(e)})
+    return {"imported": imported, "failed": failures,
+            "count": len(imported), "folders": len(by_folder)}

@@ -265,6 +265,20 @@ Two things to know:
   mis-click is recoverable; empty folders are removed outright because there
   is nothing in them to recover. Everything is recorded, and a coach can
   review it at `/api/archive/ops`.
+- **Mapping a folder to an event does not put its files in the event.** It
+  only decides which volunteers may *see* that part of the archive. Getting
+  the files in is a separate, deliberate step — importing — because it moves
+  them.
+- **Importing a whole folder tree** (the usual case): stand on the event's
+  archive folder and press **Import this folder tree…**. Every file below it
+  is listed, grouped by year and tournament, with a guessed role you can
+  change per file and a **Preview** button to check what something actually
+  is before deciding. Tick a group's header to take all of it. Files already
+  in the event are hidden and counted — matched by *content*, so a duplicate
+  copy sitting in another tournament folder is recognised even though it is
+  named differently. Tick **Show files already in the event** to see them.
+  Each tournament folder is imported as its own batch, so a 2019 key can
+  never end up paired with a 2021 test.
 - **Importing** into an event: tick the PDFs, press **Import into an
   event…**, confirm the event and each file's role. The year, division and
   tournament are filled in from the folder path. Files **move** — they leave
