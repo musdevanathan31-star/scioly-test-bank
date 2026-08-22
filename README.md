@@ -707,6 +707,8 @@ One asymmetry worth knowing: the shared venv is left **root-owned**. Nothing wri
 
 ### Moving to a different machine (host-to-host)
 
+> **Doing this for real?** [`MIGRATION.md`](MIGRATION.md) is the full step-by-step runbook — accounts and directories to create, where every secret lives, data restore, the parity checks to run before cutting over, rollback, and a troubleshooting table. This section is the reasoning behind it.
+
 Data backups restore an instance's *content*. They deliberately restore none of its *identity* — `.env`, `auth_users.json`, the admin password hash and the backup credentials are excluded from both mechanisms (see ["Backups"](#backups)), because they're too sensitive for an unattended pipeline writing to GitHub and S3. A host rebuilt from backups alone therefore either won't start or starts and logs everyone out. [`deploy/secrets-manifest.conf`](deploy/secrets-manifest.conf) is the list that closes that gap, in one place instead of scattered across these docs, and [`deploy/migrate-secrets.sh`](deploy/migrate-secrets.sh) acts on it.
 
 Order matters — provisioning creates the accounts the secrets must be owned by:
