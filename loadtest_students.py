@@ -237,62 +237,206 @@ def answer_for(question: dict) -> dict:
     return {"qtype": "frq", "text": "load test placeholder answer"}
 
 
+# ---------------------------------------------------------------------------
+# Scenarios — what the synthetic students actually do
+#
+# The default ("answer") measures the answer-autosave hot path. The others
+# exist because that path is deliberately the *cheapest* one in the app:
+# it writes one small per-(assessment, student) file under its own lock, so
+# it parallelises well and tells you almost nothing about the paths that
+# don't.
+#
+# The expensive paths all funnel through auth.py's single _users_lock,
+# which guards one JSON file for every account. Password hashing is scrypt
+# (~80ms per operation on typical hardware), and change_own_password holds
+# that global lock across TWO of them — a verify and a generate. Meanwhile
+# review_app's _require_login calls auth.get_user() on every authenticated
+# request, taking the same lock to read. So a burst of password changes can
+# in principle stall page loads and answer saves for everyone, not just the
+# students changing passwords. "mixed" is the scenario that can actually
+# show that, because it runs both at once and reports them separately.
+# ---------------------------------------------------------------------------
+
+SCENARIOS = ("answer", "login", "login-storm", "password", "mixed")
+
+
+#: Activities whose failures are the point of the exercise rather than a
+#: symptom, so they are reported but never judged against the thresholds.
+EXPECTED_FAILURE_KINDS = ("login-typo",)
+
+
 @dataclass
-class SaveResult:
+class OpResult:
+    """One timed request. `kind` lets a mixed run report each activity
+    separately — an average across "answer save" and "password change" would
+    hide exactly the interference this is looking for."""
+    kind: str
     ok: bool
     elapsed: float
     error: str = ""
+    status: int = 0
 
 
-def run_one_student(base_url: str, test_id: str, student: SyntheticStudent) -> list[SaveResult]:
+def _timed(fn) -> tuple[float, object]:
+    t0 = time.monotonic()
+    result = fn()
+    return time.monotonic() - t0, result
+
+
+def op_login(base_url: str, student: SyntheticStudent, password: str = None) -> OpResult:
+    """A full fresh login, including the scrypt verify. Uses its own Session
+    so no cookie from an earlier login short-circuits it."""
+    s = requests.Session()
+    s.get(f"{base_url}/login", timeout=REQUEST_TIMEOUT)
+    try:
+        elapsed, r = _timed(lambda: s.post(
+            f"{base_url}/login",
+            data={"username": student.username,
+                  "password": password if password is not None else student.password},
+            allow_redirects=False, timeout=REQUEST_TIMEOUT))
+    except requests.RequestException as e:
+        return OpResult("login", False, 0.0, str(e))
+    # 302 = success; 200 = the login page re-rendered with an error;
+    # 429 = the per-IP rate limiter refused before checking credentials.
+    ok = r.status_code in (302, 303)
+    if ok:
+        student.session = s
+    return OpResult("login", ok, elapsed,
+                    "" if ok else f"HTTP {r.status_code}", r.status_code)
+
+
+def op_change_password(base_url: str, student: SyntheticStudent) -> OpResult:
+    """Change the password to a new value and keep it on the student, so
+    repeated rounds stay valid. This is the path that holds the global user
+    lock across two scrypt operations."""
     s = student.session
+    new_password = random_password()
+    try:
+        elapsed, r = _timed(lambda: s.post(
+            f"{base_url}/api/account/password",
+            json={"current_password": student.password, "new_password": new_password},
+            headers=csrf_headers(s), timeout=REQUEST_TIMEOUT))
+    except requests.RequestException as e:
+        return OpResult("password", False, 0.0, str(e))
+    ok = r.status_code == 200
+    if ok:
+        student.password = new_password
+    return OpResult("password", ok, elapsed,
+                    "" if ok else f"HTTP {r.status_code}: {r.text[:120]}", r.status_code)
+
+
+def op_browse(base_url: str, student: SyntheticStudent) -> OpResult:
+    """A plain authenticated page load. Cheap in itself, which is the point:
+    it is the canary for _users_lock contention, because _require_login
+    reads the user table on every single request."""
+    s = student.session
+    try:
+        elapsed, r = _timed(lambda: s.get(f"{base_url}/my-assessments",
+                                          timeout=REQUEST_TIMEOUT))
+    except requests.RequestException as e:
+        return OpResult("browse", False, 0.0, str(e))
+    ok = r.status_code == 200
+    return OpResult("browse", ok, elapsed, "" if ok else f"HTTP {r.status_code}", r.status_code)
+
+
+def op_answer_round(base_url: str, test_id: str, student: SyntheticStudent,
+                    think: tuple) -> list[OpResult]:
+    """One pass through every question on the test, saving each answer."""
+    s = student.session
+    out: list[OpResult] = []
     try:
         r = s.get(f"{base_url}/api/my-assessments/{test_id}/take", timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         questions = r.json().get("questions", [])
     except requests.RequestException as e:
-        return [SaveResult(ok=False, elapsed=0.0, error=f"take failed: {e}")]
-
-    results: list[SaveResult] = []
+        return [OpResult("answer", False, 0.0, f"take failed: {e}")]
     for q in questions:
-        time.sleep(random.uniform(*JITTER_RANGE_S))
+        time.sleep(random.uniform(*think))
         payload = {"number": str(q.get("number", "")), "answer": answer_for(q)}
-        t0 = time.monotonic()
         try:
-            r = s.post(f"{base_url}/api/my-assessments/{test_id}/answer", json=payload,
-                       headers=csrf_headers(s), timeout=REQUEST_TIMEOUT)
-            elapsed = time.monotonic() - t0
-            ok = r.status_code == 200 and r.json().get("ok") is True
-            results.append(SaveResult(ok=ok, elapsed=elapsed, error="" if ok else r.text[:200]))
+            elapsed, resp = _timed(lambda: s.post(
+                f"{base_url}/api/my-assessments/{test_id}/answer", json=payload,
+                headers=csrf_headers(s), timeout=REQUEST_TIMEOUT))
+            ok = resp.status_code == 200 and resp.json().get("ok") is True
+            out.append(OpResult("answer", ok, elapsed,
+                                "" if ok else resp.text[:160], resp.status_code))
         except requests.RequestException as e:
-            results.append(SaveResult(ok=False, elapsed=time.monotonic() - t0, error=str(e)))
-    return results
+            out.append(OpResult("answer", False, 0.0, str(e)))
+    return out
 
 
-def run_step(base_url: str, test_id: str, students: list[SyntheticStudent]) -> list[SaveResult]:
-    all_results: list[SaveResult] = []
+def _student_work(scenario: str, base_url: str, test_id: str,
+                  student: SyntheticStudent, index: int, think: tuple) -> list[OpResult]:
+    if scenario == "answer":
+        return op_answer_round(base_url, test_id, student, think)
+    if scenario == "login":
+        return [op_login(base_url, student)]
+    if scenario == "login-storm":
+        # Every 4th student fumbles their password first, then retries
+        # correctly — the realistic shape of a room full of students typing
+        # a password they were handed five minutes ago. All of them share
+        # one public IP, which is the whole point: review_app's rate limiter
+        # counts failures per IP, not per account.
+        out = []
+        if index % 4 == 0:
+            # Tagged as its own activity: this attempt is SUPPOSED to fail,
+            # so counting it as an error would both misreport the failure
+            # rate and trip the breaking-point threshold on a healthy run.
+            # What matters from these is the 429 column, not err%.
+            bad = op_login(base_url, student, password="definitely-wrong")
+            bad.kind = "login-typo"
+            out.append(bad)
+        out.append(op_login(base_url, student))
+        return out
+    if scenario == "password":
+        return [op_change_password(base_url, student)]
+    if scenario == "mixed":
+        # Proportions of an actual club meeting: most students working
+        # through the test, a few arriving late, one or two changing the
+        # password they were just given.
+        bucket = index % 10
+        if bucket == 0:
+            return [op_change_password(base_url, student)]
+        if bucket == 1:
+            return [op_login(base_url, student)]
+        if bucket == 2:
+            return [op_browse(base_url, student)]
+        return op_answer_round(base_url, test_id, student, think)
+    raise LoadTestError(f"unknown scenario: {scenario}")
+
+
+def run_step(base_url: str, test_id: str, students: list[SyntheticStudent],
+             scenario: str = "answer", think: tuple = JITTER_RANGE_S) -> list[OpResult]:
+    """Every student acts at once — genuinely concurrent, one thread each,
+    all released together rather than trickled in."""
+    all_results: list[OpResult] = []
     with ThreadPoolExecutor(max_workers=len(students)) as pool:
-        futures = [pool.submit(run_one_student, base_url, test_id, s) for s in students]
+        futures = [pool.submit(_student_work, scenario, base_url, test_id, s, i, think)
+                   for i, s in enumerate(students)]
         for f in futures:
             all_results.extend(f.result())
     return all_results
 
 
-def summarize(step_n: int, results: list[SaveResult]) -> dict:
-    latencies = [r.elapsed for r in results if r.ok]
-    errors = [r for r in results if not r.ok]
-    p95 = (statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20
-           else (max(latencies) if latencies else float("nan")))
-    return {
-        "step": step_n,
-        "saves": len(results),
-        "errors": len(errors),
-        "error_rate": (len(errors) / len(results)) if results else 0.0,
-        "p50": statistics.median(latencies) if latencies else float("nan"),
-        "p95": p95,
-        "max": max(latencies) if latencies else float("nan"),
-        "sample_errors": [e.error for e in errors[:3]],
-    }
+def summarize_by_kind(results: list[OpResult]) -> dict:
+    """Per-activity stats. A mixed run averaged into one number would hide
+    the thing worth finding: whether the slow path drags the fast one down."""
+    out = {}
+    for kind in sorted({r.kind for r in results}):
+        rows = [r for r in results if r.kind == kind]
+        lat = [r.elapsed for r in rows if r.ok]
+        errs = [r for r in rows if not r.ok]
+        p95 = (statistics.quantiles(lat, n=20)[18] if len(lat) >= 20
+               else (max(lat) if lat else float("nan")))
+        out[kind] = {
+            "ops": len(rows), "errors": len(errs),
+            "error_rate": len(errs) / len(rows) if rows else 0.0,
+            "p50": statistics.median(lat) if lat else float("nan"),
+            "p95": p95, "max": max(lat) if lat else float("nan"),
+            "rate_limited": sum(1 for r in rows if r.status == 429),
+            "sample_errors": [e.error for e in errs[:2]],
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -338,11 +482,31 @@ def main() -> int:
     parser.add_argument("--max-p95-seconds", type=float, default=10.0,
                          help="stop ramping once a step's p95 answer-save latency exceeds this "
                               "many seconds (default 10.0)")
+    parser.add_argument("--scenario", default="answer", choices=SCENARIOS,
+                         help="what the students do concurrently. answer=autosave hot path "
+                              "(default); login=fresh simultaneous logins; login-storm=logins "
+                              "with some wrong passwords from one IP, to exercise the per-IP "
+                              "rate limiter; password=simultaneous password changes (holds the "
+                              "global user lock across two scrypt hashes); mixed=a club "
+                              "meeting, reported per activity")
+    parser.add_argument("--think-time", default="0.05,0.25", metavar="MIN,MAX",
+                         help="seconds to pause between a student's successive answer saves "
+                              "(default 0.05,0.25 = burst). Use something like 3,15 to "
+                              "simulate students actually reading the questions.")
     parser.add_argument("--yes", action="store_true",
                          help="skip the typed confirmation prompt (for repeat/scripted use only)")
     args = parser.parse_args()
 
     base_url = args.url.rstrip("/")
+    try:
+        lo, hi = (float(x) for x in args.think_time.split(","))
+        if lo < 0 or hi < lo:
+            raise ValueError
+        think = (lo, hi)
+    except ValueError:
+        print("ERROR: --think-time must be MIN,MAX seconds with 0 <= MIN <= MAX",
+              file=sys.stderr)
+        return 2
     try:
         steps = parse_steps(args.steps)
     except LoadTestError as e:
@@ -358,6 +522,9 @@ def main() -> int:
     print(f"  {base_url}")
     print(f"test_id={args.test_id}  season_id={args.season_id}")
     print(f"Ramp steps (concurrent students): {steps}")
+    print(f"Scenario: {args.scenario}"
+          + (f"   think-time between saves: {think[0]}-{think[1]}s"
+             if args.scenario in ("answer", "mixed") else ""))
     print("Only synthetic loadtest_* accounts are created/used; no real student data is touched.")
     print("Run this off-hours.")
     print("=" * 70)
@@ -391,35 +558,55 @@ def main() -> int:
             s.session = login(base_url, s.username, s.password)
 
         print()
-        header = (f"{'students':>9} | {'saves':>6} | {'errors':>6} | {'err%':>6} | "
-                  f"{'p50s':>7} | {'p95s':>7} | {'maxs':>7}")
+        header = (f"{'students':>9} | {'activity':>9} | {'ops':>5} | {'errors':>6} | "
+                  f"{'err%':>6} | {'429s':>5} | {'p50s':>7} | {'p95s':>7} | {'maxs':>7}")
         print(header)
         print("-" * len(header))
 
         broke = False
+        by_kind: dict = {}
         for n in steps:
             active = students[:n]
-            results = run_step(base_url, args.test_id, active)
-            stats = summarize(n, results)
-            print(f"{stats['step']:>9} | {stats['saves']:>6} | {stats['errors']:>6} | "
-                  f"{stats['error_rate'] * 100:>5.1f}% | {stats['p50']:>7.2f} | "
-                  f"{stats['p95']:>7.2f} | {stats['max']:>7.2f}")
-            for e in stats["sample_errors"]:
-                print(f"    e.g. {e}")
+            results = run_step(base_url, args.test_id, active, args.scenario, think)
+            by_kind = summarize_by_kind(results)
 
-            p95_broke = not math.isnan(stats["p95"]) and stats["p95"] > args.max_p95_seconds
-            if stats["error_rate"] > args.max_error_rate or p95_broke:
-                print(f"\n>>> Breaking point reached at {n} concurrent students (error rate "
-                      f"{stats['error_rate'] * 100:.1f}% or p95 {stats['p95']:.2f}s past "
-                      f"threshold). Stopping ramp.")
+            worst_p95, worst_err = 0.0, 0.0
+            for kind, st in by_kind.items():
+                p95 = 0.0 if math.isnan(st["p95"]) else st["p95"]
+                if kind not in EXPECTED_FAILURE_KINDS:
+                    worst_p95 = max(worst_p95, p95)
+                    worst_err = max(worst_err, st["error_rate"])
+                print(f"{n:>9} | {kind:>9} | {st['ops']:>5} | {st['errors']:>6} | "
+                      f"{st['error_rate'] * 100:>5.1f}% | {st['rate_limited']:>5} | "
+                      f"{st['p50']:>7.2f} | {st['p95']:>7.2f} | {st['max']:>7.2f}")
+                for e in st["sample_errors"]:
+                    print(f"    e.g. {e}")
+
+            # Judge the ramp on the worst activity, not an average: a
+            # scenario is only as usable as its slowest path.
+            if worst_err > args.max_error_rate or worst_p95 > args.max_p95_seconds:
+                print(f"\n>>> Breaking point reached at {n} concurrent students "
+                      f"(worst activity: {worst_err * 100:.1f}% errors, "
+                      f"p95 {worst_p95:.2f}s). Stopping ramp.")
                 broke = True
                 break
             if n != steps[-1]:
                 time.sleep(STEP_PAUSE_SECONDS)
 
         if not broke:
-            print(f"\nNo breaking point hit up to {steps[-1]} concurrent students — try a "
-                  f"larger --steps list to find the real ceiling.")
+            print(f"\nNo breaking point hit up to {steps[-1]} concurrent students. "
+                  f"Try a larger --steps list to find the real ceiling.")
+        if args.scenario == "mixed":
+            print("\nIn a mixed run, compare the 'answer'/'browse' rows against 'password': if "
+                  "the cheap paths slow down in step with the expensive one, they are queueing "
+                  "behind the same global user lock (auth.py's _users_lock) rather than "
+                  "competing for CPU.")
+        if any(st["rate_limited"] for st in by_kind.values()):
+            print("\n>>> Some requests got HTTP 429. review_app's login rate limiter counts "
+                  "FAILED ATTEMPTS PER SOURCE IP (5 per 15 min), and a room of students shares "
+                  "one public IP, so a handful of mistyped passwords can lock out everyone "
+                  "else, correct password or not.")
+
     finally:
         disable_synthetic_students(base_url, coach, students)
         print("\nReminder: the throwaway season/window/test itself was not touched by this "
