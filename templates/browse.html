@@ -179,11 +179,13 @@ header{background:#fff;border-bottom:1px solid var(--line)}
     <div class="muted" style="font-size:11px;padding:6px 14px 2px">Format</div>
     <button class="ghost" data-export="csv" style="display:block;width:100%;text-align:left;padding:6px 14px">CSV</button>
     <button class="ghost" data-export="json" style="display:block;width:100%;text-align:left;padding:6px 14px">JSON</button>
-    <button class="ghost" data-export="md-plain" title="Questions and answers as they appear in the bank" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — plain</button>
-    <button class="ghost" data-export="md-key" title="Questions first, then a separate answer-key section — print the top half as a test, keep the rest" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — key at end</button>
+    <button class="ghost" data-export="md-none" title="Questions only — nothing that gives the answers away" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — questions only</button>
     <button class="ghost" data-export="md-inline" title="Each answer immediately under its own question" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — answers inline</button>
+    <button class="ghost" data-export="md-key" title="Questions first, then a separate answer-key section — hand out the top half, keep the rest" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — key at end</button>
     <button class="ghost" data-export="apkg" title="Anki deck, sub-decked by topic. Whole bank only. Requires server-side `pip install genanki`." style="display:block;width:100%;text-align:left;padding:6px 14px">Anki deck <span class="muted">(whole bank)</span></button>
-    <button class="ghost" data-export="pdf" title="Printable PDF, answer key at the end. Works with any scope. Requires server-side `pip install reportlab`." style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF</button>
+    <button class="ghost" data-export="pdf-none" title="Printable PDF, questions only — nothing that gives the answers away" style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF — questions only</button>
+    <button class="ghost" data-export="pdf-inline" title="Printable PDF with each answer under its own question" style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF — answers inline</button>
+    <button class="ghost" data-export="pdf-key" title="Printable PDF, answer key on its own page at the end" style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF — key at end</button>
   </div>
   {% include "_user_badge.html" %}
 </header>
@@ -1388,9 +1390,9 @@ function csvFrom(rows){
 
 // Mirrors testing.py's render_questions_markdown layouts, so a bank export
 // and a printed test read the same way:
-//   "plain"  — question then its answer, as the bank holds it
+//   "none"   — questions only, nothing that gives the answers away
+//   "inline" — each answer printed under its own question
 //   "key"    — every question, then one answer-key section at the end
-//   "inline" — same as plain, kept distinct so the naming matches the server
 function markdownFrom(rows, layout){
   const esc0 = t => {
     const s = (t || "").replace(/^\s+/, "");
@@ -1407,7 +1409,7 @@ function markdownFrom(rows, layout){
     (q.images || []).forEach(f => { md += `> *[figure: \`${f}\`]*\n\n`; });
     if(q.choices && q.choices.length)
       md += q.choices.map(c => `- **${c.letter}.** ${c.text}`).join("\n") + "\n\n";
-    if(layout !== "key" && q.answer) md += `**Answer:** ${q.answer}\n\n`;
+    if(layout === "inline" && q.answer) md += `**Answer:** ${q.answer}\n\n`;
     md += "---\n\n";
   });
   if(layout === "key"){
@@ -1418,16 +1420,26 @@ function markdownFrom(rows, layout){
   return md;
 }
 
-document.getElementById("export_menu").addEventListener("click", e => {
+// async because the PDF branch awaits downloadServerExport(); `await` in a
+// non-async handler is a SyntaxError that takes down this whole <script>,
+// not just the export menu.
+document.getElementById("export_menu").addEventListener("click", async e => {
   const btn = e.target.closest("[data-export]");
   if(!btn || btn.disabled) return;
   const kind = btn.dataset.export;
   const scope = exportScope();
 
-  // Whole-bank CSV/JSON still go through the server route: it adds the
+  // "pdf-key" / "md-none" carry the answer layout in the name; plain
+  // formats have none.
+  const dash = kind.indexOf("-");
+  const fmt = dash === -1 ? kind : kind.slice(0, dash);
+  const layout = dash === -1 ? "" : kind.slice(dash + 1);
+
+  // Whole-bank CSV/JSON/Anki/PDF go through the server route: it adds the
   // shared case-study contexts that the client copy doesn't carry.
-  if(scope === "all" && (kind === "csv" || kind === "json" || kind === "apkg" || kind === "pdf")){
-    window.location.href = `${API}/export.${kind}`;
+  if(scope === "all" && (fmt === "csv" || fmt === "json" || fmt === "apkg" || fmt === "pdf")){
+    const qs = fmt === "pdf" ? `?layout=${encodeURIComponent(layout)}` : "";
+    window.location.href = `${API}/export.${fmt}${qs}`;
     document.getElementById("export_menu").classList.remove("on");
     return;
   }
@@ -1441,33 +1453,36 @@ document.getElementById("export_menu").addEventListener("click", e => {
   // PDF can only be rendered server-side, so a subset means telling the
   // server which questions — in the order shown, since that's the order the
   // coach just sorted them into.
-  if(kind === "pdf"){
+  if(fmt === "pdf"){
     document.getElementById("export_menu").classList.remove("on");
-    await downloadServerExport("pdf", rows, scope);
+    await downloadServerExport("pdf", rows, scope, layout);
     return;
   }
-  if(kind === "csv"){
+  if(fmt === "csv"){
     downloadBlob(csvFrom(rows), "text/csv", `${EVENT_SLUG}${suffix}.csv`);
-  } else if(kind === "json"){
+  } else if(fmt === "json"){
     downloadBlob(JSON.stringify(rows, null, 2), "application/json", `${EVENT_SLUG}${suffix}.json`);
-  } else if(kind.startsWith("md-")){
-    const layout = kind.slice(3);
+  } else if(fmt === "md"){
+    // Name the file after what's in it — three layouts landing on one
+    // filename is how you end up handing out the copy with the answers.
+    const tag = layout === "key" ? "-with-key"
+              : layout === "none" ? "-questions" : "-answers";
     downloadBlob(markdownFrom(rows, layout), "text/markdown",
-                 `${EVENT_SLUG}${suffix}${layout === "key" ? "-with-key" : ""}.md`);
+                 `${EVENT_SLUG}${suffix}${tag}.md`);
   }
   document.getElementById("export_menu").classList.remove("on");
 });
 
 // POST the chosen questions and save whatever comes back. Used for formats
 // the browser can't build itself; the fetch patch attaches the CSRF token.
-async function downloadServerExport(fmt, rows, scope){
+async function downloadServerExport(fmt, rows, scope, layout){
   const keys = rows.map(q => ({bucket: q._bucket, number: String(q.number)}));
   toast(`Building ${fmt.toUpperCase()} for ${keys.length} question${keys.length === 1 ? "" : "s"}…`, "ok");
   let r;
   try {
     r = await fetch(`${API}/export.${fmt}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({keys, label: scope}),
+      body: JSON.stringify({keys, label: scope, layout}),
     });
   } catch(e){ toast("Export request failed.", "err"); return; }
   if(!r.ok){

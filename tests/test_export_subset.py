@@ -54,9 +54,10 @@ def client(monkeypatch):
 
     seen = {}
 
-    def spy(all_qs, ctx=None, filename_stem=""):
+    def spy(all_qs, ctx=None, filename_stem="", layout="key"):
         seen["numbers"] = [q["number"] for q in all_qs]
         seen["stem"] = filename_stem
+        seen["layout"] = layout
         return Response(b"%PDF-fake", mimetype="application/pdf",
                         headers={"Content-Disposition":
                                  f"attachment; filename={filename_stem}.pdf"})
@@ -139,3 +140,54 @@ def test_subset_export_still_requires_csrf(client):
     c, _h, slug, _seen = client
     r = c.post(f"/event/{slug}/api/export.pdf", json={"keys": _keys(1)})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Answer layout (shared vocabulary with the markdown export)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("layout", ["none", "inline", "key"])
+def test_each_layout_reaches_the_renderer(client, layout):
+    c, h, slug, seen = client
+    r = c.post(f"/event/{slug}/api/export.pdf", headers=h,
+               json={"keys": _keys(1), "label": "sel", "layout": layout})
+    assert r.status_code == 200
+    assert seen["layout"] == layout
+
+
+def test_layout_defaults_to_key_when_unspecified(client):
+    c, h, slug, seen = client
+    c.post(f"/event/{slug}/api/export.pdf", headers=h,
+           json={"keys": _keys(1), "label": "sel"})
+    assert seen["layout"] == "key"
+
+
+def test_an_unknown_layout_is_refused_rather_than_defaulted(client):
+    # Quietly falling back to "key" would hand back a copy showing every
+    # answer to someone who asked for a clean question sheet.
+    c, h, slug, _seen = client
+    r = c.post(f"/event/{slug}/api/export.pdf", headers=h,
+               json={"keys": _keys(1), "layout": "answers-please"})
+    assert r.status_code == 400
+    assert "unknown layout" in r.get_json()["error"]
+
+
+def test_layout_is_accepted_from_the_query_string_for_whole_bank_export(client):
+    c, _h, slug, seen = client
+    assert c.get(f"/event/{slug}/api/export.pdf?layout=none").status_code == 200
+    assert seen["layout"] == "none"
+    assert c.get(f"/event/{slug}/api/export.pdf?layout=nope").status_code == 400
+
+
+def test_filenames_distinguish_the_layouts(client):
+    # Three layouts landing on one filename is how the copy with the
+    # answers gets handed out by mistake.
+    c, h, slug, _seen = client
+    names = {}
+    for layout in ("none", "inline", "key"):
+        r = c.post(f"/event/{slug}/api/export.pdf", headers=h,
+                   json={"keys": _keys(1), "label": "sel", "layout": layout})
+        names[layout] = r.headers["Content-Disposition"]
+    assert len(set(names.values())) == 3, names
+    assert "questions" in names["none"]
+    assert "answers" in names["inline"]

@@ -3647,6 +3647,17 @@ def api_export(event_slug, fmt):
         # same way every other user-supplied filename in this app is.
         subset_label = secure_filename(str(payload.get("label") or "subset"))[:40] or "subset"
 
+    # Answer layout, accepted from the query string (GET, whole bank) or the
+    # body (POST, subset). Rejected rather than defaulted when unrecognised:
+    # silently handing back a copy that shows the answers when the caller
+    # asked for a clean one is the failure worth refusing.
+    layout = (request.args.get("layout")
+              or (request.get_json(silent=True) or {}).get("layout")
+              or "key")
+    if layout not in EXPORT_LAYOUTS:
+        return jsonify({"error": f"unknown layout {layout!r}; "
+                                 f"expected one of {', '.join(EXPORT_LAYOUTS)}"}), 400
+
     def _filename(ext: str) -> str:
         stem = bqb.EVENT.slug + (f"-{subset_label}" if subset_label else "")
         return f"{stem}.{ext}"
@@ -3692,7 +3703,10 @@ def api_export(event_slug, fmt):
         err = _optional_dep_error("reportlab")
         if err:
             return jsonify({"error": err}), 400
-        return _export_pdf(all_qs, bqb._all_contexts(), _filename("").rstrip("."))
+        stem = _filename("").rstrip(".")
+        if layout != "key":
+            stem += "-" + ("questions" if layout == "none" else "answers")
+        return _export_pdf(all_qs, bqb._all_contexts(), stem, layout)
     return jsonify({"error": f"unsupported format: {fmt}"}), 400
 
 
@@ -3720,11 +3734,25 @@ def _optional_dep_error(module: str) -> str | None:
                 f"{sys.executable} -m pip install {module}")
 
 
+#: The three answer layouts, shared by the PDF and markdown exports so the
+#: same words mean the same thing in both. Mirrors assessments.py's
+#: render_questions_markdown(answers=...) vocabulary.
+EXPORT_LAYOUTS = ("none", "inline", "key")
+
+
 def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
-                filename_stem: str = "") -> "Response":
-    """Generate a printable PDF: questions front-to-back, answer key at the
-    end. One question per logical block, page breaks honoured by reportlab's
-    SimpleDocTemplate platypus flow."""
+                filename_stem: str = "", layout: str = "key") -> "Response":
+    """Generate a printable PDF. One question per logical block, page breaks
+    honoured by reportlab's SimpleDocTemplate platypus flow.
+
+    `layout` picks what happens to the answers, matching the markdown
+    export's options exactly:
+      "none"   -- questions only, nothing to give the answer away
+      "inline" -- each answer printed under its own question
+      "key"    -- questions first, answer key on its own page at the end
+    """
+    if layout not in EXPORT_LAYOUTS:
+        raise ValueError(f"unknown layout: {layout!r}")
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
@@ -3739,7 +3767,8 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
         buf, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
         topMargin=0.75 * inch, bottomMargin=0.75 * inch,
-        title=f"{bqb.EVENT.name} question bank",
+        title=f"{bqb.EVENT.name} question bank"
+              + ("" if layout == "none" else " (with answers)"),
     )
 
     styles = getSampleStyleSheet()
@@ -3752,6 +3781,9 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
     meta_style = ParagraphStyle("meta", parent=body,
                                 fontSize=8, textColor="#888",
                                 spaceAfter=4)
+    answer_style = ParagraphStyle("answer", parent=body,
+                                  leftIndent=18, fontSize=10, leading=12,
+                                  textColor="#1a6b32", spaceBefore=2)
 
     def _e(s: str) -> str:
         # reportlab.Paragraph parses XML, so escape the basics.
@@ -3828,18 +3860,21 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
                 if q.get("focus"):   meta_bits.append(f"focus: {_e(q['focus'])}")
                 if meta_bits:
                     block.append(Paragraph(" · ".join(meta_bits), meta_style))
+                answer_text = (pairs_str if q.get("qtype") == "matching"
+                               else _e(q.get("answer") or "—"))
+                if layout == "inline":
+                    # Inside the KeepTogether block, so an answer can never
+                    # be orphaned onto the next page away from its question.
+                    block.append(Paragraph(f"<b>Answer:</b> {answer_text}", answer_style))
                 block.append(Spacer(1, 6))
                 story.append(KeepTogether(block))
-                if q.get("qtype") == "matching":
-                    answer_lines.append(f"Q{n}: {pairs_str}")
-                else:
-                    answer_lines.append(f"Q{n}: {_e(q.get('answer') or '—')}")
+                answer_lines.append(f"Q{n}: {answer_text}")
 
-    # Answer key page
-    story.append(PageBreak())
-    story.append(Paragraph("Answer Key", h1))
-    for line in answer_lines:
-        story.append(Paragraph(line, body))
+    if layout == "key":
+        story.append(PageBreak())
+        story.append(Paragraph("Answer Key", h1))
+        for line in answer_lines:
+            story.append(Paragraph(line, body))
 
     doc.build(story)
     data = buf.getvalue()
