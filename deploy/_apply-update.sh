@@ -39,6 +39,21 @@ log() { echo "$(date -Is) $*" >> "$LOG"; }
 
 SHA=$(git -C "$SRC" rev-parse --short HEAD)
 
+# Drift warning, never self-update.
+#
+# This script is installed once by provision-host.sh and runs as root under
+# a NOPASSWD grant naming this exact path. Refreshing itself from the repo
+# would hand root to anyone who can land a commit on the tracked branch,
+# which is the whole reason the privileged half is a separate, fixed file.
+# So it only says when it has fallen behind — acting on that is a deliberate
+# root action for a human.
+SELF="${BASH_SOURCE[0]}"
+if [ -f "$SRC/deploy/_apply-update.sh" ] &&    ! cmp -s "$SRC/deploy/_apply-update.sh" "$SELF"; then
+  log "WARNING: $SELF differs from deploy/_apply-update.sh at $SHA."
+  log "         Refresh it deliberately, as root:"
+  log "           install -o root -g root -m 750 $SRC/deploy/_apply-update.sh $SELF"
+fi
+
 # Glob expanded relative to $SRC, not the script's own cwd — otherwise *.py
 # would expand against wherever this script happens to be invoked from.
 cd "$SRC"

@@ -86,3 +86,35 @@ def test_the_archive_event_map_reaches_the_git_backup():
     """Hand-curated, tiny, and caught by neither mechanism by default:
     backup-bulk-data.sh iterates '*/' so it skips top-level files."""
     assert "archive_event_map.json" in _read("backup-extracted-data.sh")
+
+
+def test_the_privileged_script_never_updates_itself():
+    """The privilege boundary this whole split exists for.
+
+    qbank-apply-update.sh runs as root under a NOPASSWD grant naming its
+    exact path. If it refreshed itself from the fetched repo, anyone able to
+    land a commit on the tracked branch would get root on the next deploy —
+    which is precisely what keeping the privileged half a fixed, separate
+    file prevents.
+    """
+    apply_sh = _read("_apply-update.sh")
+    for line in apply_sh.splitlines():
+        stripped = line.strip()
+        # Comments and log/echo lines print the refresh command on purpose —
+        # a human running it as root is the supported path. Only an actual
+        # invocation would be the problem.
+        if stripped.startswith(("#", "log ", "echo ")):
+            continue
+        if re.match(r"(cp|install|rsync)\b.*deploy/_apply-update\.sh", stripped):
+            pytest.fail(f"self-update would break the privilege boundary: {stripped}")
+
+
+def test_both_installed_scripts_warn_when_they_fall_behind():
+    """provision-host.sh installs these two once and no deploy refreshes
+    them, so a fix to deploy/*.sh reaches the instance directories while the
+    copies that actually run stay as they were. Silent, and indistinguishable
+    from the fix being applied."""
+    for name in ("_apply-update.sh", "update-from-github.sh"):
+        text = _read(name)
+        assert "cmp -s" in text, f"{name} does not detect its own drift"
+        assert "BASH_SOURCE" in text, f"{name} does not compare against itself"

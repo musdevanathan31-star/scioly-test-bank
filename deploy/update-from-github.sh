@@ -68,6 +68,17 @@ git -C "$SRC" reset --hard "origin/$REF" 2>/dev/null || true   # no-op for a pin
 SHA=$(git -C "$SRC" rev-parse --short HEAD)
 log "Fetched $REF @ $SHA"
 
+# Same drift warning as qbank-apply-update.sh, for this script. Both are
+# installed once by provision-host.sh and are never refreshed by a deploy —
+# so a change to deploy/*.sh reaches the instance directories (they are in
+# CODE_PATHS) while the copies that actually run stay as they were. That is
+# silent, and it is how a deploy-script fix can look applied without being.
+SELF="${BASH_SOURCE[0]}"
+if [ -f "$SRC/deploy/update-from-github.sh" ] &&    ! cmp -s "$SRC/deploy/update-from-github.sh" "$SELF"; then
+  echo "WARNING: $SELF is out of date relative to $REF @ $SHA."
+  echo "         Refresh it:  cp $SRC/deploy/update-from-github.sh $SELF"
+fi
+
 # Into qbank-deploy's OWN venv, for validation only. The serving venv
 # (/opt/qbank/venv) is a different one and is updated by
 # qbank-apply-update.sh — installing here does not reach the running app.
