@@ -611,7 +611,11 @@ def _open_target_pdf(pdfname: str, target: str) -> fitz.Document:
     membership check, not just _safe_join's containment check, is what
     prevents that."""
     test_pdf = bqb.BASE_DIR / pdfname
-    if not target or target == "assessment":
+    # "test" here is the wire value the frontend sends (?target=test, and
+    # PD_PAGE_COUNTS in event_index.html), naming the TEST PDF as opposed
+    # to the key or a supplementary doc. It is external-test vocabulary,
+    # not the renamed Assessment concept, and must not follow that rename.
+    if not target or target == "test":
         return _open_pdf(pdfname)
     if target == "key":
         path = _key_path(test_pdf)
@@ -687,7 +691,10 @@ def _explained_filenames(base_dir: Path) -> tuple[set[str], list[Path]]:
         if not m:
             continue
         explained.add(f.name)
-        if m.group(1).lower() == "assessment":
+        # _FILENAME_ROLE_RE captures "test" or "key" from a filename on
+        # disk (<prefix>_<year>_<div>_<source>_test.pdf). Comparing to
+        # anything else can never match.
+        if m.group(1).lower() == "test":
             test_files.append(f)
     for f in test_files:
         pdf_form = f if f.suffix.lower() == ".pdf" else f.with_suffix(".pdf")
@@ -2068,7 +2075,9 @@ def api_pdf_page_counts(event_slug, pdfname):
     _select_event(event_slug)
     test_doc = _open_pdf(pdfname)
     key_path = _key_path(bqb.BASE_DIR / pdfname)
-    return jsonify({"assessment": test_doc.page_count,
+    # Key name is part of this endpoint's contract with event_index.html
+    # (counts.test / counts.key), and refers to the test PDF.
+    return jsonify({"test": test_doc.page_count,
                     "key": (fitz.open(str(key_path)).page_count if key_path else None)})
 
 
