@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Tests · {{ school_name }} Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>Assessments · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .wrap{padding:18px;max-width:1040px;margin:0 auto}
@@ -33,7 +33,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 <script>{{ common_js|safe }}</script>
 <header>
   <a href="{{ request.script_root }}/" style="margin-right:10px">←</a>
-  <h1>Tests</h1>
+  <h1>Assessments</h1>
   <span id="msg" class="muted"></span>
   {% include "_user_badge.html" %}
 </header>
@@ -62,7 +62,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     {% if current_user.role == "coach" and selected %}
     <div class="new-window">
       <details>
-        <summary>+ New test window</summary>
+        <summary>+ New assessment window</summary>
         <div class="form-grid">
           <label for="nw_label">Label</label>
           <input id="nw_label" type="text" placeholder="e.g. Wednesday July 20 (optional — derived from dates if blank)">
@@ -90,7 +90,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
   </section>
 
   {% if not windows %}
-  <section><p class="muted">No test windows yet for this season.</p></section>
+  <section><p class="muted">No assessment windows yet for this season.</p></section>
   {% endif %}
 
   {% for entry in windows %}
@@ -102,13 +102,13 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       {% if current_user.role == "coach" and hard_delete_enabled() %}
       <button class="ghost purge-window-btn" data-window="{{ w.window_id }}"
               data-label="{{ w.label or w.opens_at[:10] }}" style="color:var(--bad);margin-left:auto"
-              title="Permanently delete this test window, its tests and every student response under it.">🗑 Delete window</button>
+              title="Permanently delete this assessment window, its assessments and every student response under it.">🗑 Delete window</button>
       {% endif %}
     </div>
-    {% for et in entry.tests %}
-    <div class="event-row" data-test-id="{{ et.test.test_id }}">
+    {% for et in entry.assessments %}
+    <div class="event-row" data-assessment-id="{{ et.assessment.assessment_id }}">
       <span class="name">{{ et.event_slug }}</span>
-      <span class="badge {{ 'badge-ok' if et.test.status in ('published','live','released') else 'badge-neutral' if et.test.status == 'preparing' else 'badge-warn' }}">{{ et.test.status }}</span>
+      <span class="badge {{ 'badge-ok' if et.assessment.status in ('published','live','released') else 'badge-neutral' if et.assessment.status == 'preparing' else 'badge-warn' }}">{{ et.assessment.status }}</span>
       {% if current_user.role == "coach" %}
       <span class="vols">
         <button type="button" class="ghost assign-btn" data-event="{{ et.event_slug }}" data-window="{{ w.window_id }}"
@@ -119,34 +119,34 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       {% else %}
       <span class="vols muted">{{ et.assigned|join(', ') or "(no volunteers assigned)" }}</span>
       {% endif %}
-      <a href="{{ url_for('test_builder_page', test_id=et.test.test_id) }}">
-        <button class="ghost">{{ "Prepare" if et.test.status == "preparing" else "View" }}</button>
+      <a href="{{ url_for('assessment_builder_page', assessment_id=et.assessment.assessment_id) }}">
+        <button class="ghost">{{ "Prepare" if et.assessment.status == "preparing" else "View" }}</button>
       </a>
-      <a href="{{ url_for('api_export_test_markdown', test_id=et.test.test_id, which='test') }}"
-         title="Download this test as markdown, for administering it on paper">
+      <a href="{{ url_for('api_export_assessment_markdown', assessment_id=et.assessment.assessment_id, which='test') }}"
+         title="Download this assessment as markdown, for administering it on paper">
         <button class="ghost">&#11015; Test</button></a>
-      <a href="{{ url_for('api_export_test_markdown', test_id=et.test.test_id, which='key') }}"
+      <a href="{{ url_for('api_export_assessment_markdown', assessment_id=et.assessment.assessment_id, which='key') }}"
          title="Download the same questions with an answer key section after them">
         <button class="ghost">&#11015; Key</button></a>
       {% if current_user.role == "coach" and hard_delete_enabled() %}
-      <button class="ghost purge-test-btn" data-test="{{ et.test.test_id }}"
+      <button class="ghost purge-test-btn" data-test="{{ et.assessment.assessment_id }}"
               data-label="{{ et.event_slug }} test" style="color:var(--bad)"
-              title="Permanently delete this test and every student response to it.">🗑</button>
+              title="Permanently delete this assessment and every student response to it.">🗑</button>
       {% endif %}
-      {% if et.test.status in ("live", "closed", "graded", "released") %}
-      <a href="{{ url_for('test_grading_page', test_id=et.test.test_id) }}">
+      {% if et.assessment.status in ("live", "closed", "graded", "released") %}
+      <a href="{{ url_for('assessment_grading_page', assessment_id=et.assessment.assessment_id) }}">
         <button class="ghost">Grade</button>
       </a>
       {% endif %}
       {% if current_user.role == "coach" %}
-        {% if et.test.status == "published" %}
-        <button class="primary go-live-btn" data-test="{{ et.test.test_id }}">Go live</button>
+        {% if et.assessment.status == "published" %}
+        <button class="primary go-live-btn" data-test="{{ et.assessment.assessment_id }}">Go live</button>
         {% endif %}
-        {% if et.test.status in ("published", "live") %}
-        <button class="unpublish-btn" data-test="{{ et.test.test_id }}">Un-publish</button>
+        {% if et.assessment.status in ("published", "live") %}
+        <button class="unpublish-btn" data-test="{{ et.assessment.assessment_id }}">Un-publish</button>
         {% endif %}
-        {% if et.test.status == "live" %}
-        <button class="ghost makeup-btn" data-test="{{ et.test.test_id }}">+ Makeup window</button>
+        {% if et.assessment.status == "live" %}
+        <button class="ghost makeup-btn" data-test="{{ et.assessment.assessment_id }}">+ Makeup window</button>
         {% endif %}
       {% endif %}
     </div>
@@ -194,7 +194,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 <script>
 const CANDIDATES_BY_EVENT = {{ candidates_by_event|tojson }};
 document.getElementById("season_picker").addEventListener("change", (e) => {
-  location.href = `${APP_ROOT}/tests?season=${encodeURIComponent(e.target.value)}`;
+  location.href = `${APP_ROOT}/assessments?season=${encodeURIComponent(e.target.value)}`;
 });
 
 // Default the new-window form to next Wednesday 1:30-2:30 PM from today —
@@ -223,7 +223,7 @@ if(opensEl){
     const closes_at = document.getElementById("nw_closes").value;
     const event_slugs = [...document.querySelectorAll("#nw_events input:checked")].map(c => c.value);
     const msgEl = document.getElementById("nw_msg");
-    const r = await fetch(`${APP_ROOT}/api/test-windows`, {
+    const r = await fetch(`${APP_ROOT}/api/assessment-windows`, {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({season_id: {{ (selected.season_id if selected else None)|tojson }},
                             label, opens_at, closes_at, event_slugs}),
@@ -260,7 +260,7 @@ document.getElementById("assign_save").addEventListener("click", async () => {
   if(!_assigningBtn) return;
   const usernames = [...document.querySelectorAll("#assign_check input:checked")].map(c => c.value);
   const errEl = document.getElementById("assign_err");
-  const r = await fetch(`${APP_ROOT}/api/test-windows/${_assigningBtn.dataset.window}/assignments`, {
+  const r = await fetch(`${APP_ROOT}/api/assessment-windows/${_assigningBtn.dataset.window}/assignments`, {
     method: "PATCH", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({event_slug: _assigningBtn.dataset.event, usernames}),
   });
@@ -279,7 +279,7 @@ document.getElementById("assign_save").addEventListener("click", async () => {
 document.querySelectorAll(".go-live-btn").forEach(btn => {
   btn.addEventListener("click", async () => {
     if(!await confirmModal("Go live? Students will see this test as upcoming/current and it can no longer be edited (except via Un-publish).")) return;
-    const r = await fetch(`${APP_ROOT}/tests/${btn.dataset.test}/go-live`, {method: "POST"});
+    const r = await fetch(`${APP_ROOT}/assessments/${btn.dataset.test}/go-live`, {method: "POST"});
     const j = await r.json();
     if(j.ok) location.reload();
     else toast("Failed: " + (j.error||""), "err");
@@ -289,7 +289,7 @@ document.querySelectorAll(".go-live-btn").forEach(btn => {
 document.querySelectorAll(".unpublish-btn").forEach(btn => {
   btn.addEventListener("click", async () => {
     if(!await confirmModal("Un-publish this test? It reverts to 'preparing' for edits. Only allowed before the window opens and before any student has saved an answer.", {danger:true, confirmLabel:"Un-publish"})) return;
-    const r = await fetch(`${APP_ROOT}/tests/${btn.dataset.test}/unpublish`, {method: "POST"});
+    const r = await fetch(`${APP_ROOT}/assessments/${btn.dataset.test}/unpublish`, {method: "POST"});
     const j = await r.json();
     if(j.ok) location.reload();
     else toast("Failed: " + (j.error||""), "err");
@@ -313,7 +313,7 @@ document.getElementById("mk_save").addEventListener("click", async () => {
   const opens_at = document.getElementById("mk_opens").value;
   const closes_at = document.getElementById("mk_closes").value;
   const reason = document.getElementById("mk_reason").value.trim();
-  const r = await fetch(`${APP_ROOT}/api/tests/${makeupTestId}/overrides`, {
+  const r = await fetch(`${APP_ROOT}/api/assessments/${makeupTestId}/overrides`, {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({student_username, opens_at, closes_at, reason}),
   });
@@ -328,9 +328,9 @@ document.getElementById("mk_save").addEventListener("click", async () => {
 <script>
 document.addEventListener("click", async e => {
   const t = e.target.closest(".purge-test-btn");
-  if(t && await hardDelete("test", t.dataset.test, t.dataset.label)) { location.reload(); return; }
+  if(t && await hardDelete("assessment", t.dataset.test, t.dataset.label)) { location.reload(); return; }
   const w = e.target.closest(".purge-window-btn");
-  if(w && await hardDelete("window", w.dataset.window, `window “${w.dataset.label}”`)) location.reload();
+  if(w && await hardDelete("assessment_window", w.dataset.window, `window “${w.dataset.label}”`)) location.reload();
 });
 </script>
 </body></html>

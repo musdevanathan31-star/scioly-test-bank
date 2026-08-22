@@ -4,15 +4,15 @@ A task-oriented guide: "I want to do X" rather than "how does X work." For *why*
 
 ## Roles at a glance
 
-- **Coach** — full admin. Sees every event, can manage users and shared textbooks, runs Club Management and the Tests dashboard, and can do everything a volunteer can do on every event (not just assigned ones).
-- **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL. May also be assigned to prepare/grade a season test for an event — a separate grant, unrelated to event access (see "For Volunteers" below).
-- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-tests` (take a live test, see released results for past ones) and `/scores` (see everyone's named scores). Logging in takes you straight to My Tests, since there's no bank to land on. See "For Students" below.
+- **Coach** — full admin. Sees every event, can manage users and shared textbooks, runs Club Management and the Assessments dashboard, and can do everything a volunteer can do on every event (not just assigned ones).
+- **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL. May also be assigned to prepare/grade a season assessment for an event — a separate grant, unrelated to event access (see "For Volunteers" below).
+- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-tests` (take a live assessment, see released results for past ones) and `/scores` (see everyone's named scores). Logging in takes you straight to My Assessments, since there's no bank to land on. See "For Students" below.
 
 Log in at `/login` with the username/password a coach gave you.
 
 ## Getting around (any role)
 
-Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Event Management** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club Management**, and **Test management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Tests, Scores, Notifications, Settings, Logout.
+Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Event Management** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club Management**, and **Assessment management** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Assessments, Scores, Notifications, Settings, Logout.
 
 ## Account settings (any role)
 
@@ -182,43 +182,43 @@ A matching question shows a dropdown next to each left-column item listing every
 
 A season groups events, students, and tests under one label (e.g. "2027"). Open **☰ → Club Management**.
 1. Expand **+ New season** — pick a `season_id` (e.g. `2027`), an optional label, and check off which events run this season (its "lineup"). Click **Create**. If this is the very first season this instance has ever had, it's automatically marked current — no extra step needed. A second or later season is **not** auto-switched, so you can stage next year's season ahead of time without disrupting the live one.
-2. If it isn't already current, click **Mark as current** on it — exactly one season is ever current, and that's what "My Tests" defaults to for students. If you skip this, a yellow banner appears on this page and on the Tests dashboard ("⚠ No season is marked current…" or "⚠ You're viewing X, but Y is the current season…") — students won't see any tests until you fix it.
+2. If it isn't already current, click **Mark as current** on it — exactly one season is ever current, and that's what "My Assessments" defaults to for students. If you skip this, a yellow banner appears on this page and on the Assessments dashboard ("⚠ No season is marked current…" or "⚠ You're viewing X, but Y is the current season…") — students won't see any tests until you fix it.
 3. Add students: either one-by-one via **Manage Users** on this same Club Management page (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
-4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Tests" and the Scores page for each student — it has no effect on who can edit that event's question bank.
+4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Assessments" and the Scores page for each student — it has no effect on who can edit that event's question bank.
 5. Running a new season off an old one's roster? Pick the prior season from **Copy roster from…** and click Copy — only events present in both seasons' lineups copy over, and any since-disabled student is silently skipped.
 
-Note: a season's event lineup only scopes the roster grid and which events a test window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.
+Note: a season's event lineup only scopes the roster grid and which events a assessment window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.
 
 ### Prepare and publish a test
 
 On the **Tests** dashboard, pick the season, then:
-1. Expand **+ New test window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
+1. Expand **+ New assessment window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
 2. For each event row, click the **Assign…** button to open a picker — it lists every coach plus every volunteer who has bank-edit access to that specific event, check off who should prepare it, and **Save**. Only people with bank access to that event (or any coach) are offered here.
 3. That coach or volunteer clicks **Prepare** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching default to 1 pt). Autosaves as you go.
 4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already been prepared.
-5. Back on the Tests dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "preparing" — only works before the window opens and before any student has saved an answer.
+5. Back on the Assessments dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "preparing" — only works before the window opens and before any student has saved an answer.
 
-### Run a test window and grade results
+### Run a assessment window and grade results
 
 On the **Grade** page each free-response answer has a **✓ Full** button next to its score box — one click awards the maximum points for that question and saves immediately, instead of typing the number in. It greys out once that answer is already at full marks, so you can see at a glance which ones you've already given full credit. Type in the box instead for partial credit.
 
-Once a test is live and its window opens, rostered students see it as "Current" on **My Tests** and can take it (one question at a time, no correctness feedback, countdown to close). After the window closes (or sooner):
-1. Click **Grade** on the test's row (Tests dashboard) — lists every free-response answer needing a score, with the snapshotted reference answer alongside each student's submission. Enter points (capped at that question's max) per answer; autosaves on blur.
+Once a test is live and its window opens, rostered students see it as "Current" on **My Assessments** and can take it (one question at a time, no correctness feedback, countdown to close). After the window closes (or sooner):
+1. Click **Grade** on the test's row (Assessments dashboard) — lists every free-response answer needing a score, with the snapshotted reference answer alongside each student's submission. Enter points (capped at that question's max) per answer; autosaves on blur.
 2. The row's "N/M FRQs graded" badge tracks progress; **Release grades** stays disabled until every FRQ for every submitted response is graded.
-3. Click **Release grades** — this is the one truly coach-only step. It flips every student's response to released in one batch; only after this do students see their results on My Tests, and the test's column on **Scores** shows real numbers instead of "pending release."
+3. Click **Release grades** — this is the one truly coach-only step. It flips every student's response to released in one batch; only after this do students see their results on My Assessments, and the test's column on **Scores** shows real numbers instead of "pending release."
 
 ### Grant a student a makeup window
 
 If a student missed the class-wide window (absence, tech issue, etc.), you can give them an independent open/close window instead of touching the test for everyone else:
-1. On the Tests dashboard, find the live test's row and click **+ Makeup window**.
+1. On the Assessments dashboard, find the live assessment's row and click **+ Makeup window**.
 2. Enter the student's username, an opens/closes datetime, and a short reason. Click **Grant**.
 3. That student can now access the test during their personal window, completely independent of whether the class-wide window is open, closed, or hasn't started yet — it doesn't extend the class window, it's a separate clock that wins outright for that one student. Use the same modal with an earlier/blank window to revoke it later if needed.
 
 ### Permanently deleting things (only if enabled)
 
-Normally nothing in this app is really deleted — "Remove", "Archive" and "Disable" all set a reversible flag. On an instance where the operator has set `ALLOW_HARD_DELETE`, extra red **🗑 Delete** buttons appear for coaches: on users and seasons (Club Management), events (landing page), test windows and individual tests (Tests dashboard), and one student's response (Grade page).
+Normally nothing in this app is really deleted — "Remove", "Archive" and "Disable" all set a reversible flag. On an instance where the operator has set `ALLOW_HARD_DELETE`, extra red **🗑 Delete** buttons appear for coaches: on users and seasons (Club Management), events (landing page), assessment windows and individual tests (Assessments dashboard), and one student's response (Grade page).
 
-These really delete. Before anything happens you get a dialog stating exactly what goes with it — *"This removes: 1 test window, 1 test, 41 student responses."* Read that line; deleting one season can take a whole term of student work with it.
+These really delete. Before anything happens you get a dialog stating exactly what goes with it — *"This removes: 1 assessment window, 1 test, 41 student responses."* Read that line; deleting one season can take a whole term of student work with it.
 
 Two specifics worth knowing:
 
@@ -266,9 +266,9 @@ Identical to the coach's Generate page: wiki scrape, source upload, LLM generati
 
 Same as the coach workflow — **Quiz** from any of your assigned events.
 
-### Preparing or grading a season test you've been assigned to
+### Preparing or grading a season assessment you've been assigned to
 
-A coach can assign you to prepare or grade a test for an event — the assignment picker only offers you for an event if you already have bank-edit access to it (or you're a coach), so this normally lines up with your assigned-events list above. Click **Tests** in the header to see what you've been assigned, then **Prepare** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Prepare and publish a test" / "Run a test window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
+A coach can assign you to prepare or grade a test for an event — the assignment picker only offers you for an event if you already have bank-edit access to it (or you're a coach), so this normally lines up with your assigned-events list above. Click **Tests** in the header to see what you've been assigned, then **Prepare** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Prepare and publish a test" / "Run a assessment window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
 
 ### Checking whether the server is busy before you start something big
 
@@ -276,7 +276,7 @@ The box runs **one worker process per school** and **one background job at a tim
 
 Two things in the UI tell you what's happening without asking anyone:
 
-- **`👥 3 active`** in the page header — people who did something on this server in the last 5 minutes, across all schools' events, not just yours. During a test window it also breaks out how many are students taking a test, which is the heaviest thing this server ever does. No badge means it's just you.
+- **`👥 3 active`** in the page header — people who did something on this server in the last 5 minutes, across all schools' events, not just yours. During a assessment window it also breaks out how many are students taking a test, which is the heaviest thing this server ever does. No badge means it's just you.
 - **`👥 2 others here`** next to an event on the landing page, and on the event's own page — other people are working in that event right now. You're never counted in this one, so any number you see is someone else. Worth a message before you reprocess the PDF they may be mid-review on.
 
 Alongside them, **`⏳ 1 job running`** tells you the queue is already occupied. Seeing that plus a couple of active people is the moment to hold off on a bulk reprocess for a few minutes — nothing will break if you don't, it'll just all be slower for everyone, including you.
@@ -296,7 +296,7 @@ Neither number updates instantly; both refresh about every 20 seconds.
 
 ### Logging in for the first time
 
-A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login` — you land directly on **My Tests**, your home page (there's no question bank to manage, so the navigation menu only shows what you can actually use: My Tests, Scores, Notifications, Settings, Logout). Go to **☰ → Settings → My Account** to change your password whenever you like.
+A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login` — you land directly on **My Assessments**, your home page (there's no question bank to manage, so the navigation menu only shows what you can actually use: My Assessments, Scores, Notifications, Settings, Logout). Go to **☰ → Settings → My Account** to change your password whenever you like.
 
 ### Taking a test
 
@@ -306,7 +306,7 @@ If you missed the window, ask a coach for a personal makeup window — once gran
 
 ### Viewing results and scores
 
-Once a coach releases grades for a test, **My Tests** shows it under Past with your full results — your answers, the correct answers, and your score per question (including partial credit on matching questions). Until release, it just shows as submitted/pending, even if a volunteer has already graded the free-response parts behind the scenes.
+Once a coach releases grades for a test, **My Assessments** shows it under Past with your full results — your answers, the correct answers, and your score per question (including partial credit on matching questions). Until release, it just shows as submitted/pending, even if a volunteer has already graded the free-response parts behind the scenes.
 
 **Scores** (☰ menu, visible to every role) shows every rostered student's named score on every graded test for the season — not just your own. You can only drill into the question-by-question detail of your *own* responses; other students' rows show the score only.
 
@@ -363,12 +363,12 @@ Load each school's landing page and compare the question counts against the old 
 
 ### Measuring server capacity (load testing)
 
-Not a role in the app; this is for whoever needs to know "how many students can log in and take a test at once" before a real tournament. `spec.md`'s `--workers`/lock discussion has the reasoning: `gunicorn --workers` is hard-locked to 1, and `--threads` is the only adjustable knob, so the ceiling depends on how much load one process's thread pool can actually absorb — not computable from CPU/RAM specs. (Response storage itself used to be a second, worse bottleneck — one global file/lock shared by every student on every test — but that's fixed as of the per-`(test_id, username)`-file redesign; see README.md's "Measuring server capacity" for both halves of the story.) The only reliable way to know the remaining ceiling is to measure it.
+Not a role in the app; this is for whoever needs to know "how many students can log in and take an assessment at once" before a real tournament. `spec.md`'s `--workers`/lock discussion has the reasoning: `gunicorn --workers` is hard-locked to 1, and `--threads` is the only adjustable knob, so the ceiling depends on how much load one process's thread pool can actually absorb — not computable from CPU/RAM specs. (Response storage itself used to be a second, worse bottleneck — one global file/lock shared by every student on every test — but that's fixed as of the per-`(test_id, username)`-file redesign; see README.md's "Measuring server capacity" for both halves of the story.) The only reliable way to know the remaining ceiling is to measure it.
 
 **1. Create a throwaway test, by hand, via the normal coach UI:**
 - Club Management → New season (note its `season_id`).
 - Tests → New window, for any one real event with a handful of MCQ/matching questions kept (those autosave on every click with no debounce — the realistic worst case).
-- Publish the test, then go live. Note its `test_id` (visible in the Tests dashboard / its URL).
+- Publish the test, then go live. Note its `test_id` (visible in the Assessments dashboard / its URL).
 
 **2. Run the script** from a machine that can reach the server:
 
@@ -395,8 +395,8 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
 | Create/disable a user | Coach | ☰ → Club Management → Manage Users |
 | Permanently delete a user / season / event | Coach (needs `ALLOW_HARD_DELETE`) | 🗑 Delete on the relevant page |
-| Permanently delete a test window or test | Coach (needs `ALLOW_HARD_DELETE`) | Tests dashboard → 🗑 |
-| Let a student retake a test they submitted | Coach (needs `ALLOW_HARD_DELETE`) | Grade page → 🗑 next to their name |
+| Permanently delete a assessment window or test | Coach (needs `ALLOW_HARD_DELETE`) | Assessments dashboard → 🗑 |
+| Let a student retake an assessment they submitted | Coach (needs `ALLOW_HARD_DELETE`) | Grade page → 🗑 next to their name |
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |
@@ -422,14 +422,14 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Create/mark current a season | Coach | Club Management |
 | Bulk-create students + roster via CSV | Coach | Club Management → + Bulk-add students from CSV |
 | Roster a student onto an event | Coach | Club Management → roster grid |
-| Create a test window, assign coaches/volunteers | Coach | Tests dashboard → Assign… |
-| Prepare a test (pick questions, publish) | Coach, assigned Volunteer | Tests dashboard → Prepare |
-| Go live / un-publish a test | Coach | Tests dashboard |
-| Grant a student a personal makeup window | Coach | Tests dashboard → + Makeup window |
-| Grade free-response answers | Coach, assigned Volunteer | Tests dashboard → Grade |
+| Create a assessment window, assign coaches/volunteers | Coach | Assessments dashboard → Assign… |
+| Prepare a test (pick questions, publish) | Coach, assigned Volunteer | Assessments dashboard → Prepare |
+| Go live / un-publish a test | Coach | Assessments dashboard |
+| Grant a student a personal makeup window | Coach | Assessments dashboard → + Makeup window |
+| Grade free-response answers | Coach, assigned Volunteer | Assessments dashboard → Grade |
 | Award full marks on one answer in one click | Coach, assigned Volunteer | Grade page → ✓ Full next to the score box |
-| Release grades | Coach only | Tests dashboard → Release grades |
-| Take a live test | Student | My Tests |
-| View your own released results | Student | My Tests |
+| Release grades | Coach only | Assessments dashboard → Release grades |
+| Take a live assessment | Student | My Assessments |
+| View your own released results | Student | My Assessments |
 | View season-wide named scores | Coach, Volunteer, Student | Scores |
 | View another student's response detail | Coach; Volunteer who graded it (or assigned, all-MCQ test) | Scores → click a score |

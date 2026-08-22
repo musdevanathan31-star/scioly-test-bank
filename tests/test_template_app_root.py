@@ -1,6 +1,6 @@
 """
 Guard against the class of bug that made student test-taking impossible
-from the day it shipped: templates/test_take.html called `fetch()` with
+from the day it shipped: templates/assessment_take.html (then test_take.html) called `fetch()` with
 `${APP_ROOT}` four times, but APP_ROOT was defined only inside
 _user_badge.html — and the test-taking page is the one page that renders
 no header, so it never included it. Every fetch threw "APP_ROOT is not
@@ -74,11 +74,11 @@ def test_every_template_using_app_root_can_see_it():
     )
 
 
-def test_test_take_specifically_can_see_app_root():
+def test_assessment_take_specifically_can_see_app_root():
     # Named explicitly because this is the page the bug actually broke, and
     # a student hitting it is the least likely person to be able to report
     # a useful console error.
-    assert _can_see_app_root(TEMPLATES / "test_take.html")
+    assert _can_see_app_root(TEMPLATES / "assessment_take.html")
 
 
 def test_definition_is_idempotent_not_a_const():

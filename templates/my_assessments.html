@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>My Tests · {{ school_name }} Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>My Assessments · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .wrap{padding:18px;max-width:760px;margin:0 auto}
@@ -17,7 +17,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
 <script>{{ common_js|safe }}</script>
 <header>
   <a href="{{ request.script_root }}/" style="margin-right:10px">←</a>
-  <h1>My Tests{{ " — " + season.display_label if season }}</h1>
+  <h1>My Assessments{{ " — " + season.display_label if season }}</h1>
   {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
@@ -31,7 +31,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
         <span class="ev">{{ entry.event_slug }}</span>
         <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }} — closes {{ entry.window.closes_at|replace("T", " ") }}</span>
       </div>
-      <a href="{{ url_for('test_take_page', test_id=entry.test.test_id) }}"><button class="primary">
+      <a href="{{ url_for('assessment_take_page', assessment_id=entry.assessment.assessment_id) }}"><button class="primary">
         {{ "Continue" if entry.response and entry.response.status == "in_progress" else "Start" }}
       </button></a>
     </div>
@@ -40,7 +40,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
 
   <section>
     <h2>Upcoming</h2>
-    {% if not upcoming %}<p class="empty">No upcoming tests.</p>{% endif %}
+    {% if not upcoming %}<p class="empty">No upcoming assessments.</p>{% endif %}
     {% for entry in upcoming %}
     <div class="test-row">
       <div class="info">
@@ -54,7 +54,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
 
   <section>
     <h2>Past</h2>
-    {% if not past %}<p class="empty">No past tests yet.</p>{% endif %}
+    {% if not past %}<p class="empty">No past assessments yet.</p>{% endif %}
     {% for entry in past %}
     <div class="test-row">
       <div class="info">
@@ -62,7 +62,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
         <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }}</span>
       </div>
       {% if entry.response and entry.response.released %}
-      <a href="{{ url_for('test_results_page', test_id=entry.test.test_id) }}"><button>View results</button></a>
+      <a href="{{ url_for('assessment_results_page', assessment_id=entry.assessment.assessment_id) }}"><button>View results</button></a>
       {% elif entry.response and entry.response.status in ("submitted", "auto_submitted_late") %}
       <span class="badge badge-warn">submitted — awaiting grading</span>
       {% else %}

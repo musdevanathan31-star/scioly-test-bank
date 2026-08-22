@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Prepare test · {{ event_name }} · {{ school_name }} Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>Prepare assessment · {{ event_name }} · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .wrap{display:flex;gap:16px;padding:18px;max-width:1300px;margin:0 auto}
@@ -29,7 +29,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 <script>{{ common_js|safe }}</script>
 <header>
   <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
-  <h1>Prepare test <span class="muted" style="font-weight:400">— {{ event_name }}{{ " · " + window_label if window_label }}</span></h1>
+  <h1>Prepare assessment <span class="muted" style="font-weight:400">— {{ event_name }}{{ " · " + window_label if window_label }}</span></h1>
   <span id="save_status" class="save-status" style="margin-left:auto"></span>
   {% include "_user_badge.html" %}
 </header>
@@ -47,7 +47,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
         </select>
         <label class="muted" style="font-size:12px"><input type="checkbox" id="f_correct_only" checked> validated correct only</label>
         <label class="muted" style="font-size:12px"
-               title="Questions already kept or published on another test in this season. On by default so a question isn't unknowingly set twice to the same students in one year.">
+               title="Questions already kept or published on another assessment in this season. On by default so a question isn't unknowingly set twice to the same students in one year.">
           <input type="checkbox" id="f_hide_used" checked> hide <span id="used_count">0</span> used this season</label>
       </div>
       <div class="random-bar">
@@ -63,7 +63,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     <section>
       <h3 style="margin:0 0 8px 0;font-size:13px">Kept (<span id="kept_count">0</span>)</h3>
       {% if status != "preparing" %}
-      <p class="muted" style="font-size:12px">This test is <b>{{ status }}</b> — no longer editable here.</p>
+      <p class="muted" style="font-size:12px">This assessment is <b>{{ status }}</b> — no longer editable here.</p>
       {% endif %}
       <div class="kept-list" id="kept_list"></div>
       {% if status == "preparing" %}
@@ -76,7 +76,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
   </div>
 </div>
 <script>
-const TEST_ID = {{ test_id|tojson }};
+const ASSESSMENT_ID = {{ assessment_id|tojson }};
 // Questions already committed to another test in this season (kept or
 // published). Rendered once at page load rather than fetched: the set only
 // changes when someone edits a *different* test, which cannot happen from
@@ -105,7 +105,7 @@ async function loadPool(){
 }
 
 async function loadTest(){
-  const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}`);
+  const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}`);
   const j = await r.json();
   KEPT = j.kept || [];
   renderKept();
@@ -228,7 +228,7 @@ function scheduleSave(){
 
 async function flushSave(){
   try {
-    const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}`, {
+    const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}`, {
       method: "PATCH", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({kept: KEPT}),
     });
@@ -282,14 +282,14 @@ if(publishBtn){
     publishBtn.disabled = true;
     const msgEl = document.getElementById("publish_msg");
     try {
-      const r = await fetch(`${APP_ROOT}/tests/${TEST_ID}/publish`, {method: "POST"});
+      const r = await fetch(`${APP_ROOT}/assessments/${ASSESSMENT_ID}/publish`, {method: "POST"});
       const j = await r.json();
       msgEl.style.display = "";
       if(j.ok){
         msgEl.className = "msg ok";
         msgEl.textContent = `Published ${j.snapshot_count} question(s).`
           + (j.skipped.length ? ` ${j.skipped.length} kept question(s) were removed from the bank and skipped.` : "");
-        setTimeout(() => location.href = `${APP_ROOT}/tests`, 1800);
+        setTimeout(() => location.href = `${APP_ROOT}/assessments`, 1800);
       } else {
         msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed";
         publishBtn.disabled = false;

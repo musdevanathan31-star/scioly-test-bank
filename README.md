@@ -75,7 +75,7 @@ You don't have to declare every possible focus up-front — register the ones yo
 
 ## Suggested slugs for other Sci-Oly events
 
-These aren't shipped yet, but `scioly_tests.json` already contains the metadata. Add a single entry in `events.py` to enable any of them (see [Adding a new event](#adding-a-new-event)).
+These aren't shipped yet, but `scioly_assessments.json` already contains the metadata. Add a single entry in `events.py` to enable any of them (see [Adding a new event](#adding-a-new-event)).
 
 **Best fits** — large corpora and clean topic axes; the pipeline shines here.
 
@@ -119,14 +119,14 @@ These aren't shipped yet, but `scioly_tests.json` already contains the metadata.
 | `reach_for_the_stars` | Reach for the Stars (Div B Astronomy) | 5 |
 | `solar_system` | Solar System | 5 |
 
-**Won't work** — pure construction/build events. `scioly_tests.json` has 0 PDFs for these because there's no written test to extract. Skip:
+**Won't work** — pure construction/build events. `scioly_assessments.json` has 0 PDFs for these because there's no written test to extract. Skip:
 
 Towers · Boomilever · Wright Stuff · Mousetrap Vehicle · Gravity Vehicle · Helicopters · Electric Vehicle · Bottle Rocket · Battery Buggy · Robot Arm · Trajectory · Rollercoaster · Mission Possible · Bridge events.
 
 > **Filename prefix tip:** the prefix is the lowercase event name with spaces and punctuation stripped, matching what's before the first underscore in scioly.org URLs (e.g. `chemistrylab_2022_c_uflorida_test.pdf` → prefix `chemistrylab`). To check before configuring:
 >
 > ```
-> python -c "import json; data=json.load(open('scioly_tests.json'));\
+> python -c "import json; data=json.load(open('scioly_assessments.json'));\
 > from collections import Counter;\
 > p=Counter(d['test_link'].split('/')[-1].split('_')[0] for d in data if 'test_link' in d and 'YOUR_EVENT_NAME'.lower() in d['event'].lower());\
 > print(p.most_common())"
@@ -219,7 +219,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `deletion.py` | Cascade policy for permanent deletion — previews and deletes; gated on `ALLOW_HARD_DELETE` |
 | `presence.py` | In-memory active-user registry behind the header badge and the landing page's per-event counts — see "Who's active right now" |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
-| `scioly_tests.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
+| `scioly_assessments.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |
 | `.env.example` | Template for the Anthropic API key |
 | `.scioly_cookies.json` | Cached Anubis cookies (auto-managed; delete to force a fresh bot-bypass) |
 | `events_custom.json` | Auto-generated registry of every registered event, including the Circuit Lab/Thermodynamics defaults (their curated keyword data lives in `events.py` and is seeded in here on first run, but the live registry entry — and any edits/archiving — lives here) |
@@ -367,7 +367,7 @@ Everything writes back to a single file per event: `<event>/.qbank_state.json`. 
 
     **Where grouping shows up beyond the review page**: the quiz page's "Keep case studies together" checkbox (off by default, so today's behavior is unchanged unless you opt in) expands the selection to pull in every sibling of a picked case-study question and shows the shared passage above each one; `build_markdown()`/the PDF/CSV/JSON exports cluster a case study's questions together with the shared passage rendered once, instead of scattering them across the topic listing.
 
-Writes are atomic (tempfile + `os.replace`) and serialised by a per-event lock, so concurrent saves never leave a half-written JSON on disk. The lock spans the whole load → modify → save cycle for every short request-handler save (annotation edits, Browse-page PATCHes, imports), not just the write itself — so two coaches editing the same event around the same moment can't silently lose one edit to the other (the same guarantee applies to `auth.py`'s users file, `seasons.py`'s seasons/rosters, and `testing.py`'s windows/tests/responses files). The one deliberate exception is a long-running OCR/extraction job's own checkpoint saves, which hold a single in-memory snapshot for the job's full duration rather than re-locking per checkpoint — concurrent edits to a *different* PDF in the same event during that job are unaffected, but an edit to the *same* PDF mid-job can still be overwritten by the job's next checkpoint.
+Writes are atomic (tempfile + `os.replace`) and serialised by a per-event lock, so concurrent saves never leave a half-written JSON on disk. The lock spans the whole load → modify → save cycle for every short request-handler save (annotation edits, Browse-page PATCHes, imports), not just the write itself — so two coaches editing the same event around the same moment can't silently lose one edit to the other (the same guarantee applies to `auth.py`'s users file, `seasons.py`'s seasons/rosters, and `assessments.py`'s windows/tests/responses files). The one deliberate exception is a long-running OCR/extraction job's own checkpoint saves, which hold a single in-memory snapshot for the job's full duration rather than re-locking per checkpoint — concurrent edits to a *different* PDF in the same event during that job are unaffected, but an edit to the *same* PDF mid-job can still be overwritten by the job's next checkpoint.
 
 When the pipeline runs again (CLI or "Reprocess" in the UI), it re-extracts fresh from the PDF then **replays your annotations on top**. So:
 
@@ -400,7 +400,7 @@ The server this app runs on is intentionally underpowered, and several operation
 
 The server is intentionally underpowered and runs **one gunicorn worker per instance** (see "Deploying" — `--workers 1` is load-bearing), with a **single global job queue** on top of it. So two volunteers each kicking off a reprocess isn't twice the throughput, it's one job running and one waiting. Two lightweight indicators exist so nobody has to guess:
 
-- **A header badge on every page**: `👥 3 active`, with `(2 taking tests)` broken out when a test window is live — students are counted because a live test is exactly when the box is busiest. It's hidden at a count of 1, since that's always just you. Whole-instance, deliberately not filtered to your own events: load from an event you can't see slows you down just the same, and a bare count reveals nothing about who or where.
+- **A header badge on every page**: `👥 3 active`, with `(2 taking tests)` broken out when a assessment window is live — students are counted because a live assessment is exactly when the box is busiest. It's hidden at a count of 1, since that's always just you. Whole-instance, deliberately not filtered to your own events: load from an event you can't see slows you down just the same, and a bare count reveals nothing about who or where.
 - **A per-event count** on each event card on the landing page and on the event page itself — `👥 2 others here` — so you can see someone else is already working in an event before starting a long job in it. **You are never counted in your own per-event numbers**, so any number shown means other people; without that, an event only you had visited would report `1` and the phrase would mean two different things in two places.
 
 "Active" means **made a real request in the last 5 minutes**. The two header badges poll themselves every 20s, and those polls are deliberately excluded (`_PRESENCE_EXEMPT_ENDPOINTS` in `review_app.py`) — otherwise every idle open tab would count forever and the number would measure tabs, not people, while correlating with load not at all.
@@ -438,15 +438,15 @@ DATA_ROOT=/mnt/qbank-data
 
 Leave it unset and nothing changes — `DATA_ROOT` defaults to the app directory, so this is purely opt-in. Moving an *existing* instance's data to a new `DATA_ROOT` needs a one-time manual migration — see ["Maintaining the server"](#maintaining-the-server) below; don't just set the variable on a box that already has data in the old location, or the app will look for (and start creating) a second, empty copy at the new path instead of finding what's already there.
 
-What stays with the code regardless of `DATA_ROOT` (none of it grows unboundedly or benefits from a bigger disk): `scioly_tests.json` (shipped, read-only), `.scioly_cookies.json` (small, refreshed every ~7 days), `.env`, `deploy/instances.conf`, `static/`.
+What stays with the code regardless of `DATA_ROOT` (none of it grows unboundedly or benefits from a bigger disk): `scioly_assessments.json` (shipped, read-only), `.scioly_cookies.json` (small, refreshed every ~7 days), `.env`, `deploy/instances.conf`, `static/`.
 
 ## Authentication & roles
 
 The app supports three roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
 
-- **Coach** — full admin. Every event, plus user management (Manage Users, inside **Club Management**), shared-textbook uploads, and the Tests dashboard.
-- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to prepare/grade tests for the [season testing workflow](#season-long-testing-workflow) below — the test-assignment picker only offers volunteers with bank-edit access to that event (plus any coach), though the underlying access check itself remains a separate grant unrelated to event access.
-- **Student** — no question-bank access at all (not even read-only — see the [season testing workflow](#season-long-testing-workflow)). Scoped entirely to the tests they're rostered on for the current season: `/my-tests` (take a live test, view released results) and `/scores` (everyone, including students, sees every student's named score — response-level detail is restricted to coaches and whoever actually graded that test).
+- **Coach** — full admin. Every event, plus user management (Manage Users, inside **Club Management**), shared-textbook uploads, and the Assessments dashboard.
+- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to prepare/grade tests for the [season assessmenting workflow](#season-long-testing-workflow) below — the test-assignment picker only offers volunteers with bank-edit access to that event (plus any coach), though the underlying access check itself remains a separate grant unrelated to event access.
+- **Student** — no question-bank access at all (not even read-only — see the [season assessmenting workflow](#season-long-testing-workflow)). Scoped entirely to the tests they're rostered on for the current season: `/my-tests` (take a live assessment, view released results) and `/scores` (everyone, including students, sees every student's named score — response-level detail is restricted to coaches and whoever actually graded that test).
 
 **First-time setup** — a fresh `auth_users.json` has no accounts, so there's no one who could use the in-app admin UI yet. Bootstrap the first coach from the CLI:
 
@@ -522,7 +522,7 @@ Running behind a residential router instead of a cloud VM needs a few extra piec
 See ["Production deployment (current state)"](#production-deployment-current-state) for the actual repo/bucket names currently in use. Per instance, two complementary mechanisms, neither touching `.env`/`auth_users.json` (handle those separately — see below):
 
 - **[`deploy/backup-extracted-data.sh`](deploy/backup-extracted-data.sh)** copies each event's `.qbank_state.json`/`question_bank.md` + `events_custom.json` + job history (`.qbank_jobs.json`/`.qbank_jobs/`, see "Background jobs" above) into a private GitHub repo clone and commits — git gives line-level diffs and full history for free, which matters for text/JSON the way it doesn't for binaries. Commit messages are generated by [`deploy/qbank-commit-message.py`](deploy/qbank-commit-message.py), which diffs each question's `lastEditedBy`/`lastEditedDateTime` between the previous commit and the fresh copy, so `git log --oneline` reads like a changelog (`circuit_lab: Q5 edited by srikanth`) without ever opening a diff. Safe to run often (cron every 1-2 hours) — backing up more frequently is strictly safer.
-- **[`deploy/backup-bulk-data.sh`](deploy/backup-bulk-data.sh)** backs up everything else (PDFs, `images/`, `texts/`, `textbooks/`, `test_responses/`) to S3 via [`restic`](https://restic.net/) — client-side encrypted (S3 itself never sees plaintext), deduplicated, with `--keep-daily/weekly/monthly` retention pruning. Discovers event directories dynamically (anything with a `.qbank_state.json`, for the git script; anything that isn't a known code directory, for this one) rather than a hardcoded list, so new events need no script changes — `test_responses/` is picked up this way too, being a directory. It also explicitly includes `seasons.json`/`season_rosters.json`/`test_windows.json`/`tests.json` (flat files, so the directory-discovery loop wouldn't find them on its own) — none of the four hold credentials, unlike `auth_users.json` below.
+- **[`deploy/backup-bulk-data.sh`](deploy/backup-bulk-data.sh)** backs up everything else (PDFs, `images/`, `texts/`, `textbooks/`, `assessment_responses/`) to S3 via [`restic`](https://restic.net/) — client-side encrypted (S3 itself never sees plaintext), deduplicated, with `--keep-daily/weekly/monthly` retention pruning. Discovers event directories dynamically (anything with a `.qbank_state.json`, for the git script; anything that isn't a known code directory, for this one) rather than a hardcoded list, so new events need no script changes — `assessment_responses/` is picked up this way too, being a directory. It also explicitly includes `seasons.json`/`season_rosters.json`/`assessment_windows.json`/`assessments.json` (flat files, so the directory-discovery loop wouldn't find them on its own) — none of the four hold credentials, unlike `auth_users.json` below.
 - Both scripts read their destination credentials (GitHub PAT, AWS keys, restic password) from `/opt/qbank/backup/.env` — a separate file from the app's own `.env`, never read by `review_app.py`/gunicorn, so a future app-level bug can't also leak backup-destination access.
 - Both scripts also take an optional trailing argument — the instance's own `.env` path (e.g. `/opt/qbank/.env`) — read only to pick up [`DATA_ROOT`](#separating-app-code-from-data-data_root) if that instance has migrated its data off the app directory. Omit it and both scripts back up `<instance-app-dir>` exactly as before; this is how an instance that hasn't migrated yet keeps working with zero changes.
 - **The restic repository password is the single most critical secret in this design** — losing it makes the entire S3 backup permanently undecryptable even though the encrypted data is still sitting there. Keep it in a password manager, never only on the server.
@@ -618,7 +618,7 @@ This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant 
 Do this when "`df -h` for disk headroom" above stops being reassuring — moving an instance's data to a bigger/separate disk via [`DATA_ROOT`](#separating-app-code-from-data-data_root). [`deploy/migrate-data-root.sh`](deploy/migrate-data-root.sh) handles the copy/cleanup mechanics; the stop/restart/verify steps around it stay manual, operator-run actions on purpose (consistent with this project's existing manual-over-automatic stance — see the GitHub-update mechanism's own rationale):
 
 1. **Stop the instance**: `sudo systemctl stop qbank` (or whichever unit, per [`deploy/instances.conf`](deploy/instances.conf)) — or use the admin app's Stop button.
-2. **Copy, don't move yet**: `sudo deploy/migrate-data-root.sh /opt/qbank/app /mnt/qbank-data qbank:qbank` — discovers every event directory (including `test_responses/`) plus `auth_users.json`/`events_custom.json`/`textbooks/`/`seasons.json`/`season_rosters.json`/`test_windows.json`/`tests.json` the same way `backup-bulk-data.sh` does, `rsync -a`s each into the new location, and `chown`s it to match. Never touches or deletes the source; safe to re-run if interrupted partway.
+2. **Copy, don't move yet**: `sudo deploy/migrate-data-root.sh /opt/qbank/app /mnt/qbank-data qbank:qbank` — discovers every event directory (including `assessment_responses/`) plus `auth_users.json`/`events_custom.json`/`textbooks/`/`seasons.json`/`season_rosters.json`/`assessment_windows.json`/`assessments.json` the same way `backup-bulk-data.sh` does, `rsync -a`s each into the new location, and `chown`s it to match. Never touches or deletes the source; safe to re-run if interrupted partway.
 3. **Point the instance at it**: add `DATA_ROOT=/mnt/qbank-data` to that instance's `.env`.
 4. **Restart and verify**: `sudo systemctl start qbank`, then load the landing page and confirm every event still lists the same question counts as before — this is the real "did it work" check, not just "did the service start."
 5. **Only after verifying**: `sudo deploy/migrate-data-root.sh /opt/qbank/app /mnt/qbank-data --cleanup` — re-checks each item's content against the new location (refusing to touch anything that doesn't match byte-for-byte) before removing it from the app directory, to actually reclaim the space. The app itself never does this for you, matching its no-permanent-deletion stance everywhere else; this script is the one deliberate exception, and only once you've told it to.
@@ -630,7 +630,7 @@ Repeat per-instance — `DATA_ROOT` is set in each instance's own `.env`, so e.g
 
 "How many students can be logged in and taking a test at once" isn't computable from CPU/RAM specs — the ceiling depends on write-contention behavior under load, not raw compute — so the only reliable way to know it on a given box is to measure it directly against the real answer-save endpoint.
 
-Response storage in `testing.py` used to be a single bottleneck here: every answer autosave (fired on every MCQ click/matching pick, no debounce — see `templates/test_take.html`) round-tripped **one** global file holding every response for every test ever, inside **one** global lock shared by every student on every test. A [`loadtest_students.py`](loadtest_students.py) run against production confirmed it directly — latency grew super-linearly with concurrent students (40 → 0.14s p50, 160 → 2.36s). That's fixed now: responses live one file per `(test_id, username)` pair (`DATA_ROOT/test_responses/<test_id>/<username>.json`, see `testing.py`'s module docstring), so concurrent saves from different students — or the same student on different tests — no longer share a lock or a file at all.
+Response storage in `assessments.py` used to be a single bottleneck here: every answer autosave (fired on every MCQ click/matching pick, no debounce — see `templates/test_take.html`) round-tripped **one** global file holding every response for every test ever, inside **one** global lock shared by every student on every test. A [`loadtest_students.py`](loadtest_students.py) run against production confirmed it directly — latency grew super-linearly with concurrent students (40 → 0.14s p50, 160 → 2.36s). That's fixed now: responses live one file per `(test_id, username)` pair (`DATA_ROOT/assessment_responses/<test_id>/<username>.json`, see `assessments.py`'s module docstring), so concurrent saves from different students — or the same student on different tests — no longer share a lock or a file at all.
 
 The remaining ceiling is `--workers` being hard-locked to 1 (see [`deploy/qbank.service`](deploy/qbank.service)'s header and "Why `--threads` is admin-app-configurable but `--workers` never is" above) — you can only add `--threads`, never worker processes, without redesigning `build_question_bank.py`'s and `jobs.py`'s own in-process locks, which is unrelated to and unaffected by the responses-storage fix above. That's still not computable from specs alone, so [`loadtest_students.py`](loadtest_students.py) remains the right tool: given a throwaway published+live test (created by hand first — see [HOWTO.md's "Measuring server capacity"](HOWTO.md#measuring-server-capacity-load-testing) for the full walkthrough), it logs in increasing numbers of synthetic `loadtest_*` students concurrently and has them answer-save every question, printing p50/p95/max latency and error rate per step until one crosses a threshold — that step is the practical ceiling, now bounded by thread-pool depth rather than file contention. It talks real HTTP to a real running instance rather than importing `review_app.py` in-process, since the whole point is exercising gunicorn's actual concurrency; run it against the real deployed box, off-hours, not just a local stand-in, if the number needs to reflect real hardware.
 
@@ -693,14 +693,14 @@ Order matters — provisioning creates the accounts the secrets must be owned by
 
 ### Hard delete (`ALLOW_HARD_DELETE`)
 
-The stance above is the default and should stay the default. But a pre-production instance accumulates trial seasons, throwaway test windows and practice responses that nobody wants to keep, and clearing them by hand meant an operator editing JSON on the server. `ALLOW_HARD_DELETE=true` in an instance's `.env` turns on real deletion for:
+The stance above is the default and should stay the default. But a pre-production instance accumulates trial seasons, throwaway assessment windows and practice responses that nobody wants to keep, and clearing them by hand meant an operator editing JSON on the server. `ALLOW_HARD_DELETE=true` in an instance's `.env` turns on real deletion for:
 
 | Entity | What goes with it |
 |---|---|
 | User | their responses across every test, and their roster entries |
 | Season | its windows → tests → responses, and its rosters |
 | Event | its registry entry; **the directory is moved**, see below |
-| Test window | its tests → responses |
+| Assessment window | its tests → responses |
 | Test | its responses |
 | Student response | just that one response, so a student can retake |
 | Test/key PDF | its extracted questions (the bank buckets questions by source filename); **the file is moved**, see below |
@@ -710,7 +710,7 @@ The stance above is the default and should stay the default. But a pre-productio
 Three properties are what make this safe enough to exist:
 
 - **Off unless switched on.** Routes 403 and the buttons don't render. Going to production is deleting one line from `.env`, not reverting code — the capability can't quietly outlive the reason it was enabled.
-- **Nothing goes without being counted first.** Every delete fetches a preview and puts the real cascade in the confirmation: *"This removes: 1 test window, 1 test, 41 student responses."* A cascade whose size is a surprise is the failure mode worth engineering against, since deleting one season can reasonably mean deleting a term's worth of student work. A test asserts the preview and the delete report the same numbers.
+- **Nothing goes without being counted first.** Every delete fetches a preview and puts the real cascade in the confirmation: *"This removes: 1 assessment window, 1 test, 41 student responses."* A cascade whose size is a surprise is the failure mode worth engineering against, since deleting one season can reasonably mean deleting a term's worth of student work. A test asserts the preview and the delete report the same numbers.
 - **Files are moved, not erased.** Deleting an event, a PDF, a source or a textbook relocates it under `<DATA_ROOT>/.deleted/`. The app can't see it any more, but a PDF library that took a season to assemble isn't destroyed by one click in a browser. Clearing that directory stays an operator's decision, made over SSH, with restic still covering it meanwhile.
 
 Coach-only on top of the flag, you can't delete your own account, and every delete is logged at WARNING with who did it and what went. Cascade policy lives in [`deletion.py`](deletion.py); each module keeps only record-level primitives that touch its own storage.
@@ -782,7 +782,7 @@ UI-registered events have `topic_keywords = {}` — the keyword scorer will not 
 1. Open `events.py`. Add one `Event(...)` entry to `EVENTS` with:
    - `slug` — directory/url slug (e.g. `"wright_stuff"`)
    - `name` — human display name
-   - `event_match` — lowercase substrings used to filter `scioly_tests.json` event names. The first one also drives the PDF filename prefix by default (`"disease detectives"` → `diseasedetectives_*.pdf`).
+   - `event_match` — lowercase substrings used to filter `scioly_assessments.json` event names. The first one also drives the PDF filename prefix by default (`"disease detectives"` → `diseasedetectives_*.pdf`).
    - `filename_prefix` — *optional*. Override only when the PDFs on scioly.org are named differently than the event (e.g. Anatomy &amp; Physiology PDFs are `anatomy_*.pdf`).
    - `topics` — your taxonomy tuple
    - `topic_keywords` — `{topic: [(phrase, weight), ...]}` for classification

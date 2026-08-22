@@ -30,7 +30,7 @@
        plus Settings; everything else is hidden rather than shown-and-403'd,
        so the menu never offers a destination the route would refuse.
        Each condition below mirrors its route's own guard:
-         my_tests_page      @student_required
+         my_assessments_page      @student_required
          tests_dashboard    @coach_or_volunteer_required
          club_management /
          admin_jobs_page    @coach_required
@@ -40,7 +40,7 @@
 
     {# --- Taking tests and results: what a student comes here for -------- #}
     {% if current_user.role == "student" %}
-      <a class="nav-link" href="{{ url_for('my_tests_page') }}">📝 My Tests</a>
+      <a class="nav-link" href="{{ url_for('my_assessments_page') }}">📝 My Assessments</a>
     {% endif %}
     <a class="nav-link" href="{{ url_for('scores_page') }}">🏆 Scores</a>
 
@@ -55,7 +55,7 @@
     {# --- Running the club ----------------------------------------------- #}
     {% if current_user.role in ("coach", "volunteer") %}
     <div class="nav-sep"></div>
-      <a class="nav-link" href="{{ url_for('tests_dashboard_page') }}">🗓 Test management</a>
+      <a class="nav-link" href="{{ url_for('assessments_dashboard_page') }}">🗓 Assessment management</a>
       <a class="nav-link" href="{{ url_for('index') }}">🧪 Event Management</a>
       {% if current_user.role == "coach" %}
       <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club Management</a>

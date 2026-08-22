@@ -653,11 +653,11 @@ window.hardDelete = async function(kind, ident, label){
   // on a season that has none reads as noise and trains people to skip it.
   const parts = [];
   const label_for = {
-    seasons: "season", windows: "test window", tests: "test",
+    seasons: "season", assessment_windows: "assessment window", assessments: "assessment",
     responses: "student response", roster_entries: "roster entry",
     users: "user account", events: "event", files: "file",
   };
-  for(const key of ["seasons","windows","tests","responses","roster_entries","users","events","files"]){
+  for(const key of ["seasons","assessment_windows","assessments","responses","roster_entries","users","events","files"]){
     const n = preview[key];
     if(!n) continue;
     parts.push(`${n} ${label_for[key]}${n === 1 ? "" : "s"}`);

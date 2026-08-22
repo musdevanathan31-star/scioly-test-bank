@@ -53,14 +53,14 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 
 </div>
 <script>
-const TEST_ID = {{ test_id|tojson }};
+const ASSESSMENT_ID = {{ assessment_id|tojson }};
 let SNAPSHOT_FRQS = [], RESPONSES = {};
 
 function esc(s){ return (s == null ? "" : String(s))
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 async function load(){
-  const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}/grading`);
+  const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/grading`);
   const j = await r.json();
   SNAPSHOT_FRQS = j.snapshot_frqs || [];
   RESPONSES = j.responses || {};
@@ -86,7 +86,7 @@ function updateProgress(complete){
 
 function render(){
   const root = document.getElementById("frq_list");
-  if(!SNAPSHOT_FRQS.length){ root.innerHTML = '<p class="muted">This test has no free-response questions to grade.</p>'; return; }
+  if(!SNAPSHOT_FRQS.length){ root.innerHTML = '<p class="muted">This assessment has no free-response questions to grade.</p>'; return; }
   root.innerHTML = SNAPSHOT_FRQS.map(q => {
     const rows = Object.entries(RESPONSES)
       .filter(([, r]) => ["submitted","auto_submitted_late"].includes(r.status))
@@ -96,7 +96,7 @@ function render(){
         return `
         <div class="answer-row" data-username="${esc(username)}" data-number="${esc(q.number)}">
           <span class="student">${esc(username)}
-            ${HARD_DELETE ? `<button type="button" class="ghost purge-resp-btn" title="Delete this student's response so they can retake the test" style="color:var(--bad);font-size:11px;padding:0 4px">&#128465;</button>` : ""}
+            ${HARD_DELETE ? `<button type="button" class="ghost purge-resp-btn" title="Delete this student's response so they can retake the assessment" style="color:var(--bad);font-size:11px;padding:0 4px">&#128465;</button>` : ""}
           </span>
           <span class="ans">${esc(answer ? answer.text : "(no answer)")}</span>
           <span class="pts">
@@ -120,7 +120,7 @@ function render(){
   // copies of this fetch would be two places to keep in sync.
   async function saveGrade(row, points_earned){
     if(isNaN(points_earned)) return;
-    const r = await fetch(`${APP_ROOT}/api/tests/${TEST_ID}/grading/${encodeURIComponent(row.dataset.username)}/${encodeURIComponent(row.dataset.number)}`, {
+    const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/grading/${encodeURIComponent(row.dataset.username)}/${encodeURIComponent(row.dataset.number)}`, {
       method: "PATCH", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({points_earned}),
     });
@@ -144,7 +144,7 @@ function render(){
       const who = row.dataset.username;
       // Scoped to (test, student): the response is the only thing removed,
       // the test and everyone else's answers are untouched.
-      if(await hardDelete("response", `${TEST_ID}/${encodeURIComponent(who)}`,
+      if(await hardDelete("response", `${ASSESSMENT_ID}/${encodeURIComponent(who)}`,
                           `${who}'s response`)) await load();
     });
   });
@@ -161,7 +161,7 @@ function render(){
 
 document.getElementById("release_btn").addEventListener("click", async () => {
   if(!await confirmModal("Release grades? Students will immediately be able to see their full results for this test.")) return;
-  const r = await fetch(`${APP_ROOT}/tests/${TEST_ID}/release-grades`, {method: "POST"});
+  const r = await fetch(`${APP_ROOT}/assessments/${ASSESSMENT_ID}/release-grades`, {method: "POST"});
   const j = await r.json();
   const msgEl = document.getElementById("release_msg");
   msgEl.style.display = "";

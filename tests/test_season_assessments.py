@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import auth                    # noqa: E402
 import seasons                 # noqa: E402
-import testing as testing_mod  # noqa: E402
+import assessments as assessments_mod  # noqa: E402
 
 PAST = "2020-01-01T00:00:00"
 FUTURE = "2099-01-01T00:00:00"
@@ -36,9 +36,9 @@ def _patch_files(monkeypatch, tmp_path):
     monkeypatch.setattr(auth, "USERS_FILE", tmp_path / "auth_users.json")
     monkeypatch.setattr(seasons, "SEASONS_FILE", tmp_path / "seasons.json")
     monkeypatch.setattr(seasons, "ROSTERS_FILE", tmp_path / "season_rosters.json")
-    monkeypatch.setattr(testing_mod, "WINDOWS_FILE", tmp_path / "test_windows.json")
-    monkeypatch.setattr(testing_mod, "TESTS_FILE", tmp_path / "tests.json")
-    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
+    monkeypatch.setattr(assessments_mod, "WINDOWS_FILE", tmp_path / "assessment_windows.json")
+    monkeypatch.setattr(assessments_mod, "ASSESSMENTS_FILE", tmp_path / "assessments.json")
+    monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
 
 
 def _force_not_current(season_id: str) -> None:
@@ -49,12 +49,12 @@ def _force_not_current(season_id: str) -> None:
         ss[season_id] = replace(ss[season_id], is_current=False)
 
 
-def _force_live(test_id: str) -> None:
-    """Flip a Test straight to "live" without running the real
+def _force_live(assessment_id: str) -> None:
+    """Flip an Assessment straight to "live" without running the real
     prepare/publish pipeline — irrelevant to season-resolution, the thing
     actually under test here."""
-    with testing_mod._tests_transaction() as ts:
-        ts[test_id] = replace(ts[test_id], status="live")
+    with assessments_mod._assessments_transaction() as ts:
+        ts[assessment_id] = replace(ts[assessment_id], status="live")
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ def test_create_season_second_does_not_auto_flip_current(tmp_path, monkeypatch):
 def test_student_sees_live_test_with_no_season_marked_current(tmp_path, monkeypatch):
     """Coach rosters a student and goes live on a test under a season that
     is NOT marked current (the literal reported scenario) — the student's
-    My Tests must still show it, via the same fallback the coach pages use."""
+    My Assessments must still show it, via the same fallback the coach pages use."""
     _patch_files(monkeypatch, tmp_path)
     auth.create_user("student1", "password123", role="student", events=[])
 
@@ -125,13 +125,13 @@ def test_student_sees_live_test_with_no_season_marked_current(tmp_path, monkeypa
 
     seasons.set_roster("2027", "circuit_lab", ["student1"])
 
-    window = testing_mod.create_window(
+    window = assessments_mod.create_window(
         season_id="2027", opens_at=PAST, closes_at=FUTURE,
         event_slugs=["circuit_lab"], label="Jul 1",
     )
-    test = testing_mod.get_test_for(window.window_id, "circuit_lab")
+    test = assessments_mod.get_assessment_for(window.window_id, "circuit_lab")
     assert test.status == "preparing"
-    _force_live(test.test_id)
+    _force_live(test.assessment_id)
 
     import review_app
     review_app.app.testing = True
@@ -139,14 +139,14 @@ def test_student_sees_live_test_with_no_season_marked_current(tmp_path, monkeypa
         r = c.post("/login", data={"username": "student1", "password": "password123"})
         assert r.status_code == 302
 
-        r = c.get("/api/my-tests")
+        r = c.get("/api/my-assessments")
         assert r.status_code == 200
-        out = r.get_json()["tests"]
+        out = r.get_json()["assessments"]
         assert len(out) == 1, f"expected the live circuit_lab test, got {out!r}"
         assert out[0]["event_slug"] == "circuit_lab"
         assert out[0]["bucket"] == "current"
 
-        r = c.get("/my-tests")
+        r = c.get("/my-assessments")
         assert r.status_code == 200
         assert b"circuit_lab" in r.data
         assert b"Nothing open right now." not in r.data
@@ -160,7 +160,7 @@ def test_student_sees_nothing_for_still_preparing_event(tmp_path, monkeypatch):
     seasons.create_season("2027", event_slugs=["circuit_lab"])
     _force_not_current("2027")
     seasons.set_roster("2027", "circuit_lab", ["student1"])
-    testing_mod.create_window(
+    assessments_mod.create_window(
         season_id="2027", opens_at=PAST, closes_at=FUTURE,
         event_slugs=["circuit_lab"], label="Jul 1",
     )
@@ -170,5 +170,5 @@ def test_student_sees_nothing_for_still_preparing_event(tmp_path, monkeypatch):
     review_app.app.testing = True
     with review_app.app.test_client() as c:
         c.post("/login", data={"username": "student1", "password": "password123"})
-        r = c.get("/api/my-tests")
-        assert r.get_json()["tests"] == []
+        r = c.get("/api/my-assessments")
+        assert r.get_json()["assessments"] == []

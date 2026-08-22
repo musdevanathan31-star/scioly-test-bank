@@ -7,7 +7,7 @@ last would silently overwrite the other's change. Confirmed directly: 15
 threads calling auth.create_user() concurrently for distinct usernames
 persisted only 1 of 15 accounts before the fix (auth._users_transaction(),
 seasons._seasons_transaction()/_rosters_transaction(),
-testing._windows_transaction()/_tests_transaction()/_response_transaction(),
+assessments._windows_transaction()/_assessments_transaction()/_response_transaction(),
 build_question_bank._state_transaction()).
 
 Each test below uses a threading.Barrier so every worker thread starts its
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import auth                          # noqa: E402
 import build_question_bank as bqb    # noqa: E402
 import seasons                       # noqa: E402
-import testing as testing_mod        # noqa: E402
+import assessments as assessments_mod        # noqa: E402
 
 N = 20
 
@@ -123,23 +123,23 @@ def test_seasons_concurrent_add_to_roster_no_lost_updates(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# testing.py
+# assessments.py
 # ---------------------------------------------------------------------------
 
 def test_testing_concurrent_save_answer_no_lost_updates(tmp_path, monkeypatch):
     """The live student-test-autosave path: distinct question numbers saved
-    concurrently for the SAME (test_id, username) must all survive — the
+    concurrently for the SAME (assessment_id, username) must all survive — the
     highest real-world-severity instance of this bug (many students
     autosaving during one timed window, all hitting one shared file)."""
-    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
-    testing_mod.start_or_get_response("test1", "bob", num_questions=N)
+    monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
+    assessments_mod.start_or_get_response("test1", "bob", num_questions=N)
 
     def _make(i):
-        return lambda: testing_mod.save_answer("test1", "bob", str(i), {"qtype": "mcq", "picked": "A"})
+        return lambda: assessments_mod.save_answer("test1", "bob", str(i), {"qtype": "mcq", "picked": "A"})
 
     _run_concurrently([_make(i) for i in range(N)])
 
-    resp = testing_mod.get_response("test1", "bob")
+    resp = assessments_mod.get_response("test1", "bob")
     assert len(resp.answers) == N, f"expected {N} saved answers, found {len(resp.answers)} — lost updates"
     for i in range(N):
         assert str(i) in resp.answers
@@ -149,32 +149,32 @@ def test_testing_concurrent_start_or_get_response_creates_once(tmp_path, monkeyp
     """Two simultaneous first-loads of the same (test, student) must not
     each shuffle their own question_order and silently clobber the other —
     every caller must observe the SAME response."""
-    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
+    monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
     results: list = [None] * N
 
     def _make(i):
         def _go():
-            results[i] = testing_mod.start_or_get_response("test1", "carol", num_questions=10)
+            results[i] = assessments_mod.start_or_get_response("test1", "carol", num_questions=10)
         return _go
 
     _run_concurrently([_make(i) for i in range(N)])
 
     orders = {tuple(r.question_order) for r in results}
     assert len(orders) == 1, "concurrent first-loads produced different question_order snapshots"
-    by_user = testing_mod.get_responses_for_test("test1")
+    by_user = assessments_mod.get_responses_for_assessment("test1")
     assert len(by_user) == 1
 
 
 def test_testing_concurrent_set_manual_grade_distinct_questions_no_lost_updates(tmp_path, monkeypatch):
-    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
-    testing_mod.start_or_get_response("test1", "dave", num_questions=N)
+    monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
+    assessments_mod.start_or_get_response("test1", "dave", num_questions=N)
 
     def _make(i):
-        return lambda: testing_mod.set_manual_grade("test1", "dave", str(i), 1.0, 1.0, graded_by="coach")
+        return lambda: assessments_mod.set_manual_grade("test1", "dave", str(i), 1.0, 1.0, graded_by="coach")
 
     _run_concurrently([_make(i) for i in range(N)])
 
-    resp = testing_mod.get_response("test1", "dave")
+    resp = assessments_mod.get_response("test1", "dave")
     assert len(resp.manual_grade) == N, (
         f"expected {N} manual grades, found {len(resp.manual_grade)} — lost updates"
     )
@@ -182,7 +182,7 @@ def test_testing_concurrent_set_manual_grade_distinct_questions_no_lost_updates(
 
 def test_testing_response_locks_are_per_pair_not_shared(tmp_path, monkeypatch):
     """Deterministic (no threading, no flakiness risk) check of the exact
-    property the per-(test_id, username) redesign exists for: the SAME
+    property the per-(assessment_id, username) redesign exists for: the SAME
     pair always resolves to the SAME lock object (so concurrent saves for
     one student's one test still serialize correctly against each other),
     but DIFFERENT pairs resolve to DIFFERENT lock objects (so they never
@@ -190,14 +190,14 @@ def test_testing_response_locks_are_per_pair_not_shared(tmp_path, monkeypatch):
     RESPONSES_FILE design, where every pair on every test shared one lock
     and that sharing was exactly what made latency grow super-linearly
     under concurrent load (see loadtest_students.py's results)."""
-    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
+    monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
 
-    lock_a1 = testing_mod._lock_for(testing_mod._response_path("testA", "alice"))
-    lock_a2 = testing_mod._lock_for(testing_mod._response_path("testA", "alice"))
-    lock_b = testing_mod._lock_for(testing_mod._response_path("testA", "bob"))
-    lock_c = testing_mod._lock_for(testing_mod._response_path("testB", "alice"))
+    lock_a1 = assessments_mod._lock_for(assessments_mod._response_path("testA", "alice"))
+    lock_a2 = assessments_mod._lock_for(assessments_mod._response_path("testA", "alice"))
+    lock_b = assessments_mod._lock_for(assessments_mod._response_path("testA", "bob"))
+    lock_c = assessments_mod._lock_for(assessments_mod._response_path("testB", "alice"))
 
-    assert lock_a1 is lock_a2, "same (test_id, username) pair must reuse the same lock"
+    assert lock_a1 is lock_a2, "same (assessment_id, username) pair must reuse the same lock"
     assert lock_a1 is not lock_b, "different students on the same test must not share a lock"
     assert lock_a1 is not lock_c, "the same student on different tests must not share a lock"
 

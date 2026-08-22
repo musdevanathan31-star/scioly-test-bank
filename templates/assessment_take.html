@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>{{ event_name }} · Test · {{ school_name }} Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><title>{{ event_name }} · Assessment · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .wrap{max-width:760px;margin:24px auto;padding:0 20px}
@@ -29,7 +29,7 @@
 {% include "_app_root.html" %}
 <script>{{ common_js|safe }}</script>
 <header>
-  <h1>{{ event_name }} — Test</h1>
+  <h1>{{ event_name }} — Assessment</h1>
   <span id="test_timer" class="test-timer" style="margin-left:auto"></span>
 </header>
 <div class="wrap">
@@ -47,12 +47,12 @@
     <div style="text-align:right;margin-top:14px">
       <button id="btn_prev">← Previous</button>
       <button id="btn_next">Next →</button>
-      <button id="btn_submit" class="primary">Submit test</button>
+      <button id="btn_submit" class="primary">Submit assessment</button>
     </div>
   </div>
 </div>
 <script>
-const TEST_ID = {{ test_id|tojson }};
+const ASSESSMENT_ID = {{ assessment_id|tojson }};
 let QUESTIONS = [], ANSWERS = {}, CONTEXTS = {}, CLOSES_AT = null;
 let IDX = 0;
 let SAVE_TIMER = null;
@@ -64,7 +64,7 @@ function esc(s){ return (s == null ? "" : String(s))
 async function loadTest(){
   let r, j;
   try {
-    r = await fetch(`${APP_ROOT}/api/my-tests/${TEST_ID}/take`);
+    r = await fetch(`${APP_ROOT}/api/my-assessments/${ASSESSMENT_ID}/take`);
     j = await r.json();
   } catch(err){ document.getElementById("loading_msg").textContent = "Failed to load: " + err.message; return; }
   if(!r.ok){
@@ -176,7 +176,7 @@ async function saveAnswer(number, answer){
   document.getElementById("save_status").textContent = "Saving…";
   ANSWERS[String(number)] = answer;
   try {
-    const r = await fetch(`${APP_ROOT}/api/my-tests/${TEST_ID}/answer`, {
+    const r = await fetch(`${APP_ROOT}/api/my-assessments/${ASSESSMENT_ID}/answer`, {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({number: String(number), answer}),
     });
@@ -196,10 +196,10 @@ async function submitTest(auto){
                             {confirmLabel: "Submit"})) return;
   }
   try {
-    const r = await fetch(`${APP_ROOT}/api/my-tests/${TEST_ID}/submit`, {method: "POST"});
+    const r = await fetch(`${APP_ROOT}/api/my-assessments/${ASSESSMENT_ID}/submit`, {method: "POST"});
     const j = await r.json();
     if(j.ok){
-      location.href = `${APP_ROOT}/my-tests`;
+      location.href = `${APP_ROOT}/my-assessments`;
     } else {
       toast("Submit failed: " + (j.error||""), "err");
     }

@@ -65,7 +65,7 @@ import deletion  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
-import testing  # noqa: E402
+import assessments  # noqa: E402
 import archive  # noqa: E402
 import pdf_safety  # noqa: E402
 import doc_convert  # noqa: E402
@@ -261,9 +261,9 @@ def coach_required(view):
 
 def coach_or_volunteer_required(view):
     """Gate a route to coaches and volunteers — excludes students outright.
-    Used by the Tests dashboard/builder routes, which both roles can reach
+    Used by the Assessments dashboard/builder routes, which both roles can reach
     (a volunteer only sees/acts on their own assigned tests; see
-    _select_test for the finer-grained per-test check)."""
+    _select_assessment for the finer-grained per-test check)."""
     @wraps(view)
     def wrapped(*args, **kwargs):
         user = getattr(g, "user", None)
@@ -273,24 +273,24 @@ def coach_or_volunteer_required(view):
     return wrapped
 
 
-def _select_test(test_id: str) -> testing.Test:
-    """Loads a Test, 404s if unknown, 403s unless the caller is a coach or
+def _select_assessment(assessment_id: str) -> assessments.Assessment:
+    """Loads an Assessment, 404s if unknown, 403s unless the caller is a coach or
     appears in that test's window's assignments[event_slug].
 
-    Deliberately independent of _select_event() — a Test spans
+    Deliberately independent of _select_event() — an Assessment spans
     season/window/event, and an assigned volunteer may have nothing in
     User.events at all (test-building assignment is a different grant than
     bank-edit access; conflating the two would either over- or under-grant).
-    Routes that operate on a Test use this, never _select_event()."""
-    test = testing.get_test(test_id)
+    Routes that operate on an Assessment use this, never _select_event()."""
+    test = assessments.get_assessment(assessment_id)
     if test is None:
-        abort(404, f"Unknown test: {test_id}")
+        abort(404, f"Unknown test: {assessment_id}")
     user = getattr(g, "user", None)
     if user is None:
         abort(403)
     if user.role == "coach":
         return test
-    window = testing.get_window(test.window_id)
+    window = assessments.get_window(test.window_id)
     assigned = window.assignments.get(test.event_slug, []) if window else []
     if user.role != "volunteer" or user.username not in assigned:
         abort(403, "You're not assigned to this test")
@@ -554,7 +554,7 @@ def _open_target_pdf(pdfname: str, target: str) -> fitz.Document:
     membership check, not just _safe_join's containment check, is what
     prevents that."""
     test_pdf = bqb.BASE_DIR / pdfname
-    if not target or target == "test":
+    if not target or target == "assessment":
         return _open_pdf(pdfname)
     if target == "key":
         path = _key_path(test_pdf)
@@ -630,7 +630,7 @@ def _explained_filenames(base_dir: Path) -> tuple[set[str], list[Path]]:
         if not m:
             continue
         explained.add(f.name)
-        if m.group(1).lower() == "test":
+        if m.group(1).lower() == "assessment":
             test_files.append(f)
     for f in test_files:
         pdf_form = f if f.suffix.lower() == ".pdf" else f.with_suffix(".pdf")
@@ -769,7 +769,7 @@ def index():
     empty event list for them — send them straight to their actual landing
     page instead."""
     if g.user.role == "student":
-        return redirect(url_for("my_tests_page"))
+        return redirect(url_for("my_assessments_page"))
     rows = []
     archived_rows = []
     active_by_event = presence.active_by_event(exclude_user=g.user.username)
@@ -981,7 +981,7 @@ def admin_delete_user(username):
 # Deliberately NOT under /event/<slug>/... — a season/roster spans every
 # event in its lineup, so none of these go through _select_event(). A
 # season's event_slugs lineup only scopes which events appear on the
-# roster grid / which a TestWindow can be created against; it has zero
+# roster grid / which an AssessmentWindow can be created against; it has zero
 # effect on question-bank curation access (see seasons.py's docstring).
 # ---------------------------------------------------------------------------
 
@@ -1155,17 +1155,17 @@ def api_bulk_csv_students(season_id):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Tests dashboard + test-builder + publish (coach + volunteer)
+# Routes — Assessments dashboard + test-builder + publish (coach + volunteer)
 #
-# Deliberately NOT under /event/<slug>/... — see _select_test()'s docstring
+# Deliberately NOT under /event/<slug>/... — see _select_assessment()'s docstring
 # for why these never call _select_event(). A season's event lineup only
 # scopes which events a window can be created against (seasons.py); it has
 # zero effect on bank-curation access.
 # ---------------------------------------------------------------------------
 
-@app.route("/tests")
+@app.route("/assessments")
 @coach_or_volunteer_required
-def tests_dashboard_page():
+def assessments_dashboard_page():
     all_seasons = sorted(seasons.load_seasons().values(), key=lambda s: s.season_id, reverse=True)
     current = seasons.get_current_season()
     selected_id = seasons.resolve_season_id(request.args.get("season"))
@@ -1190,7 +1190,7 @@ def tests_dashboard_page():
     windows = []
     candidates_by_event = {}
     if selected:
-        for w in sorted(testing.load_windows().values(), key=lambda w: w.opens_at):
+        for w in sorted(assessments.load_windows().values(), key=lambda w: w.opens_at):
             if w.season_id != selected.season_id or w.archived:
                 continue
             if g.user.role == "volunteer" and not any(
@@ -1199,27 +1199,27 @@ def tests_dashboard_page():
                 continue
             window_tests = []
             for slug in w.event_slugs:
-                t = testing.get_test_for(w.window_id, slug)
+                t = assessments.get_assessment_for(w.window_id, slug)
                 if g.user.role == "volunteer" and g.user.username not in (w.assignments.get(slug) or []):
                     continue
-                window_tests.append({"event_slug": slug, "test": t,
+                window_tests.append({"event_slug": slug, "assessment": t,
                                      "assigned": w.assignments.get(slug) or []})
                 candidates_by_event.setdefault(slug, _candidates_for(slug))
-            windows.append({"window": w, "tests": window_tests})
+            windows.append({"window": w, "assessments": window_tests})
 
     return render_template(
-        "tests_dashboard.html",
+        "assessments_dashboard.html",
         all_seasons=all_seasons, current=current, selected=selected, windows=windows,
         candidates_by_event=candidates_by_event,
     )
 
 
-@app.route("/api/test-windows", methods=["POST"])
+@app.route("/api/assessment-windows", methods=["POST"])
 @coach_required
-def api_create_test_window():
+def api_create_assessment_window():
     data = request.get_json() or {}
     try:
-        w = testing.create_window(
+        w = assessments.create_window(
             season_id=data.get("season_id", ""),
             opens_at=data.get("opens_at", ""), closes_at=data.get("closes_at", ""),
             event_slugs=data.get("event_slugs") or [],
@@ -1230,12 +1230,12 @@ def api_create_test_window():
     return jsonify({"ok": True, "window_id": w.window_id})
 
 
-@app.route("/api/test-windows/<window_id>", methods=["PATCH"])
+@app.route("/api/assessment-windows/<window_id>", methods=["PATCH"])
 @coach_required
-def api_update_test_window(window_id):
+def api_update_assessment_window(window_id):
     data = request.get_json() or {}
     try:
-        w = testing.update_window(
+        w = assessments.update_window(
             window_id, label=data.get("label"), opens_at=data.get("opens_at"),
             closes_at=data.get("closes_at"), event_slugs=data.get("event_slugs"),
         )
@@ -1244,99 +1244,99 @@ def api_update_test_window(window_id):
     return jsonify({"ok": True})
 
 
-@app.route("/api/test-windows/<window_id>/assignments", methods=["PATCH"])
+@app.route("/api/assessment-windows/<window_id>/assignments", methods=["PATCH"])
 @coach_required
-def api_update_test_assignments(window_id):
+def api_update_assessment_assignments(window_id):
     data = request.get_json() or {}
     event_slug = data.get("event_slug", "")
     users = auth.load_users()
     # Coaches are now assignable too (previously volunteer-only) — matches
-    # the new picker's candidate pool (see tests_dashboard_page()).
+    # the new picker's candidate pool (see assessments_dashboard_page()).
     usernames = [u for u in (data.get("usernames") or [])
                  if u in users and users[u].role in ("coach", "volunteer")]
     try:
-        testing.update_window_assignments(window_id, event_slug, usernames)
+        assessments.update_window_assignments(window_id, event_slug, usernames)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "usernames": usernames})
 
 
-@app.route("/tests/<test_id>/build")
+@app.route("/assessments/<assessment_id>/build")
 @coach_or_volunteer_required
-def test_builder_page(test_id):
-    test = _select_test(test_id)
-    window = testing.get_window(test.window_id)
+def assessment_builder_page(assessment_id):
+    test = _select_assessment(assessment_id)
+    window = assessments.get_window(test.window_id)
     ev = EVENTS.get(test.event_slug)
     return render_template(
-        "test_builder.html",
-        test_id=test_id, event_slug=test.event_slug,
+        "assessment_builder.html",
+        assessment_id=assessment_id, event_slug=test.event_slug,
         event_name=ev.name if ev else test.event_slug,
         window_label=window.label if window else "",
         status=test.status,
         # Every question already committed to another test this season, so
-        # the pool can hide repeats by default — see testing.used_question_keys.
-        used_keys=sorted(testing.used_question_keys(test.season_id, test_id)),
+        # the pool can hide repeats by default — see assessments.used_question_keys.
+        used_keys=sorted(assessments.used_question_keys(test.season_id, assessment_id)),
     )
 
 
-@app.route("/api/tests/<test_id>", methods=["GET"])
+@app.route("/api/assessments/<assessment_id>", methods=["GET"])
 @coach_or_volunteer_required
-def api_get_test(test_id):
-    test = _select_test(test_id)
+def api_get_assessment(assessment_id):
+    test = _select_assessment(assessment_id)
     return jsonify({
-        "test_id": test.test_id, "status": test.status, "kept": test.kept,
+        "assessment_id": test.assessment_id, "status": test.status, "kept": test.kept,
         "event_slug": test.event_slug, "window_id": test.window_id,
         "last_edited_by": test.last_edited_by, "last_edited_at": test.last_edited_at,
     })
 
 
-@app.route("/api/tests/<test_id>", methods=["PATCH"])
+@app.route("/api/assessments/<assessment_id>", methods=["PATCH"])
 @coach_or_volunteer_required
-def api_update_test_kept(test_id):
-    _select_test(test_id)
+def api_update_assessment_kept(assessment_id):
+    _select_assessment(assessment_id)
     data = request.get_json() or {}
     try:
-        updated = testing.update_test_kept(test_id, data.get("kept") or [], edited_by=g.user.username)
+        updated = assessments.update_assessment_kept(assessment_id, data.get("kept") or [], edited_by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "last_edited_by": updated.last_edited_by,
                     "last_edited_at": updated.last_edited_at})
 
 
-@app.route("/tests/<test_id>/publish", methods=["POST"])
+@app.route("/assessments/<assessment_id>/publish", methods=["POST"])
 @coach_or_volunteer_required
-def api_publish_test(test_id):
-    _select_test(test_id)
+def api_publish_assessment(assessment_id):
+    _select_assessment(assessment_id)
     try:
-        result = testing.publish_test(test_id, published_by=g.user.username)
+        result = assessments.publish_assessment(assessment_id, published_by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "snapshot_count": len(result["test"].snapshot or []),
                     "skipped": result["skipped"]})
 
 
-@app.route("/tests/<test_id>/go-live", methods=["POST"])
+@app.route("/assessments/<assessment_id>/go-live", methods=["POST"])
 @coach_required
-def api_go_live_test(test_id):
+def api_go_live_assessment(assessment_id):
     try:
-        testing.go_live_test(test_id, live_by=g.user.username)
+        assessments.go_live_assessment(assessment_id, live_by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True})
 
 
-@app.route("/tests/<test_id>/unpublish", methods=["POST"])
+@app.route("/assessments/<assessment_id>/unpublish", methods=["POST"])
 @coach_required
-def api_unpublish_test(test_id):
+def api_unpublish_assessment(assessment_id):
     """Reverts a published/live test to "preparing" for edits. Blocked once
     EITHER the class-wide window has opened OR any student response has a
     saved answer — a personal-makeup student could already be mid-test
     even before the class window opens, so both conditions are checked
     independently rather than just the window."""
-    test = testing.get_test(test_id)
+    test = assessments.get_assessment(assessment_id)
     if test is None:
         abort(404)
-    window = testing.get_window(test.window_id)
+    window = assessments.get_window(test.window_id)
     if window:
         from datetime import datetime as _dt, timezone as _tz
         opens = _dt.fromisoformat(window.opens_at)
@@ -1344,23 +1344,23 @@ def api_unpublish_test(test_id):
             opens = opens.replace(tzinfo=_tz.utc)
         if _dt.now(_tz.utc) >= opens:
             return jsonify({"error": "the test window has already opened — can't un-publish"}), 400
-    for resp in testing.get_responses_for_test(test_id).values():
+    for resp in assessments.get_responses_for_assessment(assessment_id).values():
         if resp.answers:
             return jsonify({"error": "a student has already saved an answer — can't un-publish"}), 400
     try:
-        testing.unpublish_test(test_id)
+        assessments.unpublish_assessment(assessment_id)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True})
 
 
-@app.route("/api/tests/<test_id>/overrides", methods=["POST"])
+@app.route("/api/assessments/<assessment_id>/overrides", methods=["POST"])
 @coach_required
-def api_set_test_override(test_id):
+def api_set_assessment_override(assessment_id):
     data = request.get_json() or {}
     try:
-        testing.set_test_overrides(
-            test_id, data.get("student_username", ""),
+        assessments.set_assessment_overrides(
+            assessment_id, data.get("student_username", ""),
             data.get("opens_at"), data.get("closes_at"),
             granted_by=g.user.username, reason=data.get("reason", ""),
         )
@@ -1369,18 +1369,18 @@ def api_set_test_override(test_id):
     return jsonify({"ok": True})
 
 
-@app.route("/api/tests/<test_id>/overrides/<student_username>", methods=["DELETE"])
+@app.route("/api/assessments/<assessment_id>/overrides/<student_username>", methods=["DELETE"])
 @coach_required
-def api_revoke_test_override(test_id, student_username):
+def api_revoke_assessment_override(assessment_id, student_username):
     try:
-        testing.set_test_overrides(test_id, student_username, None, None, granted_by=g.user.username)
+        assessments.set_assessment_overrides(assessment_id, student_username, None, None, granted_by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
-# Routes — student-facing "My Tests" surface
+# Routes — student-facing "My Assessments" surface
 #
 # A wholly separate route prefix that never calls _select_event() — see
 # that function's blanket student-block for the corresponding server-side
@@ -1397,16 +1397,16 @@ def student_required(view):
     return wrapped
 
 
-def _student_test_context(test_id: str):
+def _student_assessment_context(assessment_id: str):
     """404s an unknown test; 403s if the caller's role isn't student or
     they're not rostered on this test's event for this test's season.
     Returns (test, window, season)."""
     import seasons as seasons_mod
 
-    test = testing.get_test(test_id)
+    test = assessments.get_assessment(assessment_id)
     if test is None:
-        abort(404, f"Unknown test: {test_id}")
-    window = testing.get_window(test.window_id)
+        abort(404, f"Unknown test: {assessment_id}")
+    window = assessments.get_window(test.window_id)
     if window is None:
         abort(404)
     user = g.user
@@ -1415,9 +1415,9 @@ def _student_test_context(test_id: str):
     return test, window
 
 
-@app.route("/my-tests")
+@app.route("/my-assessments")
 @student_required
-def my_tests_page():
+def my_assessments_page():
     import seasons as seasons_mod
     from datetime import datetime as _dt, timezone as _tz
 
@@ -1425,93 +1425,93 @@ def my_tests_page():
     upcoming, current, past = [], [], []
     if season:
         my_events = set(seasons_mod.student_events(season.season_id, g.user.username))
-        for w in testing.load_windows().values():
+        for w in assessments.load_windows().values():
             if w.season_id != season.season_id or w.archived:
                 continue
             for slug in w.event_slugs:
                 if slug not in my_events:
                     continue
-                t = testing.get_test_for(w.window_id, slug)
+                t = assessments.get_assessment_for(w.window_id, slug)
                 if t is None or t.status not in ("live", "closed", "graded", "released"):
                     continue
-                resp = testing.get_response(t.test_id, g.user.username)
-                entry = {"test": t, "window": w, "event_slug": slug, "response": resp}
+                resp = assessments.get_response(t.assessment_id, g.user.username)
+                entry = {"assessment": t, "window": w, "event_slug": slug, "response": resp}
                 already_submitted = resp is not None and resp.status != "in_progress"
-                if already_submitted or testing.is_window_past(t, w, g.user.username):
+                if already_submitted or assessments.is_window_past(t, w, g.user.username):
                     # Already submitted moves straight to Past even if the
                     # class-wide window is technically still open — nothing
                     # left to do, and the take-page itself blocks re-entry
                     # for exactly this reason.
                     past.append(entry)
-                elif testing.is_window_open(t, w, g.user.username):
+                elif assessments.is_window_open(t, w, g.user.username):
                     current.append(entry)
                 else:
                     upcoming.append(entry)
-    return render_template("my_tests.html", upcoming=upcoming, current=current, past=past,
+    return render_template("my_assessments.html", upcoming=upcoming, current=current, past=past,
                             season=season)
 
 
-@app.route("/my-tests/<test_id>/take")
+@app.route("/my-assessments/<assessment_id>/take")
 @student_required
-def test_take_page(test_id):
-    test, window = _student_test_context(test_id)
-    if test.status != "live" or not testing.is_window_open(test, window, g.user.username):
-        return redirect(url_for("my_tests_page"))
-    existing = testing.get_response(test_id, g.user.username)
+def assessment_take_page(assessment_id):
+    test, window = _student_assessment_context(assessment_id)
+    if test.status != "live" or not assessments.is_window_open(test, window, g.user.username):
+        return redirect(url_for("my_assessments_page"))
+    existing = assessments.get_response(assessment_id, g.user.username)
     if existing is not None and existing.status != "in_progress":
         # Already submitted — nothing left to do here even though the
         # class-wide window is still technically open; avoid a confusing
         # "took" page whose autosave silently rejects every edit.
-        return redirect(url_for("my_tests_page"))
+        return redirect(url_for("my_assessments_page"))
     ev = EVENTS.get(test.event_slug)
-    return render_template("test_take.html", test_id=test_id,
+    return render_template("assessment_take.html", assessment_id=assessment_id,
                             event_name=ev.name if ev else test.event_slug)
 
 
-@app.route("/api/my-tests")
+@app.route("/api/my-assessments")
 @student_required
-def api_my_tests():
+def api_my_assessments():
     import seasons as seasons_mod
     season = seasons_mod.get_season(seasons_mod.resolve_season_id())
     out = []
     if season:
         my_events = set(seasons_mod.student_events(season.season_id, g.user.username))
-        for w in testing.load_windows().values():
+        for w in assessments.load_windows().values():
             if w.season_id != season.season_id or w.archived:
                 continue
             for slug in w.event_slugs:
                 if slug not in my_events:
                     continue
-                t = testing.get_test_for(w.window_id, slug)
+                t = assessments.get_assessment_for(w.window_id, slug)
                 if t is None or t.status not in ("live", "closed", "graded", "released"):
                     continue
-                resp = testing.get_response(t.test_id, g.user.username)
+                resp = assessments.get_response(t.assessment_id, g.user.username)
                 already_submitted = resp is not None and resp.status != "in_progress"
-                if already_submitted or testing.is_window_past(t, w, g.user.username):
+                if already_submitted or assessments.is_window_past(t, w, g.user.username):
                     bucket = "past"
-                elif testing.is_window_open(t, w, g.user.username):
+                elif assessments.is_window_open(t, w, g.user.username):
                     bucket = "current"
                 else:
                     bucket = "upcoming"
                 out.append({
-                    "test_id": t.test_id, "event_slug": slug, "window_label": w.label,
+                    "assessment_id": t.assessment_id, "event_slug": slug, "window_label": w.label,
                     "opens_at": w.opens_at, "closes_at": w.closes_at, "bucket": bucket,
                     "response_status": resp.status if resp else None,
                     "released": resp.released if resp else False,
                 })
-    return jsonify({"tests": out})
+    return jsonify({"assessments": out})
 
 
-@app.route("/api/my-tests/<test_id>/take")
+@app.route("/api/my-assessments/<assessment_id>/take")
 @student_required
-def api_take_test(test_id):
-    test, window = _student_test_context(test_id)
-    if test.status != "live" or not testing.is_window_open(test, window, g.user.username):
+def api_take_assessment(assessment_id):
+    test, window = _student_assessment_context(assessment_id)
+    if test.status != "live" or not assessments.is_window_open(test, window, g.user.username):
         abort(403, "This test isn't open right now")
-    existing = testing.get_response(test_id, g.user.username)
+    existing = assessments.get_response(assessment_id, g.user.username)
     if existing is not None and existing.status != "in_progress":
         abort(403, "You've already submitted this test")
-    resp = testing.start_or_get_response(test_id, g.user.username, len(test.snapshot or []))
+    resp = assessments.start_or_get_response(assessment_id, g.user.username, len(test.snapshot or []))
     snapshot = test.snapshot or []
     ordered = [snapshot[i] for i in resp.question_order if i < len(snapshot)]
     # Never leak correct_answer/matching.pairs to the student during the test.
@@ -1529,30 +1529,30 @@ def api_take_test(test_id):
     })
 
 
-@app.route("/api/my-tests/<test_id>/answer", methods=["POST"])
+@app.route("/api/my-assessments/<assessment_id>/answer", methods=["POST"])
 @student_required
-def api_save_test_answer(test_id):
-    test, window = _student_test_context(test_id)
-    if test.status != "live" or not testing.is_window_open(test, window, g.user.username):
+def api_save_assessment_answer(assessment_id):
+    test, window = _student_assessment_context(assessment_id)
+    if test.status != "live" or not assessments.is_window_open(test, window, g.user.username):
         abort(403, "This test isn't open right now")
     data = request.get_json() or {}
     try:
-        updated = testing.save_answer(test_id, g.user.username, data.get("number", ""),
+        updated = assessments.save_answer(assessment_id, g.user.username, data.get("number", ""),
                                       data.get("answer") or {})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "last_saved_at": updated.last_saved_at})
 
 
-@app.route("/api/my-tests/<test_id>/submit", methods=["POST"])
+@app.route("/api/my-assessments/<assessment_id>/submit", methods=["POST"])
 @student_required
-def api_submit_test(test_id):
-    test, window = _student_test_context(test_id)
+def api_submit_assessment(assessment_id):
+    test, window = _student_assessment_context(assessment_id)
     if test.status != "live":
         abort(403, "This test isn't live")
-    is_open = testing.is_window_open(test, window, g.user.username)
-    is_past = testing.is_window_past(test, window, g.user.username)
-    existing = testing.get_response(test_id, g.user.username)
+    is_open = assessments.is_window_open(test, window, g.user.username)
+    is_past = assessments.is_window_past(test, window, g.user.username)
+    existing = assessments.get_response(assessment_id, g.user.username)
     if not is_open:
         # Never discard already-autosaved work just because the window
         # closed at the wire — but a brand-new attempt with zero prior
@@ -1561,7 +1561,7 @@ def api_submit_test(test_id):
         if not (is_past and existing and existing.answers):
             abort(403, "This test isn't open right now")
     try:
-        updated = testing.submit_response(test_id, g.user.username, test.snapshot or [],
+        updated = assessments.submit_response(assessment_id, g.user.username, test.snapshot or [],
                                           late=(not is_open))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1574,18 +1574,18 @@ def api_submit_test(test_id):
 # students see anything, distinct from the grading work itself).
 # ---------------------------------------------------------------------------
 
-@app.route("/tests/<test_id>/grade")
+@app.route("/assessments/<assessment_id>/grade")
 @coach_or_volunteer_required
-def test_grading_page(test_id):
-    test = _select_test(test_id)
+def assessment_grading_page(assessment_id):
+    test = _select_assessment(assessment_id)
     ev = EVENTS.get(test.event_slug)
-    return render_template("test_grading.html", test_id=test_id,
+    return render_template("assessment_grading.html", assessment_id=assessment_id,
                             event_name=ev.name if ev else test.event_slug)
 
 
-@app.route("/tests/<test_id>/export/<which>.md")
+@app.route("/assessments/<assessment_id>/export/<which>.md")
 @coach_or_volunteer_required
-def api_export_test_markdown(test_id: str, which: str):
+def api_export_assessment_markdown(assessment_id: str, which: str):
     """Download a test as markdown, for administering it on paper.
 
     `which` is "test" (questions only) or "key" (questions with an answer
@@ -1595,9 +1595,9 @@ def api_export_test_markdown(test_id: str, which: str):
     DRAFT so a draft print can't be mistaken for the real thing."""
     if which not in ("test", "key"):
         abort(404)
-    test = _select_test(test_id)
-    window = testing.get_window(test.window_id)
-    snapshot, is_draft = testing.snapshot_for_render(test)
+    test = _select_assessment(assessment_id)
+    window = assessments.get_window(test.window_id)
+    snapshot, is_draft = assessments.snapshot_for_render(test)
     if not snapshot:
         return jsonify({"error": "this test has no questions yet"}), 400
 
@@ -1615,30 +1615,30 @@ def api_export_test_markdown(test_id: str, which: str):
                              f"→ {window.closes_at.replace('T', ' ')}")
     # Two trailing spaces before the newline is a markdown hard line break,
     # so the DRAFT warning and the window dates stay on separate lines.
-    md = testing.render_questions_markdown(
+    md = assessments.render_questions_markdown(
         snapshot, title=title, subtitle="  \n".join(subtitle_bits),
         answers="section" if which == "key" else "none")
 
-    stem = f"{test.event_slug}-{label or test_id[:8]}-{which}".replace(" ", "_")
+    stem = f"{test.event_slug}-{label or assessment_id[:8]}-{which}".replace(" ", "_")
     return Response(md, mimetype="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename={stem}.md"})
 
 
-@app.route("/api/tests/<test_id>/grading")
+@app.route("/api/assessments/<assessment_id>/grading")
 @coach_or_volunteer_required
-def api_get_grading(test_id):
-    test = _select_test(test_id)
+def api_get_grading(assessment_id):
+    test = _select_assessment(assessment_id)
     snapshot_frqs = [q for q in (test.snapshot or []) if q.get("qtype") == "frq"]
     responses = {u: {"answers": r.answers, "manual_grade": r.manual_grade, "status": r.status}
-                for u, r in testing.get_responses_for_test(test_id).items()}
+                for u, r in assessments.get_responses_for_assessment(assessment_id).items()}
     return jsonify({"snapshot_frqs": snapshot_frqs, "responses": responses,
-                    "grading_complete": testing.test_grading_complete(test_id, test.snapshot or [])})
+                    "grading_complete": assessments.assessment_grading_complete(assessment_id, test.snapshot or [])})
 
 
-@app.route("/api/tests/<test_id>/grading/<student_username>/<number>", methods=["PATCH"])
+@app.route("/api/assessments/<assessment_id>/grading/<student_username>/<number>", methods=["PATCH"])
 @coach_or_volunteer_required
-def api_set_manual_grade(test_id, student_username, number):
-    test = _select_test(test_id)
+def api_set_manual_grade(assessment_id, student_username, number):
+    test = _select_assessment(assessment_id)
     q = next((x for x in (test.snapshot or []) if str(x.get("number")) == str(number)), None)
     if q is None or q.get("qtype") != "frq":
         return jsonify({"error": "not a free-response question on this test"}), 400
@@ -1648,7 +1648,7 @@ def api_set_manual_grade(test_id, student_username, number):
     except (TypeError, ValueError):
         return jsonify({"error": "points_earned must be a number"}), 400
     try:
-        testing.set_manual_grade(test_id, student_username, number, points_earned,
+        assessments.set_manual_grade(assessment_id, student_username, number, points_earned,
                                  float(q.get("max_points") or 1), graded_by=g.user.username,
                                  comment=data.get("comment", ""))
     except ValueError as e:
@@ -1656,32 +1656,32 @@ def api_set_manual_grade(test_id, student_username, number):
     return jsonify({"ok": True})
 
 
-@app.route("/tests/<test_id>/release-grades", methods=["POST"])
+@app.route("/assessments/<assessment_id>/release-grades", methods=["POST"])
 @coach_required
-def api_release_grades(test_id):
-    test = testing.get_test(test_id)
+def api_release_grades(assessment_id):
+    test = assessments.get_assessment(assessment_id)
     if test is None:
         abort(404)
     try:
-        count = testing.release_grades(test_id, test.snapshot or [], released_by=g.user.username)
+        count = assessments.release_grades(assessment_id, test.snapshot or [], released_by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "released_count": count})
 
 
-@app.route("/my-tests/<test_id>/results")
+@app.route("/my-assessments/<assessment_id>/results")
 @student_required
-def test_results_page(test_id):
-    test, window = _student_test_context(test_id)
-    resp = testing.get_response(test_id, g.user.username)
+def assessment_results_page(assessment_id):
+    test, window = _student_assessment_context(assessment_id)
+    resp = assessments.get_response(assessment_id, g.user.username)
     if resp is None or not resp.released:
         abort(403, "Results aren't released yet")
-    return _render_test_results(test, resp, viewer_is_self=True, student_username=g.user.username)
+    return _render_assessment_results(test, resp, viewer_is_self=True, student_username=g.user.username)
 
 
-def _render_test_results(test: "testing.Test", resp: "testing.Response",
+def _render_assessment_results(test: "assessments.Assessment", resp: "assessments.Response",
                          viewer_is_self: bool, student_username: str):
-    """Shared by test_results_page (a student viewing their own released
+    """Shared by assessment_results_page (a student viewing their own released
     results) and score_detail_page (a coach/grading-volunteer drilling into
     a specific student's response from the Scores page)."""
     ev = EVENTS.get(test.event_slug)
@@ -1694,7 +1694,7 @@ def _render_test_results(test: "testing.Test", resp: "testing.Response",
         rows.append({"q": q, "answer": answer, "auto": auto, "manual": manual})
     total_earned = sum((r["auto"] or r["manual"] or {}).get("points_earned") or 0 for r in rows)
     total_possible = sum(float(q.get("max_points") or 1) for q in (test.snapshot or []))
-    return render_template("test_results.html", event_name=ev.name if ev else test.event_slug,
+    return render_template("assessment_results.html", event_name=ev.name if ev else test.event_slug,
                            rows=rows, total_earned=total_earned, total_possible=total_possible,
                            viewer_is_self=viewer_is_self, student_username=student_username)
 
@@ -1705,8 +1705,8 @@ def _render_test_results(test: "testing.Test", resp: "testing.Response",
 # can_view_response_detail()).
 # ---------------------------------------------------------------------------
 
-def can_view_response_detail(viewer: "auth.User", test: "testing.Test", student_username: str,
-                             response: "testing.Response | None", window: "testing.TestWindow | None") -> bool:
+def can_view_response_detail(viewer: "auth.User", test: "assessments.Assessment", student_username: str,
+                             response: "assessments.Response | None", window: "assessments.AssessmentWindow | None") -> bool:
     """Coaches always; a volunteer only for tests THEY personally graded
     (stamped via graded_by on at least one manual grade) — with one
     fallback: if a test has zero FRQ items (nothing to manually grade),
@@ -1741,25 +1741,25 @@ def scores_page():
 
     students_seen: dict[str, str] = {}
     columns = []  # [{test, window, event_slug, label}]
-    grid = {}     # {username: {test_id: {earned, possible, pending, detail_ok}}}
+    grid = {}     # {username: {assessment_id: {earned, possible, pending, detail_ok}}}
 
     if selected:
         users = auth.load_users()
         for slug in selected.event_slugs:
             for u in seasons_mod.get_roster(selected.season_id, slug):
                 students_seen[u] = u
-        for w in testing.load_windows().values():
+        for w in assessments.load_windows().values():
             if w.season_id != selected.season_id or w.archived:
                 continue
             for slug in w.event_slugs:
-                t = testing.get_test_for(w.window_id, slug)
+                t = assessments.get_assessment_for(w.window_id, slug)
                 if t is None or not t.snapshot:
                     continue
-                if not testing.test_grading_complete(t.test_id, t.snapshot):
+                if not assessments.assessment_grading_complete(t.assessment_id, t.snapshot):
                     continue
-                columns.append({"test": t, "window": w, "event_slug": slug,
+                columns.append({"assessment": t, "window": w, "event_slug": slug,
                                "label": f"{slug} — {w.label or w.opens_at[:10]}"})
-                responses = testing.get_responses_for_test(t.test_id)
+                responses = assessments.get_responses_for_assessment(t.assessment_id)
                 for username, resp in responses.items():
                     if resp.status not in ("submitted", "auto_submitted_late"):
                         continue
@@ -1769,7 +1769,7 @@ def scores_page():
                     possible = sum(float(q.get("max_points") or 1) for q in t.snapshot)
                     detail_ok = (user.role == "coach") or can_view_response_detail(
                         user, t, username, resp, w)
-                    grid.setdefault(username, {})[t.test_id] = {
+                    grid.setdefault(username, {})[t.assessment_id] = {
                         "earned": earned, "possible": possible,
                         "pending": not resp.released, "detail_ok": detail_ok,
                     }
@@ -1778,18 +1778,18 @@ def scores_page():
                            columns=columns, students=sorted(students_seen.values()), grid=grid)
 
 
-@app.route("/scores/<test_id>/<student_username>")
-def score_detail_page(test_id, student_username):
-    test = testing.get_test(test_id)
+@app.route("/scores/<assessment_id>/<student_username>")
+def score_detail_page(assessment_id, student_username):
+    test = assessments.get_assessment(assessment_id)
     if test is None:
         abort(404)
-    window = testing.get_window(test.window_id)
-    resp = testing.get_response(test_id, student_username)
+    window = assessments.get_window(test.window_id)
+    resp = assessments.get_response(assessment_id, student_username)
     if resp is None:
         abort(404)
     if not can_view_response_detail(g.user, test, student_username, resp, window):
         abort(403, "You don't have access to this student's responses")
-    return _render_test_results(test, resp, viewer_is_self=(g.user.username == student_username),
+    return _render_assessment_results(test, resp, viewer_is_self=(g.user.username == student_username),
                                 student_username=student_username)
 
 
@@ -2011,7 +2011,7 @@ def api_pdf_page_counts(event_slug, pdfname):
     _select_event(event_slug)
     test_doc = _open_pdf(pdfname)
     key_path = _key_path(bqb.BASE_DIR / pdfname)
-    return jsonify({"test": test_doc.page_count,
+    return jsonify({"assessment": test_doc.page_count,
                     "key": (fitz.open(str(key_path)).page_count if key_path else None)})
 
 
@@ -4747,13 +4747,20 @@ _n_recovered = jobs.recover_interrupted_jobs()
 if _n_recovered:
     print(f"[startup] marked {_n_recovered} leftover 'running' job(s) as interrupted")
 
+# Runs BEFORE the response backfill below, because that one looks for
+# "assessment_responses.json" and a pre-rename instance still calls it
+# "test_responses.json" — see assessments.migrate_test_to_assessment_names().
+_renamed = assessments.migrate_test_to_assessment_names()
+for _line in _renamed:
+    print(f"[startup] rename migration: {_line}")
+
 # One-time, idempotent: backfills the pre-redesign single-file
-# test_responses.json into the current per-(test_id, username) file layout
-# — see testing.py's migrate_legacy_responses() docstring. No-ops instantly
+# assessment_responses.json into the current per-(assessment_id, username) file layout
+# — see assessments.py's migrate_legacy_responses() docstring. No-ops instantly
 # once the legacy file is gone (the common case after the first run).
-_n_migrated = testing.migrate_legacy_responses()
+_n_migrated = assessments.migrate_legacy_responses()
 if _n_migrated:
-    print(f"[startup] migrated {_n_migrated} response(s) from legacy test_responses.json "
+    print(f"[startup] migrated {_n_migrated} response(s) from legacy assessment_responses.json "
           f"to per-test/per-student files")
 
 

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def app_modules(monkeypatch):
     """Fresh modules bound to a throwaway DATA_ROOT.
 
-    auth/seasons/events/testing all resolve DATA_ROOT at import time, so
+    auth/seasons/events/assessments all resolve DATA_ROOT at import time, so
     the env var has to be set before the reload rather than patched after.
     """
     import build_question_bank as bqb
@@ -39,11 +39,12 @@ def app_modules(monkeypatch):
     tmp = tempfile.mkdtemp(prefix="deletion-test-")
     monkeypatch.setenv("DATA_ROOT", tmp)
     monkeypatch.setenv("ALLOW_HARD_DELETE", "true")
-    import auth, events, seasons, testing, deletion
-    for mod in (auth, events, seasons, testing, deletion):
+    import auth, events, seasons, assessments, deletion
+    import build_question_bank as _bqb
+    for mod in (auth, events, seasons, _bqb, assessments, deletion):
         importlib.reload(mod)
     yield {"auth": auth, "events": events, "seasons": seasons,
-           "testing": testing, "deletion": deletion, "root": Path(tmp)}
+           "assessments": assessments, "deletion": deletion, "root": Path(tmp)}
 
     # Teardown matters here in a way it doesn't for most fixtures: these
     # modules resolve DATA_ROOT at import time and hold it in module
@@ -54,7 +55,7 @@ def app_modules(monkeypatch):
     # alone was enough to make tests/test_heuristics.py's classify_topic
     # cases fail when run after this file, and pass when run alone.
     monkeypatch.undo()
-    for mod in (auth, events, seasons, testing, deletion):
+    for mod in (auth, events, seasons, _bqb, assessments, deletion):
         importlib.reload(mod)
     if previous_event is not None:
         # Re-resolve by slug, not by re-binding the old object: `events` was
@@ -64,12 +65,12 @@ def app_modules(monkeypatch):
 
 
 def _season_with_test(mods, season_id="2027"):
-    seasons, testing = mods["seasons"], mods["testing"]
+    seasons, assessments = mods["seasons"], mods["assessments"]
     slug = sorted(mods["events"].EVENTS)[0]
     seasons.create_season(season_id, event_slugs=[slug], created_by="coach")
-    window = testing.create_window(season_id, "2027-01-01T09:00", "2027-01-01T11:00",
+    window = assessments.create_window(season_id, "2027-01-01T09:00", "2027-01-01T11:00",
                                    [slug], label="Week 1", created_by="coach")
-    test = testing.get_test_for(window.window_id, slug)
+    test = assessments.get_assessment_for(window.window_id, slug)
     return slug, window, test
 
 
@@ -98,61 +99,61 @@ def test_gate_parses_values(app_modules, monkeypatch, value, expected):
 # ---------------------------------------------------------------------------
 
 def test_deleting_a_test_takes_its_responses(app_modules):
-    testing, deletion = app_modules["testing"], app_modules["deletion"]
+    assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, _window, test = _season_with_test(app_modules)
-    testing.start_or_get_response(test.test_id, "stu1", 3)
-    testing.start_or_get_response(test.test_id, "stu2", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu2", 3)
 
-    assert deletion.preview_test(test.test_id)["responses"] == 2
-    result = deletion.delete_test(test.test_id)
+    assert deletion.preview_assessment(test.assessment_id)["responses"] == 2
+    result = deletion.delete_assessment(test.assessment_id)
 
-    assert result == {"kind": "test", "tests": 1, "responses": 2}
-    assert testing.get_test(test.test_id) is None
-    assert testing.get_responses_for_test(test.test_id) == {}
+    assert result == {"kind": "assessment", "assessments": 1, "responses": 2}
+    assert assessments.get_assessment(test.assessment_id) is None
+    assert assessments.get_responses_for_assessment(test.assessment_id) == {}
 
 
 def test_deleting_a_window_cascades_to_tests_and_responses(app_modules):
-    testing, deletion = app_modules["testing"], app_modules["deletion"]
+    assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, window, test = _season_with_test(app_modules)
-    testing.start_or_get_response(test.test_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
 
-    preview = deletion.preview_window(window.window_id)
-    assert (preview["tests"], preview["responses"]) == (1, 1)
+    preview = deletion.preview_assessment_window(window.window_id)
+    assert (preview["assessments"], preview["responses"]) == (1, 1)
 
-    result = deletion.delete_window(window.window_id)
-    assert (result["windows"], result["tests"], result["responses"]) == (1, 1, 1)
-    assert testing.get_window(window.window_id) is None
-    assert testing.get_test(test.test_id) is None
+    result = deletion.delete_assessment_window(window.window_id)
+    assert (result["assessment_windows"], result["assessments"], result["responses"]) == (1, 1, 1)
+    assert assessments.get_window(window.window_id) is None
+    assert assessments.get_assessment(test.assessment_id) is None
 
 
 def test_deleting_a_season_cascades_all_the_way_down(app_modules):
-    seasons, testing, deletion = (app_modules["seasons"], app_modules["testing"],
+    seasons, assessments, deletion = (app_modules["seasons"], app_modules["assessments"],
                                   app_modules["deletion"])
     slug, window, test = _season_with_test(app_modules)
     seasons.set_roster("2027", slug, ["stu1", "stu2"])
-    testing.start_or_get_response(test.test_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
 
     preview = deletion.preview_season("2027")
-    assert (preview["windows"], preview["tests"], preview["responses"]) == (1, 1, 1)
+    assert (preview["assessment_windows"], preview["assessments"], preview["responses"]) == (1, 1, 1)
     assert preview["roster_entries"] == 2
 
     result = deletion.delete_season("2027")
-    assert (result["windows"], result["tests"], result["responses"]) == (1, 1, 1)
+    assert (result["assessment_windows"], result["assessments"], result["responses"]) == (1, 1, 1)
     assert seasons.get_season("2027") is None
-    assert testing.get_window(window.window_id) is None
-    assert testing.get_test(test.test_id) is None
+    assert assessments.get_window(window.window_id) is None
+    assert assessments.get_assessment(test.assessment_id) is None
 
 
 def test_preview_matches_what_deletion_reports(app_modules):
     # A confirmation dialog that overstates or understates the damage is
     # worse than none, because it will be believed.
-    testing, deletion = app_modules["testing"], app_modules["deletion"]
+    assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, window, test = _season_with_test(app_modules)
     for name in ("a", "b", "c"):
-        testing.start_or_get_response(test.test_id, name, 3)
-    preview = deletion.preview_window(window.window_id)
-    result = deletion.delete_window(window.window_id)
-    for key in ("windows", "tests", "responses"):
+        assessments.start_or_get_response(test.assessment_id, name, 3)
+    preview = deletion.preview_assessment_window(window.window_id)
+    result = deletion.delete_assessment_window(window.window_id)
+    for key in ("assessment_windows", "assessments", "responses"):
         assert preview[key] == result[key], key
 
 
@@ -161,48 +162,48 @@ def test_preview_matches_what_deletion_reports(app_modules):
 # ---------------------------------------------------------------------------
 
 def test_deleting_one_test_leaves_another_tests_responses_alone(app_modules):
-    testing, deletion = app_modules["testing"], app_modules["deletion"]
+    assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     seasons = app_modules["seasons"]
     slug, _w1, test1 = _season_with_test(app_modules, "2027")
     seasons.create_season("2028", event_slugs=[slug], created_by="coach")
-    w2 = testing.create_window("2028", "2028-01-01T09:00", "2028-01-01T11:00", [slug])
-    test2 = testing.get_test_for(w2.window_id, slug)
+    w2 = assessments.create_window("2028", "2028-01-01T09:00", "2028-01-01T11:00", [slug])
+    test2 = assessments.get_assessment_for(w2.window_id, slug)
 
-    testing.start_or_get_response(test1.test_id, "stu1", 3)
-    testing.start_or_get_response(test2.test_id, "stu1", 3)
+    assessments.start_or_get_response(test1.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test2.assessment_id, "stu1", 3)
 
-    deletion.delete_test(test1.test_id)
+    deletion.delete_assessment(test1.assessment_id)
 
-    assert testing.get_response(test2.test_id, "stu1") is not None
-    assert testing.get_test(test2.test_id) is not None
+    assert assessments.get_response(test2.assessment_id, "stu1") is not None
+    assert assessments.get_assessment(test2.assessment_id) is not None
 
 
 def test_deleting_a_user_removes_their_responses_everywhere_only(app_modules):
-    auth, testing, deletion = (app_modules["auth"], app_modules["testing"],
+    auth, assessments, deletion = (app_modules["auth"], app_modules["assessments"],
                                app_modules["deletion"])
     _slug, _window, test = _season_with_test(app_modules)
     auth.create_user("stu1", "password123", "student")
-    testing.start_or_get_response(test.test_id, "stu1", 3)
-    testing.start_or_get_response(test.test_id, "stu2", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu2", 3)
 
     result = deletion.delete_user("stu1")
 
     assert result["responses"] == 1
     assert auth.get_user("stu1") is None
-    assert testing.get_response(test.test_id, "stu1") is None
+    assert assessments.get_response(test.assessment_id, "stu1") is None
     # The other student's answers are untouched.
-    assert testing.get_response(test.test_id, "stu2") is not None
+    assert assessments.get_response(test.assessment_id, "stu2") is not None
 
 
 def test_deleting_a_response_leaves_the_test_intact(app_modules):
-    testing, deletion = app_modules["testing"], app_modules["deletion"]
+    assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, _window, test = _season_with_test(app_modules)
-    testing.start_or_get_response(test.test_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
 
-    deletion.delete_response(test.test_id, "stu1")
+    deletion.delete_response(test.assessment_id, "stu1")
 
-    assert testing.get_response(test.test_id, "stu1") is None
-    assert testing.get_test(test.test_id) is not None
+    assert assessments.get_response(test.assessment_id, "stu1") is None
+    assert assessments.get_assessment(test.assessment_id) is not None
 
 
 # ---------------------------------------------------------------------------

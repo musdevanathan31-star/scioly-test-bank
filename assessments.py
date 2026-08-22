@@ -1,32 +1,32 @@
 """
-Season-long test administration: TestWindow (a scheduled open/close span
-covering one or more events), Test (one event's test within one window —
+Season-long assessment administration: AssessmentWindow (a scheduled open/close span
+covering one or more events), Assessment (one event's assessment within one window —
 built by volunteers, published as a frozen snapshot, then administered),
 and Response (one student's in-progress/submitted answers + grading for
-one Test).
+one Assessment).
 
-TestWindow and Test are stored as flat JSON files at DATA_ROOT (matches
+AssessmentWindow and Assessment are stored as flat JSON files at DATA_ROOT (matches
 auth.py's/seasons.py's one-concept-per-file convention) — low write volume,
 no concurrent-autosave pattern, so one file/lock each is plenty. Response
 is different: it's by far the highest-write-volume data in this module
 (every student's autosave on every MCQ click/matching pick during a live
 window, no debounce), and a single combined file/lock for every response
-of every test ever measured catastrophically under load (super-linear
+of every assessment ever measured catastrophically under load (super-linear
 latency growth with concurrent students — see loadtest_students.py and
 README.md's "Measuring server capacity"). So Response gets its own,
-finer-grained scheme: one file per (test_id, username) pair, under
-DATA_ROOT/test_responses/<test_id>/<username>.json — concurrent saves from
-different students, or the same student on different tests, now acquire
+finer-grained scheme: one file per (assessment_id, username) pair, under
+DATA_ROOT/assessment_responses/<assessment_id>/<username>.json — concurrent saves from
+different students, or the same student on different assessments, now acquire
 different locks and touch different (small) files instead of all
 serialising through one. All storage still shares the same atomic
 tempfile+os.replace write helper and a lock-registry keyed by path,
 mirroring build_question_bank.py's per-event _state_locks pattern —
 just applied at a per-pair path instead of a per-file one for responses.
 
-A Test is prepared from one event's question bank but is NOT gated by
-`auth.User.events` (a volunteer's bank-edit access) — test-preparation
-assignment is a separate grant, keyed on TestWindow.assignments, enforced
-by review_app.py's `_select_test()` guard, deliberately independent of
+An Assessment is prepared from one event's question bank but is NOT gated by
+`auth.User.events` (a volunteer's bank-edit access) — assessment-preparation
+assignment is a separate grant, keyed on AssessmentWindow.assignments, enforced
+by review_app.py's `_select_assessment()` guard, deliberately independent of
 `_select_event()`. See seasons.py's module docstring for the parallel
 reasoning on why a season's event lineup never touches bank-access either.
 """
@@ -44,13 +44,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent
 DATA_ROOT = Path(os.environ.get("DATA_ROOT") or REPO_ROOT)
-WINDOWS_FILE = DATA_ROOT / "test_windows.json"
-TESTS_FILE = DATA_ROOT / "tests.json"
-RESPONSES_DIR = DATA_ROOT / "test_responses"
-# Pre-redesign storage: one combined file for every response of every test
-# ever (see module docstring). No longer written to — migrate_legacy_responses()
-# reads it once at startup to backfill RESPONSES_DIR, then renames it out of
-# the way. Kept as a constant (not inlined) so tests can monkeypatch it.
+WINDOWS_FILE = DATA_ROOT / "assessment_windows.json"
+ASSESSMENTS_FILE = DATA_ROOT / "assessments.json"
+RESPONSES_DIR = DATA_ROOT / "assessment_responses"
+# Pre-redesign storage: one combined file for every response of every
+# assessment ever (see module docstring). No longer written to —
+# migrate_legacy_responses() reads it once at startup to backfill
+# RESPONSES_DIR, then renames it out of the way. Kept as a constant (not
+# inlined) so tests can monkeypatch it.
+#
+# Deliberately still spelled "test_responses.json": this is a historical
+# filename on disk, not a concept. It predates the Test -> Assessment
+# rename and no file was ever written under an "assessment_" name at this
+# path, so renaming the constant would point the migration at something
+# that has never existed and silently strand every pre-refactor response.
 _LEGACY_RESPONSES_FILE = DATA_ROOT / "test_responses.json"
 
 SCHEMA_VERSION = 1
@@ -59,13 +66,13 @@ _lock_registry: dict[str, threading.RLock] = {}
 _registry_lock = threading.Lock()
 
 
-def _response_path(test_id: str, username: str) -> Path:
-    # test_id is always uuid.uuid4().hex (see _ensure_test below) and
+def _response_path(assessment_id: str, username: str) -> Path:
+    # assessment_id is always uuid.uuid4().hex (see _ensure_assessment below) and
     # username is validated at account-creation time against auth.py's
     # _USERNAME_RE (^[a-z][a-z0-9_]{1,31}$) — both are already filesystem-
     # safe with no path-separator/traversal characters possible, so no
     # escaping is needed here.
-    return RESPONSES_DIR / test_id / f"{username}.json"
+    return RESPONSES_DIR / assessment_id / f"{username}.json"
 
 
 def _lock_for(path: Path) -> threading.RLock:
@@ -118,13 +125,13 @@ def _windows_transaction():
 
 
 @contextlib.contextmanager
-def _tests_transaction():
-    """Same as _windows_transaction(), for TESTS_FILE."""
-    with _lock_for(TESTS_FILE):
-        raw = _load_json_unlocked(TESTS_FILE, {})
-        tests = {tid: _dict_to_test(d) for tid, d in raw.items()}
-        yield tests
-        _save_json_unlocked(TESTS_FILE, {tid: _test_to_dict(t) for tid, t in tests.items()})
+def _assessments_transaction():
+    """Same as _windows_transaction(), for ASSESSMENTS_FILE."""
+    with _lock_for(ASSESSMENTS_FILE):
+        raw = _load_json_unlocked(ASSESSMENTS_FILE, {})
+        assessments = {tid: _dict_to_assessment(d) for tid, d in raw.items()}
+        yield assessments
+        _save_json_unlocked(ASSESSMENTS_FILE, {tid: _assessment_to_dict(t) for tid, t in assessments.items()})
 
 
 class _ResponseBox:
@@ -141,12 +148,12 @@ class _ResponseBox:
 
 
 @contextlib.contextmanager
-def _response_transaction(test_id: str, username: str):
+def _response_transaction(assessment_id: str, username: str):
     """Same load -> mutate -> save-under-one-lock shape as
-    _windows_transaction()/_tests_transaction(), but scoped to one
-    (test_id, username) pair's own file — the whole point of the
+    _windows_transaction()/_assessments_transaction(), but scoped to one
+    (assessment_id, username) pair's own file — the whole point of the
     per-pair redesign (see module docstring) is that two different
-    students, or the same student on two different tests, never share a
+    students, or the same student on two different assessments, never share a
     lock or a file, so concurrent autosave load no longer serialises
     globally the way the old single RESPONSES_FILE design did. Mutators
     that need to read-then-merge (save_answer's answers dict,
@@ -162,7 +169,7 @@ def _response_transaction(test_id: str, username: str):
     two transactions' unconditional-save-at-exit behavior exactly, just
     now rewriting one small per-pair file instead of every response in
     the app on every call."""
-    path = _response_path(test_id, username)
+    path = _response_path(assessment_id, username)
     with _lock_for(path):
         raw = _load_json_unlocked(path, None)
         box = _ResponseBox(_dict_to_response(raw) if raw is not None else None)
@@ -177,12 +184,12 @@ def _now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# TestWindow — a scheduled open/close span (may run a few days, not
+# AssessmentWindow — a scheduled open/close span (may run a few days, not
 # necessarily one) covering one or more events for one season.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class TestWindow:
+class AssessmentWindow:
     window_id: str
     season_id: str
     label: str = ""               # free text, purely descriptive — display
@@ -197,7 +204,7 @@ class TestWindow:
     created_by: str = ""
 
 
-def _window_to_dict(w: TestWindow) -> dict:
+def _window_to_dict(w: AssessmentWindow) -> dict:
     return {
         "window_id": w.window_id, "season_id": w.season_id, "label": w.label,
         "opens_at": w.opens_at, "closes_at": w.closes_at,
@@ -206,8 +213,8 @@ def _window_to_dict(w: TestWindow) -> dict:
     }
 
 
-def _dict_to_window(d: dict) -> TestWindow:
-    return TestWindow(
+def _dict_to_window(d: dict) -> AssessmentWindow:
+    return AssessmentWindow(
         window_id=d["window_id"], season_id=d.get("season_id", ""), label=d.get("label", ""),
         opens_at=d.get("opens_at", ""), closes_at=d.get("closes_at", ""),
         event_slugs=tuple(d.get("event_slugs") or ()), assignments=dict(d.get("assignments") or {}),
@@ -216,20 +223,20 @@ def _dict_to_window(d: dict) -> TestWindow:
     )
 
 
-def load_windows() -> dict[str, TestWindow]:
+def load_windows() -> dict[str, AssessmentWindow]:
     raw = _load_json(WINDOWS_FILE, {})
     return {wid: _dict_to_window(d) for wid, d in raw.items()}
 
 
-def get_window(window_id: str) -> TestWindow | None:
+def get_window(window_id: str) -> AssessmentWindow | None:
     return load_windows().get(window_id)
 
 
 def create_window(season_id: str, opens_at: str, closes_at: str,
-                   event_slugs: list[str], label: str = "", created_by: str = "") -> TestWindow:
+                   event_slugs: list[str], label: str = "", created_by: str = "") -> AssessmentWindow:
     """Validates event_slugs is a subset of the season's lineup and
     opens_at < closes_at, then creates the window and lazily creates one
-    Test per event (status "preparing", kept=[])."""
+    Assessment per event (status "preparing", kept=[])."""
     import seasons as seasons_mod
 
     season = seasons_mod.get_season(season_id)
@@ -244,7 +251,7 @@ def create_window(season_id: str, opens_at: str, closes_at: str,
         raise ValueError("opens_at must be before closes_at")
 
     window_id = uuid.uuid4().hex
-    window = TestWindow(
+    window = AssessmentWindow(
         window_id=window_id, season_id=season_id, label=label,
         opens_at=opens_at, closes_at=closes_at, event_slugs=tuple(event_slugs),
         created_at=_now_iso(), created_by=created_by,
@@ -252,14 +259,14 @@ def create_window(season_id: str, opens_at: str, closes_at: str,
     with _windows_transaction() as windows:
         windows[window_id] = window
     for slug in event_slugs:
-        _ensure_test(window_id, season_id, slug, created_by)
+        _ensure_assessment(window_id, season_id, slug, created_by)
     return window
 
 
 def update_window(window_id: str, label: str | None = None, opens_at: str | None = None,
-                   closes_at: str | None = None, event_slugs: list[str] | None = None) -> TestWindow:
-    """Edit a window's fields. Adding an event_slug lazily creates its Test;
-    removing one does NOT delete its Test record (it just stops appearing
+                   closes_at: str | None = None, event_slugs: list[str] | None = None) -> AssessmentWindow:
+    """Edit a window's fields. Adding an event_slug lazily creates its Assessment;
+    removing one does NOT delete its Assessment record (it just stops appearing
     on the active dashboard view) — never destroys data."""
     import seasons as seasons_mod
 
@@ -285,11 +292,11 @@ def update_window(window_id: str, label: str | None = None, opens_at: str | None
         )
         windows[window_id] = updated
     for slug in new_slugs:
-        _ensure_test(window_id, existing.season_id, slug, existing.created_by)
+        _ensure_assessment(window_id, existing.season_id, slug, existing.created_by)
     return updated
 
 
-def update_window_assignments(window_id: str, event_slug: str, usernames: list[str]) -> TestWindow:
+def update_window_assignments(window_id: str, event_slug: str, usernames: list[str]) -> AssessmentWindow:
     with _windows_transaction() as windows:
         existing = windows.get(window_id)
         if existing is None:
@@ -304,12 +311,12 @@ def update_window_assignments(window_id: str, event_slug: str, usernames: list[s
 
 
 # ---------------------------------------------------------------------------
-# Test — one event's test within one window.
+# Assessment — one event's assessment within one window.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class Test:
-    test_id: str
+class Assessment:
+    assessment_id: str
     window_id: str
     season_id: str
     event_slug: str
@@ -328,9 +335,9 @@ class Test:
     created_by: str = ""
 
 
-def _test_to_dict(t: Test) -> dict:
+def _assessment_to_dict(t: Assessment) -> dict:
     return {
-        "test_id": t.test_id, "window_id": t.window_id, "season_id": t.season_id,
+        "assessment_id": t.assessment_id, "window_id": t.window_id, "season_id": t.season_id,
         "event_slug": t.event_slug, "status": t.status, "kept": list(t.kept),
         "snapshot": t.snapshot, "snapshot_contexts": dict(t.snapshot_contexts),
         "overrides": dict(t.overrides),
@@ -341,17 +348,24 @@ def _test_to_dict(t: Test) -> dict:
     }
 
 
-def _dict_to_test(d: dict) -> Test:
-    # Lazy migration: older tests.json records may still say "building" (the
+def _dict_to_assessment(d: dict) -> Assessment:
+    # Lazy migration: older assessments.json records may still say "building" (the
     # status was renamed to "preparing" — "build" is Sci-Oly jargon for
-    # building *events*, which confused volunteers when reused for tests).
+    # building *events*, which confused volunteers when reused for assessments).
     # Normalizing here means any such record reads as "preparing" right away
     # and gets rewritten on its next save, with no separate migration script.
     status = d.get("status", "preparing")
     if status == "building":
         status = "preparing"
-    return Test(
-        test_id=d["test_id"], window_id=d.get("window_id", ""), season_id=d.get("season_id", ""),
+    return Assessment(
+        # Records written before the Test -> Assessment rename carry
+        # "test_id". Read either, exactly like the "building" status above:
+        # the record reads correctly straight away and is rewritten with the
+        # current key on its next save, so no separate migration script and
+        # no flag day. Renaming the FILES alone was not enough — the field
+        # inside each record needed this too.
+        assessment_id=d.get("assessment_id") or d["test_id"],
+        window_id=d.get("window_id", ""), season_id=d.get("season_id", ""),
         event_slug=d.get("event_slug", ""), status=status,
         kept=list(d.get("kept") or []), snapshot=d.get("snapshot"),
         snapshot_contexts=dict(d.get("snapshot_contexts") or {}),
@@ -363,58 +377,58 @@ def _dict_to_test(d: dict) -> Test:
     )
 
 
-def load_tests() -> dict[str, Test]:
-    raw = _load_json(TESTS_FILE, {})
-    return {tid: _dict_to_test(d) for tid, d in raw.items()}
+def load_assessments() -> dict[str, Assessment]:
+    raw = _load_json(ASSESSMENTS_FILE, {})
+    return {tid: _dict_to_assessment(d) for tid, d in raw.items()}
 
 
-def get_test(test_id: str) -> Test | None:
-    return load_tests().get(test_id)
+def get_assessment(assessment_id: str) -> Assessment | None:
+    return load_assessments().get(assessment_id)
 
 
-def get_test_for(window_id: str, event_slug: str) -> Test | None:
-    for t in load_tests().values():
+def get_assessment_for(window_id: str, event_slug: str) -> Assessment | None:
+    for t in load_assessments().values():
         if t.window_id == window_id and t.event_slug == event_slug:
             return t
     return None
 
 
-def tests_for_window(window_id: str) -> list[Test]:
-    return [t for t in load_tests().values() if t.window_id == window_id]
+def assessments_for_window(window_id: str) -> list[Assessment]:
+    return [t for t in load_assessments().values() if t.window_id == window_id]
 
 
-def _ensure_test(window_id: str, season_id: str, event_slug: str, created_by: str = "") -> Test:
-    """Lazily creates a Test for (window_id, event_slug) if one doesn't
-    already exist — never overwrites an existing Test (re-adding an event
-    that already has a Test, e.g. after it was removed and re-added to a
+def _ensure_assessment(window_id: str, season_id: str, event_slug: str, created_by: str = "") -> Assessment:
+    """Lazily creates an Assessment for (window_id, event_slug) if one doesn't
+    already exist — never overwrites an existing Assessment (re-adding an event
+    that already has an Assessment, e.g. after it was removed and re-added to a
     window, must not wipe out a test someone already built)."""
     # Fast-path check outside the lock (the common case: the test already
     # exists, so no write is needed). Re-checked inside the transaction
     # below to close the race where two threads both see "doesn't exist yet"
-    # and would otherwise create two Test records for the same pair.
-    existing = get_test_for(window_id, event_slug)
+    # and would otherwise create two Assessment records for the same pair.
+    existing = get_assessment_for(window_id, event_slug)
     if existing is not None:
         return existing
-    with _tests_transaction() as tests:
-        existing = next((t for t in tests.values()
+    with _assessments_transaction() as assessments:
+        existing = next((t for t in assessments.values()
                          if t.window_id == window_id and t.event_slug == event_slug), None)
         if existing is not None:
             return existing
-        test_id = uuid.uuid4().hex
-        t = Test(test_id=test_id, window_id=window_id, season_id=season_id, event_slug=event_slug,
+        assessment_id = uuid.uuid4().hex
+        t = Assessment(assessment_id=assessment_id, window_id=window_id, season_id=season_id, event_slug=event_slug,
                   created_at=_now_iso(), created_by=created_by)
-        tests[test_id] = t
+        assessments[assessment_id] = t
         return t
 
 
-def update_test_kept(test_id: str, kept: list, edited_by: str = "") -> Test:
+def update_assessment_kept(assessment_id: str, kept: list, edited_by: str = "") -> Assessment:
     """Autosave for the test-builder's persistent kept-set. Rejects once the
     test is no longer "preparing" (published/live and beyond) — edits past
     that point must go through the explicit unpublish exception path."""
-    with _tests_transaction() as tests:
-        existing = tests.get(test_id)
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
         if existing is None:
-            raise ValueError(f"unknown test {test_id!r}")
+            raise ValueError(f"unknown test {assessment_id!r}")
         if existing.status != "preparing":
             raise ValueError(f"test is {existing.status!r}, not editable — unpublish first")
         cleaned = []
@@ -425,7 +439,7 @@ def update_test_kept(test_id: str, kept: list, edited_by: str = "") -> Test:
                 "max_points": float(item.get("max_points") or 1),
             })
         updated = replace(existing, kept=cleaned, last_edited_by=edited_by, last_edited_at=_now_iso())
-        tests[test_id] = updated
+        assessments[assessment_id] = updated
     return updated
 
 
@@ -452,21 +466,21 @@ def _snapshot_one_question(q: dict, bucket: str, max_points: float) -> dict:
     return entry
 
 
-def publish_test(test_id: str, published_by: str = "") -> dict:
+def publish_assessment(assessment_id: str, published_by: str = "") -> dict:
     """Builds `snapshot`/`snapshot_contexts` from the live question bank for
     every kept question, sets status="published". A kept question deleted
     from the bank since being kept is skipped (not a hard failure) — the
     publish still succeeds with whatever could be resolved, and the caller
     is told what got skipped so it can be surfaced as a toast.
 
-    Returns {"test": Test, "skipped": [{"bucket","number"}]}.
+    Returns {"test": Assessment, "skipped": [{"bucket","number"}]}.
     """
     import build_question_bank as bqb
 
-    with _tests_transaction() as tests:
-        existing = tests.get(test_id)
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
         if existing is None:
-            raise ValueError(f"unknown test {test_id!r}")
+            raise ValueError(f"unknown test {assessment_id!r}")
         if existing.status != "preparing":
             raise ValueError(f"test is already {existing.status!r}")
         if not existing.kept:
@@ -503,14 +517,14 @@ def publish_test(test_id: str, published_by: str = "") -> dict:
             existing, status="published", snapshot=snapshot, snapshot_contexts=snapshot_contexts,
             published_at=_now_iso(), published_by=published_by,
         )
-        tests[test_id] = updated
+        assessments[assessment_id] = updated
     return {"test": updated, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
 # Markdown rendering — printing a test (and its key) to administer by hand
 #
-# Pure functions over a snapshot list, deliberately taking no Test/Window
+# Pure functions over a snapshot list, deliberately taking no Assessment/Window
 # object and touching no storage, so they are testable without building a
 # season and can be reused by anything holding questions in snapshot shape
 # (the Browse page's markdown export renders the same layouts).
@@ -630,7 +644,7 @@ def render_questions_markdown(snapshot: list, *, title: str, subtitle: str = "",
     return "\n".join(out)
 
 
-def snapshot_for_render(test: "Test") -> tuple[list, bool]:
+def snapshot_for_render(test: "Assessment") -> tuple[list, bool]:
     """The question list to print, and whether it is a draft.
 
     A published test prints from its frozen `snapshot` -- printing from the
@@ -669,47 +683,47 @@ def snapshot_for_render(test: "Test") -> tuple[list, bool]:
     return snapshot, True
 
 
-def unpublish_test(test_id: str) -> Test:
+def unpublish_assessment(assessment_id: str) -> Assessment:
     """Reverts a published/live test back to "preparing" for edits. Caller
     (review_app.py's route) is responsible for the guardrail checks (window
     not yet open, no saved responses) before calling this — this function
     itself only enforces the status precondition, not the timing/response
-    guardrails, since those need the TestWindow and Response data this
+    guardrails, since those need the AssessmentWindow and Response data this
     module-level function isn't handed."""
-    with _tests_transaction() as tests:
-        existing = tests.get(test_id)
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
         if existing is None:
-            raise ValueError(f"unknown test {test_id!r}")
+            raise ValueError(f"unknown test {assessment_id!r}")
         if existing.status not in ("published", "live"):
             raise ValueError(f"test is {existing.status!r}, not published/live")
         updated = replace(existing, status="preparing", snapshot=None, snapshot_contexts={},
                            published_at=None, published_by=None, live_at=None, live_by=None)
-        tests[test_id] = updated
+        assessments[assessment_id] = updated
     return updated
 
 
-def go_live_test(test_id: str, live_by: str = "") -> Test:
-    with _tests_transaction() as tests:
-        existing = tests.get(test_id)
+def go_live_assessment(assessment_id: str, live_by: str = "") -> Assessment:
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
         if existing is None:
-            raise ValueError(f"unknown test {test_id!r}")
+            raise ValueError(f"unknown test {assessment_id!r}")
         if existing.status != "published":
             raise ValueError(f"test is {existing.status!r}, must be 'published' first")
         updated = replace(existing, status="live", live_at=_now_iso(), live_by=live_by)
-        tests[test_id] = updated
+        assessments[assessment_id] = updated
     return updated
 
 
-def set_test_overrides(test_id: str, student_username: str, opens_at: str | None,
-                       closes_at: str | None, granted_by: str = "", reason: str = "") -> Test:
+def set_assessment_overrides(assessment_id: str, student_username: str, opens_at: str | None,
+                       closes_at: str | None, granted_by: str = "", reason: str = "") -> Assessment:
     """Upsert (opens_at/closes_at not None) or revoke (both None) a personal
     makeup-window override for one student on one test. A personal override
     is an INDEPENDENT clock from the class-wide window, not an extension of
     it — see effective_window()."""
-    with _tests_transaction() as tests:
-        existing = tests.get(test_id)
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
         if existing is None:
-            raise ValueError(f"unknown test {test_id!r}")
+            raise ValueError(f"unknown test {assessment_id!r}")
         overrides = dict(existing.overrides)
         if opens_at is None and closes_at is None:
             overrides.pop(student_username, None)
@@ -721,11 +735,11 @@ def set_test_overrides(test_id: str, student_username: str, opens_at: str | None
                 "granted_by": granted_by, "granted_at": _now_iso(), "reason": reason,
             }
         updated = replace(existing, overrides=overrides)
-        tests[test_id] = updated
+        assessments[assessment_id] = updated
     return updated
 
 
-def effective_window(test: Test, window: TestWindow, username: str) -> tuple[str, str]:
+def effective_window(test: Assessment, window: AssessmentWindow, username: str) -> tuple[str, str]:
     """A personal override, if one exists for this student on this test,
     wins outright over the class-wide window — independent clock, not an
     extension of it. Returns (opens_at, closes_at) as ISO8601 strings."""
@@ -735,7 +749,7 @@ def effective_window(test: Test, window: TestWindow, username: str) -> tuple[str
     return window.opens_at, window.closes_at
 
 
-def is_window_open(test: Test, window: TestWindow, username: str, now: datetime | None = None) -> bool:
+def is_window_open(test: Assessment, window: AssessmentWindow, username: str, now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     opens_s, closes_s = effective_window(test, window, username)
     opens = datetime.fromisoformat(opens_s)
@@ -747,7 +761,7 @@ def is_window_open(test: Test, window: TestWindow, username: str, now: datetime 
     return opens <= now <= closes
 
 
-def is_window_past(test: Test, window: TestWindow, username: str, now: datetime | None = None) -> bool:
+def is_window_past(test: Assessment, window: AssessmentWindow, username: str, now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     _, closes_s = effective_window(test, window, username)
     closes = datetime.fromisoformat(closes_s)
@@ -757,14 +771,14 @@ def is_window_past(test: Test, window: TestWindow, username: str, now: datetime 
 
 
 # ---------------------------------------------------------------------------
-# Response — one student's answers + grading for one Test.
+# Response — one student's answers + grading for one Assessment.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Response:
     student_username: str
-    test_id: str
-    question_order: list = field(default_factory=list)   # indices into Test.snapshot, stored once, stable
+    assessment_id: str
+    question_order: list = field(default_factory=list)   # indices into Assessment.snapshot, stored once, stable
     answers: dict = field(default_factory=dict)            # {number: {qtype, picked|text|picks}}
     auto_grade: dict = field(default_factory=dict)         # {number: {...,points_earned,points_possible}}
     manual_grade: dict = field(default_factory=dict)       # {number: {points_earned,points_possible,graded_by,graded_at,comment}}
@@ -779,7 +793,7 @@ class Response:
 
 def _response_to_dict(r: Response) -> dict:
     return {
-        "student_username": r.student_username, "test_id": r.test_id,
+        "student_username": r.student_username, "assessment_id": r.assessment_id,
         "question_order": list(r.question_order), "answers": dict(r.answers),
         "auto_grade": dict(r.auto_grade), "manual_grade": dict(r.manual_grade),
         "status": r.status, "started_at": r.started_at, "last_saved_at": r.last_saved_at,
@@ -790,7 +804,9 @@ def _response_to_dict(r: Response) -> dict:
 
 def _dict_to_response(d: dict) -> Response:
     return Response(
-        student_username=d.get("student_username", ""), test_id=d.get("test_id", ""),
+        student_username=d.get("student_username", ""),
+        # Same pre-rename fallback as _dict_to_assessment.
+        assessment_id=d.get("assessment_id") or d.get("test_id", ""),
         question_order=list(d.get("question_order") or []), answers=dict(d.get("answers") or {}),
         auto_grade=dict(d.get("auto_grade") or {}), manual_grade=dict(d.get("manual_grade") or {}),
         status=d.get("status", "in_progress"), started_at=d.get("started_at", ""),
@@ -800,9 +816,53 @@ def _dict_to_response(d: dict) -> Response:
     )
 
 
+# ---------------------------------------------------------------------------
+# Rename migration: Test -> Assessment
+#
+# The storage names changed with the terminology (test_windows.json ->
+# assessment_windows.json, tests.json -> assessments.json, test_responses/
+# -> assessment_responses/). An existing instance already has data under
+# the old names, and gunicorn imports review_app:app directly rather than
+# calling main(), so this runs at module level from review_app for the same
+# reason migrate_legacy_responses() does.
+#
+# Renames rather than copies, and only when the new name doesn't already
+# exist, so it is idempotent and a second process starting concurrently
+# can't duplicate anything. Never deletes: if both names somehow exist the
+# old one is left exactly where it is for a human to reconcile, because
+# picking a winner automatically is how you lose a season of responses.
+# ---------------------------------------------------------------------------
+
+_RENAMED_PATHS = [
+    (DATA_ROOT / "test_windows.json", WINDOWS_FILE),
+    (DATA_ROOT / "tests.json", ASSESSMENTS_FILE),
+    (DATA_ROOT / "test_responses", RESPONSES_DIR),
+]
+
+
+def migrate_test_to_assessment_names() -> list[str]:
+    """Move pre-rename storage to its current name. Returns what moved,
+    for the caller to log; empty on the common case of nothing to do."""
+    moved: list[str] = []
+    for old, new in _RENAMED_PATHS:
+        if not old.exists():
+            continue
+        if new.exists():
+            # Both present — refuse rather than merge or overwrite.
+            moved.append(f"SKIPPED {old.name}: {new.name} already exists, "
+                         f"reconcile by hand")
+            continue
+        with _lock_for(new):
+            if new.exists() or not old.exists():
+                continue
+            old.rename(new)
+            moved.append(f"{old.name} -> {new.name}")
+    return moved
+
+
 def migrate_legacy_responses() -> int:
     """One-time, idempotent migration from the pre-redesign single-file
-    _LEGACY_RESPONSES_FILE to the current per-(test_id, username) file
+    _LEGACY_RESPONSES_FILE to the current per-(assessment_id, username) file
     layout. Meant to be called once at process startup — see
     review_app.py, called at module level right next to
     jobs.recover_interrupted_jobs() for the identical reason: gunicorn
@@ -814,7 +874,7 @@ def migrate_legacy_responses() -> int:
     after the first successful run). Skips any pair whose new file
     already exists, so a partial or repeated run resumes rather than
     redoing or clobbering work. Never deletes the legacy file — renames
-    it to "test_responses.json.migrated" once every record has been
+    it to "assessment_responses.json.migrated" once every record has been
     written out, so a mistake here is trivially recoverable by hand
     instead of a silent data-loss risk."""
     if not _LEGACY_RESPONSES_FILE.exists():
@@ -824,9 +884,9 @@ def migrate_legacy_responses() -> int:
             return 0
         raw = _load_json_unlocked(_LEGACY_RESPONSES_FILE, {})
         migrated = 0
-        for test_id, by_user in raw.items():
+        for assessment_id, by_user in raw.items():
             for username, resp_dict in by_user.items():
-                path = _response_path(test_id, username)
+                path = _response_path(assessment_id, username)
                 if path.exists():
                     continue
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -837,27 +897,27 @@ def migrate_legacy_responses() -> int:
     return migrated
 
 
-def get_response(test_id: str, username: str) -> Response | None:
-    raw = _load_json(_response_path(test_id, username), None)
+def get_response(assessment_id: str, username: str) -> Response | None:
+    raw = _load_json(_response_path(assessment_id, username), None)
     return _dict_to_response(raw) if raw is not None else None
 
 
-def get_responses_for_test(test_id: str) -> dict[str, Response]:
+def get_responses_for_assessment(assessment_id: str) -> dict[str, Response]:
     """Every student's response for one test — only ever reads that test's
     own subdirectory, never touches any other test's data (unlike the old
     design, where this necessarily loaded every response in the app)."""
-    test_dir = RESPONSES_DIR / test_id
-    if not test_dir.is_dir():
+    assessment_dir = RESPONSES_DIR / assessment_id
+    if not assessment_dir.is_dir():
         return {}
     result: dict[str, Response] = {}
-    for path in test_dir.glob("*.json"):
+    for path in assessment_dir.glob("*.json"):
         raw = _load_json(path, None)
         if raw is not None:
             result[path.stem] = _dict_to_response(raw)
     return result
 
 
-def start_or_get_response(test_id: str, username: str, num_questions: int) -> Response:
+def start_or_get_response(assessment_id: str, username: str, num_questions: int) -> Response:
     """First call for a given (test, student) creates the Response with a
     freshly shuffled question_order, stored immediately so it never
     changes again for this student on this test — content stays identical
@@ -872,25 +932,25 @@ def start_or_get_response(test_id: str, username: str, num_questions: int) -> Re
     disk."""
     import random
 
-    with _response_transaction(test_id, username) as box:
+    with _response_transaction(assessment_id, username) as box:
         if box.value is not None:
             return box.value
         order = list(range(num_questions))
         random.shuffle(order)
-        r = Response(student_username=username, test_id=test_id, question_order=order,
+        r = Response(student_username=username, assessment_id=assessment_id, question_order=order,
                      started_at=_now_iso(), last_saved_at=_now_iso())
         box.value = r
         return r
 
 
-def save_answer(test_id: str, username: str, number: str, answer_payload: dict) -> Response:
+def save_answer(assessment_id: str, username: str, number: str, answer_payload: dict) -> Response:
     """Merges one question's answer into the student's `answers` dict. Reads
     the existing response and writes the merged result inside the same
     transaction — composing a separate get_response() + save would still
     lose answers (two autosave requests close together would each merge
     into their own stale copy of `answers`, and the second save would wipe
     out whatever the first one added)."""
-    with _response_transaction(test_id, username) as box:
+    with _response_transaction(assessment_id, username) as box:
         existing = box.value
         if existing is None:
             raise ValueError("no in-progress response — load the test first")
@@ -916,19 +976,19 @@ def save_answer(test_id: str, username: str, number: str, answer_payload: dict) 
 # reachable only when ALLOW_HARD_DELETE is set; see README's "Hard delete".
 # ---------------------------------------------------------------------------
 
-def count_responses_for_test(test_id: str) -> int:
+def count_responses_for_assessment(assessment_id: str) -> int:
     """How many student responses exist for a test. Counts files rather
     than parsing them -- this only ever feeds a confirmation dialog."""
-    test_dir = RESPONSES_DIR / test_id
-    if not test_dir.is_dir():
+    assessment_dir = RESPONSES_DIR / assessment_id
+    if not assessment_dir.is_dir():
         return 0
-    return sum(1 for _ in test_dir.glob("*.json"))
+    return sum(1 for _ in assessment_dir.glob("*.json"))
 
 
-def delete_response(test_id: str, username: str) -> bool:
+def delete_response(assessment_id: str, username: str) -> bool:
     """Remove one student's response to one test, letting them start it
     over. Returns False if there was nothing there."""
-    path = _response_path(test_id, username)
+    path = _response_path(assessment_id, username)
     with _lock_for(path):
         if not path.exists():
             return False
@@ -936,20 +996,20 @@ def delete_response(test_id: str, username: str) -> bool:
         return True
 
 
-def delete_responses_for_test(test_id: str) -> int:
+def delete_responses_for_assessment(assessment_id: str) -> int:
     """Remove every response to one test, and the test's response
     directory with them."""
-    test_dir = RESPONSES_DIR / test_id
-    if not test_dir.is_dir():
+    assessment_dir = RESPONSES_DIR / assessment_id
+    if not assessment_dir.is_dir():
         return 0
     n = 0
-    for path in list(test_dir.glob("*.json")):
+    for path in list(assessment_dir.glob("*.json")):
         with _lock_for(path):
             if path.exists():
                 path.unlink()
                 n += 1
     try:
-        test_dir.rmdir()
+        assessment_dir.rmdir()
     except OSError:
         # Something unexpected is still in there -- leave it rather than
         # forcing; the responses themselves are gone either way.
@@ -964,10 +1024,10 @@ def delete_responses_for_user(username: str) -> int:
     if not RESPONSES_DIR.is_dir():
         return 0
     n = 0
-    for test_dir in RESPONSES_DIR.iterdir():
-        if not test_dir.is_dir():
+    for assessment_dir in RESPONSES_DIR.iterdir():
+        if not assessment_dir.is_dir():
             continue
-        path = test_dir / f"{username}.json"
+        path = assessment_dir / f"{username}.json"
         with _lock_for(path):
             if path.exists():
                 path.unlink()
@@ -975,20 +1035,20 @@ def delete_responses_for_user(username: str) -> int:
     return n
 
 
-def delete_test_record(test_id: str) -> bool:
-    """Remove the Test itself. Responses are NOT touched here -- callers go
+def delete_assessment_record(assessment_id: str) -> bool:
+    """Remove the Assessment itself. Responses are NOT touched here -- callers go
     through deletion.py, which removes them first; deleting the test alone
     would orphan a directory nothing can name any more."""
-    with _tests_transaction() as tests:
-        if test_id not in tests:
+    with _assessments_transaction() as assessments:
+        if assessment_id not in assessments:
             return False
-        del tests[test_id]
+        del assessments[assessment_id]
         return True
 
 
 def delete_window_record(window_id: str) -> bool:
-    """Remove the TestWindow itself. Its Tests are NOT touched here -- see
-    delete_test_record's note."""
+    """Remove the AssessmentWindow itself. Its Assessments are NOT touched here -- see
+    delete_assessment_record's note."""
     with _windows_transaction() as windows:
         if window_id not in windows:
             return False
@@ -996,12 +1056,12 @@ def delete_window_record(window_id: str) -> bool:
         return True
 
 
-def tests_for_season(season_id: str) -> list[Test]:
-    """Every Test belonging to a season, across all its windows."""
-    return [t for t in load_tests().values() if t.season_id == season_id]
+def assessments_for_season(season_id: str) -> list[Assessment]:
+    """Every Assessment belonging to a season, across all its windows."""
+    return [t for t in load_assessments().values() if t.season_id == season_id]
 
 
-def used_question_keys(season_id: str, exclude_test_id: str = "") -> set[str]:
+def used_question_keys(season_id: str, exclude_assessment_id: str = "") -> set[str]:
     """`bucket::number` for every question already used by another test in
     this season, so the builder can keep a coach from unknowingly setting
     the same question twice in one year.
@@ -1016,8 +1076,8 @@ def used_question_keys(season_id: str, exclude_test_id: str = "") -> set[str]:
     and nothing about a new season makes last year's questions stale.
     """
     used: set[str] = set()
-    for test in load_tests().values():
-        if test.season_id != season_id or test.test_id == exclude_test_id:
+    for test in load_assessments().values():
+        if test.season_id != season_id or test.assessment_id == exclude_assessment_id:
             continue
         for item in test.kept or []:
             used.add(f"{item.get('bucket','')}::{item.get('number','')}")
@@ -1026,7 +1086,7 @@ def used_question_keys(season_id: str, exclude_test_id: str = "") -> set[str]:
     return used
 
 
-def windows_for_season(season_id: str) -> list[TestWindow]:
+def windows_for_season(season_id: str) -> list[AssessmentWindow]:
     return [w for w in load_windows().values() if w.season_id == season_id]
 
 
@@ -1057,13 +1117,13 @@ def _grade_matching(matching: dict, picks: dict, max_points: float) -> dict:
             "points_possible": max_points}
 
 
-def submit_response(test_id: str, username: str, snapshot: list, now: datetime | None = None,
+def submit_response(assessment_id: str, username: str, snapshot: list, now: datetime | None = None,
                     late: bool = False) -> Response:
     """Computes auto_grade for every MCQ/matching answer from the snapshot
     (never trusting client-side grading), sets status. FRQ items are left
     for manual grading (Part 5) — grading_status is derived on read from
     whether every FRQ has a manual_grade, not stored here."""
-    with _response_transaction(test_id, username) as box:
+    with _response_transaction(assessment_id, username) as box:
         existing = box.value
         if existing is None:
             raise ValueError("no in-progress response to submit")
@@ -1088,7 +1148,7 @@ def submit_response(test_id: str, username: str, snapshot: list, now: datetime |
     return updated
 
 
-def test_grading_complete(test_id: str, snapshot: list) -> bool:
+def assessment_grading_complete(assessment_id: str, snapshot: list) -> bool:
     """True iff every response with status in (submitted, auto_submitted_late)
     has a non-null manual_grade.points_earned for every FRQ in the snapshot.
     Recomputed on read (cheap — bounded by roster size x FRQ count) rather
@@ -1096,7 +1156,7 @@ def test_grading_complete(test_id: str, snapshot: list) -> bool:
     frq_numbers = [str(q.get("number")) for q in snapshot if q.get("qtype") == "frq"]
     if not frq_numbers:
         return True
-    for r in get_responses_for_test(test_id).values():
+    for r in get_responses_for_assessment(assessment_id).values():
         if r.status not in ("submitted", "auto_submitted_late"):
             continue
         for num in frq_numbers:
@@ -1106,11 +1166,11 @@ def test_grading_complete(test_id: str, snapshot: list) -> bool:
     return True
 
 
-def set_manual_grade(test_id: str, student_username: str, number: str, points_earned: float,
+def set_manual_grade(assessment_id: str, student_username: str, number: str, points_earned: float,
                      max_points: float, graded_by: str = "", comment: str = "") -> Response:
     if not (0 <= points_earned <= max_points):
         raise ValueError(f"points_earned must be between 0 and {max_points}")
-    with _response_transaction(test_id, student_username) as box:
+    with _response_transaction(assessment_id, student_username) as box:
         resp = box.value
         if resp is None:
             raise ValueError("no response on file for this student")
@@ -1124,31 +1184,31 @@ def set_manual_grade(test_id: str, student_username: str, number: str, points_ea
     return updated
 
 
-def release_grades(test_id: str, snapshot: list, released_by: str = "") -> int:
+def release_grades(assessment_id: str, snapshot: list, released_by: str = "") -> int:
     """Flips released=True (+released_at/released_by) on every submitted
-    response for this test. Per-response storage (not a single Test-level
+    response for this test. Per-response storage (not a single Assessment-level
     flag) because "released" is fundamentally about what a student can see
     of THEIR OWN response — a per-response fact, even though every
     response for a test is released at once. Requires
-    test_grading_complete() first; raises otherwise (the route re-checks
+    assessment_grading_complete() first; raises otherwise (the route re-checks
     this server-side regardless of whether the UI's button was disabled,
     never trusting client state).
 
     Unlike the old design, this can no longer hold one lock across every
-    student's release at once — each (test_id, username) pair has its own
+    student's release at once — each (assessment_id, username) pair has its own
     file/lock now, which is the whole point (see module docstring). So
     this reads the qualifying usernames once, then re-checks each one's
     status fresh inside ITS OWN transaction before flipping the flag —
     that per-student re-check is what keeps the same guarantee the old
     single big lock gave for free: nothing here acts on a status that's
     gone stale between the initial scan and that student's own lock."""
-    if not test_grading_complete(test_id, snapshot):
+    if not assessment_grading_complete(assessment_id, snapshot):
         raise ValueError("not every free-response question has been graded yet")
     count = 0
-    for username, r in get_responses_for_test(test_id).items():
+    for username, r in get_responses_for_assessment(assessment_id).items():
         if r.status not in ("submitted", "auto_submitted_late"):
             continue
-        with _response_transaction(test_id, username) as box:
+        with _response_transaction(assessment_id, username) as box:
             current = box.value
             if current is None or current.status not in ("submitted", "auto_submitted_late"):
                 continue

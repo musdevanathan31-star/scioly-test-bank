@@ -53,14 +53,14 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
         <tr>
           <td>{{ student }}</td>
           {% for col in columns %}
-          {% set cell = (grid.get(student) or {}).get(col.test.test_id) %}
+          {% set cell = (grid.get(student) or {}).get(col.assessment.assessment_id) %}
           <td class="score">
             {% if not cell %}
             <span class="muted">—</span>
             {% elif cell.pending %}
             <span class="badge badge-neutral">pending release</span>
             {% elif cell.detail_ok %}
-            <a href="{{ url_for('score_detail_page', test_id=col.test.test_id, student_username=student) }}">{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</a>
+            <a href="{{ url_for('score_detail_page', assessment_id=col.assessment.assessment_id, student_username=student) }}">{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</a>
             {% else %}
             <span>{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</span>
             {% endif %}
