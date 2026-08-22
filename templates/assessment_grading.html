@@ -8,6 +8,16 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .toggle-bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .frq-block{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:12px}
 .frq-block h3{margin:0 0 8px 0;font-size:14px}
+/* Deliberately distinct from the student answers below it: a grader
+   scanning the block must never mistake the model answer for someone's
+   submission. */
+.expected{background:var(--bg-alt);border:1px solid var(--line);
+  border-left:3px solid var(--ok);border-radius:4px;padding:7px 10px;
+  margin:0 0 10px 0;font-size:13px}
+.expected .lbl{display:block;font-size:10px;text-transform:uppercase;
+  letter-spacing:.04em;color:var(--muted);margin-bottom:2px}
+.expected .val{white-space:pre-wrap}
+.expected .val.none{color:var(--muted);font-style:italic}
 .answer-row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line-soft)}
 .answer-row:first-of-type{border-top:none}
 .answer-row .student{flex:0 0 140px;font-weight:600;font-size:13px}
@@ -109,10 +119,22 @@ function render(){
           </span>
         </div>`;
       }).join("");
+    // The expected answer is what a grader marks against, so it belongs on
+    // this page — it was in the payload (the snapshot carries
+    // correct_answer for every FRQ) but was never rendered, leaving graders
+    // to open the bank in another tab. Stated explicitly when absent, since
+    // a blank box here is indistinguishable from a bug.
+    const expected = (q.correct_answer || "").trim();
     return `
     <div class="frq-block">
       <h3>Q${esc(q.number)} <span class="muted" style="font-weight:400">(${q.max_points} pt)</span></h3>
       <p class="muted" style="font-size:12px">${esc(q.text)}</p>
+      <div class="expected">
+        <span class="lbl">Expected answer</span>
+        ${expected
+          ? `<span class="val">${esc(expected)}</span>`
+          : `<span class="val none">No expected answer was recorded for this question — grade on the question text.</span>`}
+      </div>
       ${rows || '<p class="muted">No submissions yet.</p>'}
     </div>`;
   }).join("");

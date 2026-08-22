@@ -200,7 +200,7 @@ On the **Tests** dashboard, pick the season, then:
 
 ### Run a assessment window and grade results
 
-On the **Grade** page each free-response answer has a **✓ Full** button next to its score box — one click awards the maximum points for that question and saves immediately, instead of typing the number in. It greys out once that answer is already at full marks, so you can see at a glance which ones you've already given full credit. Type in the box instead for partial credit.
+The **Grade** page shows each question's **expected answer** in a boxed panel above the student responses, so you can mark without opening the bank in another tab. If no answer was ever recorded for that question it says so explicitly rather than showing a blank. Each free-response answer has a **✓ Full** button next to its score box — one click awards the maximum points for that question and saves immediately, instead of typing the number in. It greys out once that answer is already at full marks, so you can see at a glance which ones you've already given full credit. Type in the box instead for partial credit.
 
 Once a test is live and its window opens, rostered students see it as "Current" on **My Assessments** and can take it (one question at a time, no correctness feedback, countdown to close). After the window closes (or sooner):
 1. Click **Grade** on the test's row (Assessments dashboard) — lists every free-response answer needing a score, with the snapshotted reference answer alongside each student's submission. Enter points (capped at that question's max) per answer; autosaves on blur.

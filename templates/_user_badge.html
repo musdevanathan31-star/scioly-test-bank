@@ -59,9 +59,6 @@
       <a class="nav-link" href="{{ url_for('index') }}">🧪 Event Management</a>
       {% if current_user.role == "coach" %}
       <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club Management</a>
-      <a class="nav-link" href="{{ url_for('admin_jobs_page') }}">⏳ Jobs</a>
-      {% elif nav_events %}
-      {{ nav_event_group("⏳ Jobs", "event_jobs_page") }}
       {% endif %}
       {# Settings closes this group for the roles that have one. It's
          available to every role, though, so a student gets it in the last
@@ -71,6 +68,16 @@
 
     {# --- Everyone ------------------------------------------------------- #}
     <div class="nav-sep"></div>
+    {# Jobs sits with the other "check on something" destinations rather
+       than with the club-administration group: it's a status view, not a
+       thing you configure. Coaches get the cross-event dashboard; a
+       volunteer has no route to that (it's @coach_required), so they get
+       the per-event accordion instead. #}
+    {% if current_user.role == "coach" %}
+      <a class="nav-link" href="{{ url_for('admin_jobs_page') }}">⏳ Jobs</a>
+    {% elif current_user.role == "volunteer" and nav_events %}
+      {{ nav_event_group("⏳ Jobs", "event_jobs_page") }}
+    {% endif %}
     {% if current_user.role not in ("coach", "volunteer") %}
     <a class="nav-link" href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys">⚙ Settings</a>
     {% endif %}
