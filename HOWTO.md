@@ -287,7 +287,12 @@ Two things to know:
   set is always kept: the best-identified one, preferring a real
   Division/Event/Year/Tournament path over `_Unknown…` or a gibberish folder.
   You are shown exactly which copy survives before anything happens, and
-  removed copies go to the trash.
+  removed copies go to the trash, all under one folder for the sweep, each
+  keeping its original archive path so nothing is lost to a name collision.
+  A sweep of a few hundred files takes seconds and shows a blocking notice
+  while it runs; the "sets of identical files" count updates when it
+  finishes. **Select all on this page** means exactly that — if the panel
+  says "Showing 50 of 61", it selects those 50.
 - **Rebuilding** shows each step — scan folders, compare by size, hash
   candidates, save — so you can see what is finished, what is running and
   what has not started. The button stays disabled until it ends, and

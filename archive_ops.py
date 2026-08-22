@@ -311,15 +311,22 @@ def delete_empty_folders(rel: str = "", by: str = "") -> dict:
                 "count": len(removed)}
 
 
-def remove_duplicates(ids: list, scope: str = "", by: str = "") -> dict:
+def remove_duplicates(ids: list, scope: str = "", by: str = "",
+                      progress=None) -> dict:
     """Delete every copy but one in each named duplicate group.
 
     Takes group ids, not paths. The server re-derives what to delete from
     its own index, so a client cannot ask for every copy of something to go.
 
-    Deletions are individual trash moves, so an interruption leaves a
-    coherent half-done state rather than a partial batch nobody can account
-    for. Each one is logged.
+    Batched deliberately. Routing each file through delete() re-parsed and
+    re-serialised the whole index per file -- 14ms each, so a sweep of 1800
+    duplicates took 26 seconds during which the page looked dead. The moves
+    happen first, then the index is updated once.
+
+    The whole batch shares one trash folder, with each file kept under its
+    original archive-relative path inside it. Basenames here collide
+    constantly ("test.pdf" a thousand times over), so flattening them into
+    one directory would lose files to overwrites.
     """
     with _lock:
         groups = ta.groups_by_hash(ids)
@@ -333,25 +340,44 @@ def remove_duplicates(ids: list, scope: str = "", by: str = "") -> dict:
             groups = scoped
         plan = ta.plan_dedupe(groups)
 
-        removed, failed = [], []
-        for entry in plan["groups"]:
-            for rel in entry["remove"]:
-                try:
-                    delete(rel, by=by)
-                    removed.append(rel)
-                except (ArchiveOpError, OSError) as e:
-                    # A file that vanished since the index was built is not a
-                    # reason to abandon the rest of the batch.
-                    failed.append({"path": rel, "error": str(e)})
+        targets = [(rel, entry["size"])
+                   for entry in plan["groups"] for rel in entry["remove"]]
+        total = len(targets)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest_root = trash_dir() / f"archive-duplicates-{stamp}"
+
+        removed, failed, done = [], [], 0
+        for rel, size in targets:
+            try:
+                path = ta.safe_path(rel)
+                dest = dest_root / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(dest))
+                removed.append((rel, size))
+            except (ArchiveOpError, ValueError, OSError) as e:
+                # A file that vanished since the index was built is not a
+                # reason to abandon the rest of the batch.
+                failed.append({"path": rel, "error": str(e)})
+            done += 1
+            if progress is not None:
+                progress(done, total)
+
+        ta.index_remove_files(removed)
         if removed:
+            # Both lists in full, not a sample. Batching cost the per-file
+            # delete entries, and a destructive sweep is exactly the thing
+            # an audit trail exists for -- these run rarely, so the line
+            # length is worth the completeness.
             log_op("dedupe", scope=scope, by=by, removed=len(removed),
-                   kept=[g["keep"] for g in plan["groups"]][:50],
-                   bytes=sum(g["size"] for g in plan["groups"]
-                             for _ in g["remove"]))
-        return {"action": "dedupe", "removed": removed, "failed": failed,
+                   trash=str(dest_root),
+                   paths=[rel for rel, _s in removed],
+                   kept=[g["keep"] for g in plan["groups"]],
+                   bytes=sum(size for _rel, size in removed))
+        return {"action": "dedupe", "removed": [rel for rel, _s in removed],
+                "failed": failed,
                 "kept": [g["keep"] for g in plan["groups"]],
-                "count": len(removed),
-                "reclaimed_bytes": plan["reclaimed_bytes"]}
+                "count": len(removed), "trash": str(dest_root),
+                "reclaimed_bytes": sum(size for _rel, size in removed)}
 
 
 def tournament_names(prefix: str = "", limit: int = 20) -> list:

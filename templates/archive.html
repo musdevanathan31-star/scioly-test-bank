@@ -139,6 +139,16 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
   </div>
 </div>
 
+<div class="overlay" id="busy" style="display:none">
+  <div class="sheet" style="max-width:420px">
+    <div class="body" style="background:var(--bg-card);padding:22px">
+      <div class="spinner" style="margin-bottom:10px"></div>
+      <div><b id="busy_msg"></b></div>
+      <div class="muted" style="font-size:12px;margin-top:6px" id="busy_note"></div>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="rn" style="display:none">
   <div class="sheet" style="max-width:520px">
     <header><span class="nm"><b>Rename folder</b></span></header>
@@ -188,13 +198,15 @@ async function refreshStatus(){
   const el = document.getElementById("stat");
   const d = s.duplicates || {};
   const dupsec = document.getElementById("dupsec");
-  if(d.groups){
-    dupsec.style.display = "";
-    document.getElementById("dupline").textContent =
-      `${d.groups.toLocaleString()} sets of identical files — `
-      + `${d.files.toLocaleString()} copies, ${fmtBytes(d.reclaimable_bytes)} reclaimable`;
-  } else {
-    dupsec.style.display = "none";
+  if(dupsec){
+    // Always rewrite the line, even when hiding the section: leaving the
+    // previous count in place is how a finished sweep looks like it did
+    // nothing.
+    document.getElementById("dupline").textContent = d.groups
+      ? `${d.groups.toLocaleString()} sets of identical files — `
+        + `${d.files.toLocaleString()} copies, ${fmtBytes(d.reclaimable_bytes)} reclaimable`
+      : "No duplicate files.";
+    dupsec.style.display = d.groups ? "" : "none";
   }
   if(!s.root_exists){
     el.innerHTML = `<span>No archive directory yet. Upload into </span>`
@@ -220,6 +232,17 @@ async function refreshStatus(){
 // absent for a volunteer, and wrapping their wiring in `if(IS_COACH){...}`
 // instead would block-scope every function declared inside it -- which
 // silently broke the preview's rename button, since that lives outside.
+// A long operation with no visible state reads as a broken page. Removing a
+// few hundred duplicates takes seconds, so it gets a blocking overlay rather
+// than leaving the user to guess whether their click registered.
+function busy(msg, note){
+  document.getElementById("busy_msg").textContent = msg;
+  document.getElementById("busy_note").textContent = note || "";
+  document.getElementById("busy").style.display = "flex";
+}
+
+function unbusy(){ document.getElementById("busy").style.display = "none"; }
+
 function on(id, event, fn){
   const el = document.getElementById(id);
   if(el) el.addEventListener(event, fn);
@@ -481,10 +504,18 @@ on("prune", "click", async () => {
       + "left alone. Empty folders have no content to recover, so these are "
       + "removed outright rather than trashed.",
       {wide: true, confirmLabel: "Remove empty folders"})) return;
-  const r = await fetch(`${APP_ROOT}/api/archive/prune-empty`, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({path: CURRENT})});
-  const j = await r.json();
+  busy("Removing empty folders…", "Scanning the whole subtree.");
+  let j;
+  try {
+    const r = await fetch(`${APP_ROOT}/api/archive/prune-empty`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({path: CURRENT})});
+    j = r.ok ? await r.json() : {error: `The server returned ${r.status}.`};
+  } catch (err) {
+    j = {error: `The request did not complete: ${err.message}`};
+  } finally {
+    unbusy();
+  }
   const msg = document.getElementById("opsmsg");
   if(j.error){ msg.textContent = j.error; return; }
   const n = j.result.count;
@@ -643,16 +674,29 @@ async function removeSelectedDuplicates(scope){
       + `One copy of each is kept — the best-identified one:\n\n${sample}${more}`
       + "\n\nRemoved copies go to the trash.",
       {wide: true, danger: true, confirmLabel: "Remove duplicates"})) return;
-  const r = await fetch(`${APP_ROOT}/api/archive/duplicates/remove`, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ids, path: scope || ""})});
-  const j = await r.json();
+  busy(`Removing ${plan.files.toLocaleString()} duplicate file(s)…`,
+       "Moving them to the trash and updating the index.");
+  let j;
+  try {
+    const r = await fetch(`${APP_ROOT}/api/archive/duplicates/remove`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids, path: scope || ""})});
+    // A non-JSON body means the request failed somewhere before the app --
+    // reporting that beats leaving the page looking untouched.
+    j = r.ok ? await r.json()
+             : {error: `The server returned ${r.status}. Nothing was removed.`};
+  } catch (err) {
+    j = {error: `The request did not complete: ${err.message}`};
+  } finally {
+    unbusy();
+  }
   if(j.error){ await confirmModal(j.error, {confirmLabel: "OK"}); return; }
   DUPSEL.clear();
   updateDupBar();
   const failed = (j.result.failed || []).length;
   document.getElementById("dupmsg").textContent =
-    `Removed ${j.result.count} file(s)`
+    `Removed ${j.result.count.toLocaleString()} file(s), reclaiming `
+    + `${fmtBytes(j.result.reclaimed_bytes)}`
     + (failed ? `; ${failed} could not be removed.` : ".");
   await refreshStatus();
   await loadDuplicates(true);

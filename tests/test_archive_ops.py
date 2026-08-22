@@ -380,13 +380,29 @@ def test_an_unknown_hash_removes_nothing(dups):
     assert len(list(ta.archive_root().rglob("*.pdf"))) == before
 
 
-def test_bulk_removal_is_logged(dups):
+def test_bulk_removal_is_logged_in_full(dups):
     ops, ta = dups
     group = ta.load_index()["duplicates"][0]
-    ops.remove_duplicates([group["id"]], by="coach1")
-    actions = [e["action"] for e in ops.read_ops()]
-    # Each file's own delete is logged too, so the trail explains the total.
-    assert "dedupe" in actions and "delete" in actions
+    result = ops.remove_duplicates([group["id"]], by="coach1")
+    entry = ops.read_ops()[0]
+    # One entry for the batch rather than one per file -- but it names every
+    # path on both sides, because a destructive sweep is exactly what an
+    # audit trail is for and a sample would not let anyone reconstruct it.
+    assert entry["action"] == "dedupe"
+    assert entry["by"] == "coach1"
+    assert sorted(entry["paths"]) == sorted(result["removed"])
+    assert entry["kept"] == result["kept"]
+    assert entry["removed"] == len(result["removed"])
+
+
+def test_a_bulk_sweep_keeps_the_original_paths_in_the_trash(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    result = ops.remove_duplicates([group["id"]])
+    # Basenames collide constantly here, so flattening a batch into one
+    # directory would lose files to overwrites. Each keeps its archive path.
+    for rel in result["removed"]:
+        assert (Path(result["trash"]) / rel).is_file(), rel
 
 
 # ---------------------------------------------------------------------------
@@ -494,3 +510,34 @@ def test_renaming_follows_the_duplicate_paths(dups):
     # A group pointing at the old path would offer files that cannot be found.
     for p in after["paths"]:
         assert (ta.archive_root() / p).exists(), p
+
+
+def test_a_bulk_sweep_updates_the_index_once(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    saves = []
+    real = ta.save_index
+    try:
+        ta.save_index = lambda idx: (saves.append(1), real(idx))[1]
+        ops.remove_duplicates([group["id"]])
+    finally:
+        ta.save_index = real
+    # One rewrite for the batch. Per-file index maintenance re-parsed and
+    # re-serialised the whole index for every deletion -- 14ms each, which
+    # made a 1800-file sweep take 26 seconds of apparently-dead page.
+    assert saves == [1], f"{len(saves)} index rewrites for one sweep"
+
+
+def test_a_missing_file_does_not_abandon_the_batch(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    plan = ta.plan_dedupe([group])
+    doomed = plan["groups"][0]["remove"]
+    assert len(doomed) >= 2
+    # Something removed it between the index build and now.
+    (ta.archive_root() / doomed[0]).unlink()
+    result = ops.remove_duplicates([group["id"]])
+    assert len(result["failed"]) == 1
+    assert result["count"] == len(doomed) - 1
+    # The keeper still survives, which is the invariant that matters.
+    assert (ta.archive_root() / result["kept"][0]).is_file()
