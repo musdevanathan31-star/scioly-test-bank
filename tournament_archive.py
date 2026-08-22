@@ -319,7 +319,7 @@ def index_move(old_rel: str, new_rel: str) -> None:
     subtracts from the old chain and adds to the new. Doing both
     unconditionally handles either without a special case.
     """
-    index = load_index()
+    index = _load_for_write()
     if index is None:
         return
     dirs = index.get("dirs") or {}
@@ -360,7 +360,7 @@ def index_move(old_rel: str, new_rel: str) -> None:
 
 def index_remove(rel: str) -> None:
     """Drop a subtree and subtract its totals from every ancestor."""
-    index = load_index()
+    index = _load_for_write()
     if index is None:
         return
     dirs = index.get("dirs") or {}
@@ -383,7 +383,7 @@ def index_remove(rel: str) -> None:
 
 def index_remove_file(rel: str, size: int) -> None:
     """Drop one file: its own directory's counts, and every ancestor's totals."""
-    index = load_index()
+    index = _load_for_write()
     if index is None:
         return
     dirs = index.get("dirs") or {}
@@ -398,7 +398,7 @@ def index_remove_file(rel: str, size: int) -> None:
 
 def index_add_dir(rel: str) -> None:
     """Register a newly created (necessarily empty) folder."""
-    index = load_index()
+    index = _load_for_write()
     if index is None:
         return
     dirs = index.get("dirs") or {}
@@ -647,7 +647,9 @@ def groups_under(rel: str = "", limit: int | None = None,
     index = load_index() or {}
     all_groups = index.get("duplicates") or []
     if not rel:
-        scoped = all_groups
+        # A copy: sorting below would otherwise reorder the cached index's
+        # own list in place.
+        scoped = list(all_groups)
     else:
         prefix = rel.rstrip("/") + "/"
         scoped = []
@@ -677,8 +679,26 @@ def groups_by_hash(ids: list) -> list:
 
 def _duplicate_lookup(index: dict | None = None) -> dict:
     """rel path -> group hash, so a listing can mark which files are copies
-    without carrying the whole duplicate table into every browse call."""
-    idx = index if index is not None else load_index()
+    without carrying the whole duplicate table into every browse call.
+
+    Memoised beside the parsed index: rebuilding it per listing is cheap
+    next to parsing, but it is derived from exactly the same data and
+    invalidates on exactly the same key.
+    """
+    if index is None:
+        with _index_lock:
+            cached = _index_cache["dup_lookup"]
+            if cached is not None:
+                return cached
+        idx = load_index()
+        out = _build_dup_lookup(idx)
+        with _index_lock:
+            _index_cache["dup_lookup"] = out
+        return out
+    return _build_dup_lookup(index)
+
+
+def _build_dup_lookup(idx: dict | None) -> dict:
     out = {}
     for g in (idx or {}).get("duplicates") or []:
         for rel in g["paths"]:
@@ -686,32 +706,86 @@ def _duplicate_lookup(index: dict | None = None) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# In-process cache
+#
+# Every browse click, and every poll of /api/archive/status, used to re-read
+# and re-parse the whole index from disk. json.loads holds the GIL and the
+# app runs --workers 1 --threads 8, so that parse is not merely this
+# request's cost -- it stalls every other thread for its duration. Measured
+# at roughly 17ms per megabyte of index.
+#
+# One process means one cache with no coherence problem. The key is the
+# file's identity (mtime_ns and size), so a rebuild or a patched index
+# re-parses on the next read without anyone having to remember to invalidate.
+# ---------------------------------------------------------------------------
+
+_index_cache: dict = {"key": None, "data": None, "dup_lookup": None}
+
+
+def _index_key():
+    try:
+        st = INDEX_FILE.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def save_index(index: dict) -> None:
     with _index_lock:
         tmp = INDEX_FILE.with_suffix(INDEX_FILE.suffix + ".tmp")
         tmp.write_text(json.dumps(index), encoding="utf-8")
         os.replace(tmp, INDEX_FILE)
+        # Seed the cache from what we already hold rather than making the
+        # next reader parse back what this writer just serialised -- but
+        # only when it would survive a read. Seeding unconditionally let a
+        # wrong-schema index be served straight back out of memory, skipping
+        # the check that exists to discard it.
+        if index.get("schema") == INDEX_SCHEMA_VERSION:
+            _index_cache.update(key=_index_key(), data=index, dup_lookup=None)
+        else:
+            _index_cache.update(key=None, data=None, dup_lookup=None)
 
 
 def load_index() -> dict | None:
-    """The cached index, or None when it is absent or from an older schema.
+    """The index, or None when it is absent or from an older schema.
+
+    **Read-only.** The returned dict is shared with every other caller, so
+    anything that intends to modify it must use `_load_for_write()`.
 
     A schema mismatch returns None rather than attempting a migration:
     this is derived data that rebuilds from the filesystem in one pass, so
     a rebuild is always cheaper and safer than a conversion.
     """
     with _index_lock:
-        try:
-            data = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
+        key = _index_key()
+        if key is not None and key == _index_cache["key"]:
+            return _index_cache["data"]
+        data = _parse_index()
+        _index_cache.update(key=key, data=data, dup_lookup=None)
+        return data
+
+
+def _parse_index() -> dict | None:
+    try:
+        data = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
     if data.get("schema") != INDEX_SCHEMA_VERSION:
         return None
     return data
 
 
-def index_age_seconds() -> float | None:
-    idx = load_index()
+def _load_for_write() -> dict | None:
+    """A private copy for mutators, so patching it cannot corrupt the copy
+    other threads are reading from. They call save_index() when done, which
+    re-seeds the cache."""
+    with _index_lock:
+        return _parse_index()
+
+
+def index_age_seconds(index: dict | None = None) -> float | None:
+    idx = index if index is not None else load_index()
     if not idx:
         return None
     return max(0.0, time.time() - float(idx.get("built_at") or 0))
@@ -727,7 +801,7 @@ def summary() -> dict:
         "indexed": True,
         "root_exists": bool(idx.get("root_exists")),
         "built_at": idx.get("built_at"),
-        "age_seconds": index_age_seconds(),
+        "age_seconds": index_age_seconds(idx),
         "n_dirs": len(idx["dirs"]),
         "total_files": root.get("total_files", 0),
         "total_bytes": root.get("total_bytes", 0),
@@ -755,8 +829,10 @@ def list_dir(rel: str) -> dict:
 
     idx = load_index() or {"dirs": {}}
     dup_lookup = _duplicate_lookup(idx)
-    entry = idx["dirs"].get(rel_of(path))
-    depth = 0 if not rel_of(path) else len(rel_of(path).split("/"))
+    # rel_of() resolves the path, so compute it once instead of per use.
+    here_rel = rel_of(path)
+    entry = idx["dirs"].get(here_rel)
+    depth = 0 if not here_rel else len(here_rel.split("/"))
 
     # Names always come from disk, never from the index: one iterdir() on
     # the directory being viewed is cheap, and taking names from the index
@@ -764,13 +840,32 @@ def list_dir(rel: str) -> dict:
     # precisely the "upload, then browse" case this page exists for. The
     # index supplies the recursive totals, which are the part that actually
     # needs one.
-    subdir_names = sorted(
-        (p.name for p in path.iterdir()
-         if p.is_dir() and p.name not in IGNORED_NAMES), key=str.lower)
+    # One scandir pass, not two iterdir passes plus a stat per entry.
+    # os.DirEntry caches its type and stat from the directory read itself,
+    # so this is a single syscall's worth of work where the previous version
+    # paid one per file -- which measured as the dominant cost of a listing,
+    # ahead of parsing the index.
+    dir_entries, file_entries = [], []
+    try:
+        with os.scandir(path) as it:
+            for de in it:
+                if de.name in IGNORED_NAMES:
+                    continue
+                try:
+                    if de.is_dir():
+                        dir_entries.append(de)
+                    elif de.is_file():
+                        file_entries.append(de)
+                except OSError:
+                    continue
+    except OSError as e:
+        raise FileNotFoundError(str(e))
+
+    subdir_names = sorted((de.name for de in dir_entries), key=str.lower)
 
     subdirs = []
     for name in subdir_names:
-        child_rel = f"{rel_of(path)}/{name}" if rel_of(path) else name
+        child_rel = f"{here_rel}/{name}" if here_rel else name
         child = idx["dirs"].get(child_rel) or {}
         subdirs.append({
             "name": name,
@@ -783,27 +878,26 @@ def list_dir(rel: str) -> dict:
         })
 
     files = []
-    try:
-        for p in sorted(path.iterdir(), key=lambda x: x.name.lower()):
-            if p.name in IGNORED_NAMES or not p.is_file():
-                continue
-            try:
-                st = p.stat()
-                size, mtime = st.st_size, st.st_mtime
-            except OSError:
-                size, mtime = None, None
-            frel = rel_of(p)
-            files.append({"name": p.name, "rel": frel, "size": size,
-                          "mtime": mtime, "ext": p.suffix.lower(),
-                          # Which copies exist is answered by the duplicates
-                          # view; here it is only worth knowing THAT a file
-                          # has one, so the listing stays small.
-                          "dup": dup_lookup.get(frel)})
-    except OSError as e:
-        raise FileNotFoundError(str(e))
+    here = here_rel
+    for de in sorted(file_entries, key=lambda d: d.name.lower()):
+        try:
+            st = de.stat()
+            size, mtime = st.st_size, st.st_mtime
+        except OSError:
+            size, mtime = None, None
+        # Built by string join rather than rel_of(): the parent is already
+        # known, and resolving every file's path against the archive root
+        # was a syscall per entry for an answer we already had.
+        frel = f"{here}/{de.name}" if here else de.name
+        files.append({"name": de.name, "rel": frel, "size": size,
+                      "mtime": mtime, "ext": Path(de.name).suffix.lower(),
+                      # Which copies exist is answered by the duplicates
+                      # view; here it is only worth knowing THAT a file
+                      # has one, so the listing stays small.
+                      "dup": dup_lookup.get(frel)})
 
     return {
-        "rel": rel_of(path),
+        "rel": here_rel,
         "depth": depth,
         "level": level_name(depth - 1) if depth else "root",
         "child_level": level_name(depth),

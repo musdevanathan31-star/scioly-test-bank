@@ -391,3 +391,66 @@ def _wait_for_idle(mod, timeout=30):
             return
         time.sleep(0.02)
     raise AssertionError("build did not finish")
+
+
+# ---------------------------------------------------------------------------
+# The in-process index cache
+#
+# json.loads holds the GIL, and the app runs one worker with eight threads,
+# so re-parsing the index per request stalls every other thread for the
+# duration. These pin that it is cached, that it notices a change, and --
+# most importantly -- that a mutator cannot corrupt what readers hold.
+# ---------------------------------------------------------------------------
+
+def test_the_index_is_parsed_once_across_repeated_reads(archive, monkeypatch):
+    archive.save_index(archive.build_index())
+    parses = []
+    real = archive._parse_index
+    monkeypatch.setattr(archive, "_parse_index",
+                        lambda: (parses.append(1), real())[1])
+    for _ in range(5):
+        archive.list_dir("")
+        archive.summary()
+    assert parses == [], "a saved index should already be cached"
+
+
+def test_a_rebuilt_index_is_picked_up(archive):
+    archive.save_index(archive.build_index())
+    before = archive.summary()["total_files"]
+    p = archive.archive_root() / "Division B/Circuit Lab/2019/UF Invitational/extra.pdf"
+    p.write_bytes(b"y" * 10)
+    archive.save_index(archive.build_index())
+    assert archive.summary()["total_files"] == before + 1
+
+
+def test_an_index_written_by_another_process_is_noticed(archive):
+    import json
+    archive.save_index(archive.build_index())
+    assert archive.load_index() is not None
+    # Simulate a write this process did not make: the cache key is the
+    # file's identity, so it must re-read rather than serve its own copy.
+    doctored = archive.load_index()
+    raw = json.loads(json.dumps(doctored))
+    raw["dirs"][""]["total_files"] = 999
+    archive.INDEX_FILE.write_text(json.dumps(raw), encoding="utf-8")
+    assert archive.summary()["total_files"] == 999
+
+
+def test_a_mutation_does_not_corrupt_what_readers_hold(archive):
+    archive.save_index(archive.build_index())
+    held = archive.load_index()
+    n_before = len(held["dirs"])
+    (archive.archive_root() / "Division B/Fresh").mkdir(parents=True)
+    archive.index_add_dir("Division B/Fresh")
+    # The mutator works on its own copy, so the dict a reader was already
+    # holding is not rewritten underneath it.
+    assert len(held["dirs"]) == n_before
+    assert len(archive.load_index()["dirs"]) == n_before + 1
+
+
+def test_scoped_duplicate_groups_do_not_reorder_the_cached_index(dupes):
+    dupes.save_index(dupes.build_index())
+    idx = dupes.load_index()
+    order_before = [g["id"] for g in idx["duplicates"]]
+    dupes.groups_under("")
+    assert [g["id"] for g in dupes.load_index()["duplicates"]] == order_before

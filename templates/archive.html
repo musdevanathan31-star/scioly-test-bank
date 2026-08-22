@@ -344,7 +344,10 @@ async function pollBuild(){
     setBuilding(!!b.running);
     if(b.running){
       msg.textContent = "rebuilding…";
-      setTimeout(tick, 1000);
+      // 2s, not 1s: named steps do not need per-second granularity, and
+      // this is the one window where the server is already busy walking the
+      // whole archive.
+      setTimeout(tick, 2000);
       return;
     }
     POLLING = false;

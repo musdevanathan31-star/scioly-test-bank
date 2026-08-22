@@ -184,6 +184,31 @@ questions from — and gain a single-page PDF sibling, because
 finds. Converting on the way in means no viewer, route or template has to
 learn about image attachments. The original is kept beside it.
 
+## Request cost
+
+Measured after the first real build. Browsing was doing two things per click
+that scale badly and neither was the build:
+
+- **The whole index was re-read and re-parsed from disk on every call.**
+  `json.loads` holds the GIL and the app runs `--workers 1 --threads 8`, so
+  that parse stalled every other thread, not just the requesting one.
+  `summary()` did it twice (once directly, once via `index_age_seconds`), on
+  the endpoint the page polls during a rebuild. Now cached in-process, keyed
+  on the index file's mtime and size — one worker means one cache and no
+  coherence problem, and a rebuild or a patched index re-parses on the next
+  read without anyone remembering to invalidate. Mutators take a private
+  copy so patching cannot corrupt what readers hold.
+- **`list_dir` walked the directory twice and stat'd every entry
+  separately**, then resolved each file's path against the archive root — a
+  syscall per file for an answer the parent already knew. One `os.scandir`
+  pass now, using the cached type and stat that come from the directory read
+  itself.
+
+Together: **a browse click went from 29.5ms to 2.0ms** on a 2.4MB index
+(0.53MB: 27.3ms → 1.0ms). The rebuild poll also dropped from 1s to 2s —
+named steps do not need per-second granularity, and that is the one window
+where the server is already busy.
+
 ## Known risks
 
 - **Duplicate groups go stale after any mutation.** `stale_duplicates` marks
@@ -196,8 +221,11 @@ learn about image attachments. The original is kept beside it.
   `secure_filename()` strips non-ASCII entirely, so two distinct names can
   collapse into one. Import must check for collisions rather than trust the
   sanitised name.
-- **Index build time** on 65GB is unknown until measured. Phase 1 exists
-  partly to find out.
+- ~~**Index build time** on 65GB is unknown until measured.~~ **Measured:
+  about two minutes**, producing a 1.16MB index. Fast enough that duplicate
+  detection stays part of the normal rebuild and the mapping screen needs no
+  job treatment. The cost that mattered turned out to be *per request*, not
+  per build — see below.
 - **The pending server migration** now has 65GB more to rsync. Sequence the
   migration before the upload, or budget for it.
 - **Depth assumptions.** Files at the wrong depth, or directories where
