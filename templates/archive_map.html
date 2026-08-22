@@ -1,0 +1,177 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Archive mapping · {{ school_name }} Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:1100px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:600;font-size:12px;color:var(--muted);
+  padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:5px 8px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+tr:hover td{background:var(--row-hover)}
+td.num{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+select{max-width:260px}
+.sug{font-size:12px;color:var(--muted)}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+.grow{flex:1}
+tr.changed td{background:var(--row-hover)}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <h1>Archive mapping</h1>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+  <section>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      Each archive folder has to be tied to an event before volunteers can see
+      it. Unmapped folders — and everything under <code>_UnknownEvent</code> —
+      stay visible to coaches only.
+    </p>
+    <div class="bar">
+      <input id="filter" class="grow" placeholder="Filter by folder or division…">
+      <label class="muted" style="font-size:13px">
+        <input type="checkbox" id="unmapped_only"> Unmapped only</label>
+      <button id="accept">Accept all suggestions</button>
+      <button id="save" class="primary">Save</button>
+      <span class="muted" id="msg"></span>
+    </div>
+    <div id="body"><div class="muted">loading…</div></div>
+  </section>
+</div>
+<script>
+let ROWS = [], EVENTS = [], BY_NAME = {};
+const PENDING = new Map();       // key -> slug ("" means unmap)
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+  .replaceAll('"',"&quot;").replaceAll("'","&#39;"); }
+
+function fmtBytes(n){
+  if(n === null || n === undefined) return "";
+  const u = ["B","KB","MB","GB","TB"];
+  let i = 0, v = n;
+  while(v >= 1024 && i < u.length - 1){ v /= 1024; i++; }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+}
+
+function current(key){
+  const row = ROWS.find(r => r.key === key);
+  return PENDING.has(key) ? PENDING.get(key) : (row.slug || "");
+}
+
+function render(){
+  const q = document.getElementById("filter").value.trim().toLowerCase();
+  const unmappedOnly = document.getElementById("unmapped_only").checked;
+  const shown = ROWS.filter(r => {
+    if(unmappedOnly && current(r.key)) return false;
+    if(!q) return true;
+    return (r.folder + " " + r.division).toLowerCase().includes(q);
+  });
+  if(!shown.length){
+    document.getElementById("body").innerHTML =
+      '<div class="muted">Nothing matches.</div>';
+    return;
+  }
+  const opts = slug => EVENTS.map(e =>
+    `<option value="${esc(e.slug)}"${e.slug === slug ? " selected" : ""}>${esc(e.name)}</option>`
+  ).join("");
+  document.getElementById("body").innerHTML = `
+  <table><thead><tr>
+    <th>Division</th><th>Archive folder</th><th>Event</th><th>Contents</th>
+  </tr></thead><tbody>
+  ${shown.map(r => {
+    const slug = current(r.key);
+    const changed = PENDING.has(r.key) && PENDING.get(r.key) !== (r.slug || "");
+    return `<tr class="${changed ? "changed" : ""}">
+      <td class="muted">${esc(r.division)}</td>
+      <td>${esc(r.folder)}
+        ${!slug && r.suggestion ? `<div class="sug">suggested: ${esc(r.suggestion)}</div>` : ""}
+        ${slug && (BY_NAME[r.name_key] || []).length > 1
+          ? `<div class="sug"><a data-spread="${esc(r.key)}">apply to all
+             ${BY_NAME[r.name_key].length} divisions</a></div>` : ""}</td>
+      <td><select data-key="${esc(r.key)}">
+        <option value="">— not mapped —</option>${opts(slug)}
+      </select></td>
+      <td class="num">${(r.total_files || 0).toLocaleString()} files ·
+        ${fmtBytes(r.total_bytes)}</td>
+    </tr>`;
+  }).join("")}
+  </tbody></table>`;
+}
+
+document.addEventListener("change", e => {
+  if(e.target.matches("select[data-key]")){
+    PENDING.set(e.target.dataset.key, e.target.value);
+    render();
+  } else if(e.target.id === "unmapped_only"){
+    render();
+  }
+});
+document.getElementById("filter").addEventListener("input", render);
+
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-spread]");
+  if(!a) return;
+  // The same event under several divisions is the common case, and setting
+  // it once per division by hand is where a corpus this size gets tedious.
+  const src = ROWS.find(r => r.key === a.dataset.spread);
+  const slug = current(src.key);
+  let n = 0;
+  (BY_NAME[src.name_key] || []).forEach(key => {
+    if(key !== src.key && current(key) !== slug){ PENDING.set(key, slug); n++; }
+  });
+  document.getElementById("msg").textContent =
+    n ? `${n} other division${n === 1 ? "" : "s"} set — review, then Save.`
+      : "Every division already had that event.";
+  render();
+});
+
+document.getElementById("accept").addEventListener("click", () => {
+  // Only fills blanks. A suggestion must never quietly replace a decision a
+  // coach already made -- that is the one thing this screen exists to record.
+  let n = 0;
+  ROWS.forEach(r => {
+    if(!current(r.key) && r.suggestion){ PENDING.set(r.key, r.suggestion); n++; }
+  });
+  document.getElementById("msg").textContent =
+    n ? `${n} filled in — review, then Save.` : "No suggestions left to accept.";
+  render();
+});
+
+document.getElementById("save").addEventListener("click", async () => {
+  const msg = document.getElementById("msg");
+  if(!PENDING.size){ msg.textContent = "Nothing changed."; return; }
+  const pairs = {};
+  PENDING.forEach((slug, key) => { pairs[key] = slug; });
+  const r = await fetch(`${APP_ROOT}/api/archive/map`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({pairs})});
+  const j = await r.json();
+  if(!j.ok){ msg.textContent = j.error || "Could not save."; return; }
+  PENDING.forEach((slug, key) => {
+    const row = ROWS.find(x => x.key === key);
+    if(row){ row.slug = slug || null; if(slug) row.suggestion = null; }
+  });
+  PENDING.clear();
+  msg.textContent = `Saved — ${j.mapped} folder${j.mapped === 1 ? "" : "s"} mapped.`;
+  render();
+});
+
+(async () => {
+  const r = await fetch(`${APP_ROOT}/api/archive/map`);
+  const j = await r.json();
+  ROWS = j.rows || []; EVENTS = j.events || []; BY_NAME = j.by_name || {};
+  if(!j.indexed){
+    document.getElementById("body").innerHTML =
+      '<div class="muted">The archive has not been indexed yet — '
+      + `<a href="${APP_ROOT}/archive">rebuild the index</a> first.</div>`;
+    return;
+  }
+  render();
+})();
+</script>
+</body>
+</html>

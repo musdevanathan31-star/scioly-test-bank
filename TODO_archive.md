@@ -78,10 +78,26 @@ downloaded from two sources with different PDF metadata, will not be paired
 — that needs text or perceptual comparison, a different job with a
 different error rate, and is not planned.
 
-**Phase 2 — mapping and volunteer scoping.** `archive_event_map.json` maps
-`<Division>/<Event folder>` to an app slug, assigned by a coach with
-suggestions from normalised name matching against `events.EVENTS`. Volunteer
-access derives from it. Pure metadata; still no file moves.
+**Phase 2 — mapping and volunteer scoping.** *Done.* `archive_event_map.json`
+maps `<Division>/<Event folder>` to an app slug, assigned by a coach at
+`/archive/map` with suggestions from normalised name matching against
+`events.EVENTS`. Suggestions never auto-apply — a wrong mapping grants access
+to the wrong subtree, so a coach confirms. "Apply to all N divisions" handles
+the common case; keys stay independent so an inconsistently-named folder can
+still be corrected alone.
+
+Volunteer access derives from it, and **traversal is distinct from access**:
+a volunteer's subtree sits below a division that belongs to nobody, so
+requiring content access to *list* a folder would make their own events
+unreachable. They may pass through a division only when something below it
+is theirs, and a parent listing names only the branches they can enter —
+folder names alone would otherwise disclose the shape of the corpus. Barred
+paths return 404, not 403, for the same reason. Unmapped and `_UnknownEvent`
+stay coach-only.
+
+Import is open to volunteers (they already have this power via web upload);
+mapping, indexing and duplicate review stay coach-only. Pure metadata; still
+no file moves.
 
 **Phase 3 — mutations.** Rename, move, create, delete, each previewing the
 real counts ("moves 412 files, 3.1GB") before applying. Bulk moves run as

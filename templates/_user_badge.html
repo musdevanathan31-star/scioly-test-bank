@@ -84,9 +84,12 @@
     <div class="nav-sep"></div>
       <a class="nav-link" href="{{ url_for('assessments_dashboard_page') }}">🗓 Assessments</a>
       <a class="nav-link" href="{{ url_for('index') }}">🧪 Events</a>
+      {# The archive is browsable by volunteers, scoped to the events they
+         already hold; mapping folders to events stays a coach job. #}
+      <a class="nav-link" href="{{ url_for('archive_page') }}">🗃 Tournament archive</a>
       {% if current_user.role == "coach" %}
       <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club</a>
-      <a class="nav-link" href="{{ url_for('archive_page') }}">🗃 Tournament archive</a>
+      <a class="nav-link" href="{{ url_for('archive_map_page') }}">🔗 Archive mapping</a>
       {% endif %}
       {# Settings closes this group for the roles that have one. It's
          available to every role, though, so a student gets it in the last

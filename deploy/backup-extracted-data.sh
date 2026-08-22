@@ -78,6 +78,11 @@ for slug in "${EVENTS[@]}"; do
   fi
 done
 [ -f "$DATA_ROOT/events_custom.json" ] && cp "$DATA_ROOT/events_custom.json" "$DATABANK_DIR/"
+# Archive folder -> event mapping. Belongs in this tier, not restic: it is
+# hand-curated (expensive to redo, hundreds of decisions) but tiny, and
+# backup-bulk-data.sh iterates "*/" — directories only — so a top-level JSON
+# file would otherwise be backed up by neither mechanism.
+[ -f "$DATA_ROOT/archive_event_map.json" ] && cp "$DATA_ROOT/archive_event_map.json" "$DATABANK_DIR/"
 
 cd "$DATABANK_DIR"
 git add -A

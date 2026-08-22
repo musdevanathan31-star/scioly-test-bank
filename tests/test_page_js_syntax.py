@@ -58,6 +58,10 @@ def rendered_pages(tmp_path_factory):
     slug = sorted(review_app.EVENTS)[0]
     auth.create_user("coach1", "password123", "coach")
     auth.create_user("stu1", "password123", "student")
+    # A volunteer renders different branches of several pages -- the archive
+    # hides its coach-only controls, and JS that reaches for them anyway
+    # throws on the elements that are no longer there.
+    auth.create_user("vol1", "password123", "volunteer", events=[slug])
     bqb.set_event(slug)
     with bqb._state_transaction() as st:
         st.setdefault("questions", {})["s_test.pdf"] = [
@@ -75,12 +79,14 @@ def rendered_pages(tmp_path_factory):
     review_app.app.config["SESSION_COOKIE_SECURE"] = False
     paths = {
         "coach1": ["/", "/scores", "/assessments", "/club", "/admin/jobs", "/settings",
-                   "/archive",
+                   "/archive", "/archive/map",
                    f"/event/{slug}/", f"/event/{slug}/browse", f"/event/{slug}/sources",
                    f"/event/{slug}/quiz", f"/event/{slug}/jobs", f"/event/{slug}/scan",
                    f"/assessments/{a.assessment_id}/build",
                    f"/assessments/{a.assessment_id}/grade"],
         "stu1": ["/my-assessments", "/scores", "/settings"],
+        "vol1": ["/archive", "/assessments", "/scores", "/settings",
+                 f"/event/{slug}/", f"/event/{slug}/browse"],
     }
     pages = {}
     for who, page_paths in paths.items():
@@ -110,7 +116,7 @@ def test_every_page_was_reachable(rendered_pages):
     pages, _tmp = rendered_pages
     # If a page 404s or 500s it silently drops out of the sweep, which would
     # make this file quietly stop covering it.
-    assert len(pages) >= 18, sorted(pages)
+    assert len(pages) >= 25, sorted(pages)
 
 
 def test_no_page_has_a_javascript_syntax_error(rendered_pages):

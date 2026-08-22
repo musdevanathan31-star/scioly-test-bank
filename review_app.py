@@ -65,6 +65,7 @@ import download_event  # noqa: E402
 import presence  # noqa: E402
 import deletion  # noqa: E402
 import tournament_archive  # noqa: E402
+import archive_map  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -2631,32 +2632,48 @@ def api_jobs_active_count():
 
 
 # ---------------------------------------------------------------------------
-# Routes — tournament archive (Phase 1: read-only browse)
+# Routes — tournament archive
 #
-# Coach-only for now. Volunteer scoping needs the event-folder -> slug
-# mapping that Phase 2 introduces; until that exists there is no way to say
-# which archive subtree belongs to an event a volunteer can access, and
-# guessing from folder names would leak the rest. See TODO_archive.md.
+# Browsing is coach-or-volunteer; a volunteer sees only subtrees whose
+# <Division>/<Event> folder is mapped to an event they already hold, and the
+# filtering happens at the parent so folder names alone do not disclose the
+# shape of the rest of the corpus. Mapping, indexing and duplicate review
+# are coach-only: triage is a coach job. See archive_map.py.
 # ---------------------------------------------------------------------------
 
 @app.route("/archive")
-@coach_required
+@coach_or_volunteer_required
 def archive_page():
     return render_template("archive.html",
-                           archive_name=tournament_archive.ARCHIVE_DIRNAME)
+                           archive_name=tournament_archive.ARCHIVE_DIRNAME,
+                           is_coach=g.user.role == "coach")
 
 
 @app.route("/api/archive/list")
-@coach_required
+@coach_or_volunteer_required
 def api_archive_list():
     """One level of the tree. `?path=` is archive-relative; empty is root."""
     rel = request.args.get("path", "") or ""
+    if not archive_map.can_traverse(g.user, rel):
+        # 404 rather than 403: confirming that a path exists but is barred
+        # tells a volunteer what events the archive holds.
+        return jsonify({"error": f"no such folder: {rel}"}), 404
     try:
         listing = tournament_archive.list_dir(rel)
     except ValueError as e:            # containment failure
         return jsonify({"error": str(e)}), 400
     except FileNotFoundError:
         return jsonify({"error": f"no such folder: {rel}"}), 404
+
+    if g.user.role != "coach":
+        allowed = set(archive_map.visible_children(
+            g.user, listing["rel"], [d["name"] for d in listing["subdirs"]]))
+        listing["subdirs"] = [d for d in listing["subdirs"] if d["name"] in allowed]
+        # Files directly inside an unmapped folder belong to nobody. Above
+        # the mapping level there should be none anyway; if the tree
+        # violates the convention, erring towards hiding is the safe way.
+        if not archive_map.can_access(g.user, listing["rel"]):
+            listing["files"] = []
     listing["breadcrumbs"] = tournament_archive.breadcrumbs(listing["rel"])
     return jsonify(listing)
 
@@ -2667,7 +2684,8 @@ def api_archive_duplicates():
     """Byte-identical files, biggest wasted space first.
 
     Paginated: a corpus this size can produce a lot of groups, and the page
-    only ever shows a screenful."""
+    only ever shows a screenful. Coach-only — a duplicate group spans the
+    whole archive by definition, so it cannot be scoped to one event."""
     try:
         limit = max(1, min(500, int(request.args.get("limit", 100))))
         offset = max(0, int(request.args.get("offset", 0)))
@@ -2677,11 +2695,19 @@ def api_archive_duplicates():
 
 
 @app.route("/api/archive/status")
-@coach_required
+@coach_or_volunteer_required
 def api_archive_status():
-    return jsonify({**tournament_archive.summary(),
-                    "build": tournament_archive.build_status(),
-                    "archive_dir": str(tournament_archive.archive_root())})
+    payload = {**tournament_archive.summary(),
+               "build": tournament_archive.build_status(),
+               "archive_dir": str(tournament_archive.archive_root())}
+    if g.user.role != "coach":
+        # Whole-archive totals are a coach's view of the backlog. A
+        # volunteer's numbers would be wrong for what they can see, and
+        # right about what they cannot.
+        for key in ("total_files", "total_bytes", "n_dirs", "duplicates",
+                    "archive_dir"):
+            payload.pop(key, None)
+    return jsonify(payload)
 
 
 @app.route("/api/archive/reindex", methods=["POST"])
@@ -2698,6 +2724,46 @@ def api_archive_cancel():
     """Stop a running rebuild. Cooperative, so the reply means "asked", not
     "stopped" — the page keeps polling status to see it wind down."""
     return jsonify({"ok": True, "build": tournament_archive.cancel_build()})
+
+
+@app.route("/archive/map")
+@coach_required
+def archive_map_page():
+    return render_template("archive_map.html")
+
+
+@app.route("/api/archive/map")
+@coach_required
+def api_archive_map():
+    """Every <Division>/<Event> folder, its current mapping and a suggestion.
+
+    Also returns the name groups behind the "same slug for every division"
+    shortcut, so the client does not re-derive normalisation rules that
+    belong to the server."""
+    return jsonify({
+        "rows": archive_map.event_folders(),
+        "by_name": archive_map.folders_by_name(),
+        "events": [{"slug": slug, "name": ev.name}
+                   for slug, ev in sorted(events.EVENTS.items(),
+                                          key=lambda kv: kv[1].name)
+                   if not ev.archived],
+        "indexed": tournament_archive.load_index() is not None,
+    })
+
+
+@app.route("/api/archive/map", methods=["POST"])
+@coach_required
+def api_archive_map_save():
+    """Save a screenful at once. All-or-nothing on validation."""
+    data = request.get_json() or {}
+    pairs = data.get("pairs")
+    if not isinstance(pairs, dict):
+        return jsonify({"error": "pairs must be an object"}), 400
+    try:
+        entries = archive_map.set_many(pairs)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "mapped": len(entries)})
 
 
 @app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])
