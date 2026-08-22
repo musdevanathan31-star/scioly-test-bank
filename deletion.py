@@ -397,3 +397,96 @@ def delete(kind: str, *ident: str) -> dict:
     if kind not in _DELETE:
         raise DeletionError(f"unknown kind: {kind}")
     return _DELETE[kind](*ident)
+
+
+# ---------------------------------------------------------------------------
+# Operator CLI — bulk cleanup by username prefix
+#
+# Exists for one recurring job the web UI is a bad fit for: loadtest_*
+# accounts. A capacity run creates hundreds of synthetic students, and
+# before hard delete existed its cleanup could only *disable* them, so an
+# instance that has been load-tested a few times accumulates hundreds of
+# disabled accounts that make Manage Users unreadable. Deleting those one
+# dialog at a time is not a reasonable ask.
+#
+# Deliberately operator-only (no route): a prefix match that deletes every
+# matching account, their responses and their roster entries in one go is
+# exactly the sort of thing that should require a shell prompt and a
+# deliberate --yes rather than a button anyone with a stolen coach cookie
+# could reach.
+#
+#   python deletion.py --purge-prefix loadtest_            # dry run, lists
+#   python deletion.py --purge-prefix loadtest_ --yes      # actually delete
+#
+# Honours ALLOW_HARD_DELETE like everything else here, so an operator can't
+# route around the instance's own setting by dropping to a shell.
+# ---------------------------------------------------------------------------
+
+def users_with_prefix(prefix: str) -> list[str]:
+    """Every username starting with `prefix`, sorted. Empty prefix returns
+    nothing rather than every account -- a typo that selects the whole user
+    table is not a mistake worth making possible."""
+    if not prefix:
+        return []
+    return sorted(u for u in auth.load_users() if u.startswith(prefix))
+
+
+def _cli(argv: list[str]) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Bulk-delete accounts by username prefix (operator tool).")
+    parser.add_argument("--purge-prefix", required=True,
+                        help="delete every account whose username starts with this "
+                             "(e.g. loadtest_)")
+    parser.add_argument("--yes", action="store_true",
+                        help="actually delete; without this the run only lists")
+    args = parser.parse_args(argv)
+
+    if not enabled():
+        print("ALLOW_HARD_DELETE is not set for this instance — refusing.\n"
+              "Set it in the instance's .env (and unset it afterwards).")
+        return 2
+
+    names = users_with_prefix(args.purge_prefix)
+    if not names:
+        print(f"No accounts start with {args.purge_prefix!r}.")
+        return 0
+
+    # Count first, so the operator sees the real blast radius rather than
+    # just an account count -- same rule as the UI's confirm dialogs.
+    total_responses = total_roster = 0
+    for name in names:
+        try:
+            info = preview_user(name)
+        except DeletionError:
+            continue
+        total_responses += info["responses"]
+        total_roster += info["roster_entries"]
+
+    print(f"{len(names)} account(s) match {args.purge_prefix!r}:")
+    for name in names[:15]:
+        print(f"  {name}")
+    if len(names) > 15:
+        print(f"  ... and {len(names) - 15} more")
+    print(f"Deleting them also removes {total_responses} response(s) "
+          f"and {total_roster} roster entr{'y' if total_roster == 1 else 'ies'}.")
+
+    if not args.yes:
+        print("\nDry run — nothing deleted. Re-run with --yes to proceed.")
+        return 0
+
+    deleted = failed = 0
+    for name in names:
+        try:
+            delete_user(name)
+            deleted += 1
+        except DeletionError as e:
+            print(f"  ! {name}: {e}")
+            failed += 1
+    print(f"Deleted {deleted} account(s)" + (f", {failed} failed" if failed else "") + ".")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    raise SystemExit(_cli(_sys.argv[1:]))

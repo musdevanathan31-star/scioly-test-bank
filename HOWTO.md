@@ -387,6 +387,7 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Task | Who | Where |
 |---|---|---|
 | Bootstrap the very first account | operator (CLI) | `python auth.py --create-coach` |
+| Clear out leftover load-test accounts | operator (root) | `python deletion.py --purge-prefix loadtest_` (dry run), then `--yes` |
 | Provision a brand-new server box | operator (root) | `sudo deploy/provision-host.sh --dry-run`, then for real |
 | Inventory this host's secrets | operator (root) | `sudo deploy/migrate-secrets.sh --check` |
 | Move the server to a new machine | operator (root) | "For the server operator" above |

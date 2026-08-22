@@ -356,3 +356,44 @@ def test_missing_files_raise_rather_than_reporting_success(app_modules):
         deletion.preview_pdf("emptyev", "nope.pdf")
     with pytest.raises(deletion.DeletionError, match="no such event"):
         deletion.preview_pdf("no_such_event", "x.pdf")
+
+
+# ---------------------------------------------------------------------------
+# Bulk cleanup by username prefix (operator CLI)
+# ---------------------------------------------------------------------------
+
+def test_prefix_match_selects_only_matching_accounts(app_modules):
+    auth, deletion = app_modules["auth"], app_modules["deletion"]
+    auth.create_user("realstudent", "password123", "student")
+    for i in range(3):
+        auth.create_user(f"loadtest_ab12_{i:04d}", "password123", "student")
+
+    names = deletion.users_with_prefix("loadtest_")
+    assert names == ["loadtest_ab12_0000", "loadtest_ab12_0001", "loadtest_ab12_0002"]
+    assert "realstudent" not in names
+
+
+def test_empty_prefix_selects_nothing_rather_than_everyone(app_modules):
+    # A typo that silently selects the entire user table is not a mistake
+    # worth making possible.
+    auth, deletion = app_modules["auth"], app_modules["deletion"]
+    auth.create_user("realstudent", "password123", "student")
+    assert deletion.users_with_prefix("") == []
+
+
+def test_bulk_prefix_delete_leaves_real_accounts_and_their_data_alone(app_modules):
+    auth, assessments, deletion = (app_modules["auth"], app_modules["assessments"],
+                                   app_modules["deletion"])
+    _slug, _window, assessment = _season_with_test(app_modules)
+    auth.create_user("realstudent", "password123", "student")
+    auth.create_user("loadtest_ab12_0000", "password123", "student")
+    assessments.start_or_get_response(assessment.assessment_id, "realstudent", 2)
+    assessments.start_or_get_response(assessment.assessment_id, "loadtest_ab12_0000", 2)
+
+    for name in deletion.users_with_prefix("loadtest_"):
+        deletion.delete_user(name)
+
+    assert auth.get_user("loadtest_ab12_0000") is None
+    assert auth.get_user("realstudent") is not None
+    assert assessments.get_response(assessment.assessment_id, "realstudent") is not None
+    assert assessments.get_response(assessment.assessment_id, "loadtest_ab12_0000") is None

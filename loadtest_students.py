@@ -159,20 +159,60 @@ def create_synthetic_students(base_url: str, coach: requests.Session, season_id:
             for c in result.get("created", [])]
 
 
+LOADTEST_PREFIX = "loadtest_"
+
+
+def _purge_or_disable(base_url: str, coach: requests.Session, username: str) -> str:
+    """Remove one synthetic account. Returns "deleted", "disabled" or "failed".
+
+    Prefers a real delete, because these accounts are litter: they exist
+    only to have been typed at by a script, and leaving them disabled means
+    every later Manage Users screen is mostly load-test noise. Falls back to
+    disabling when the instance has ALLOW_HARD_DELETE off (the route 403s),
+    which is the correct answer there rather than an error -- that flag is
+    the operator's decision, not this script's.
+    """
+    try:
+        r = coach.delete(f"{base_url}/api/purge/user/{username}",
+                         headers=csrf_headers(coach), timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            return "deleted"
+        if r.status_code != 403:
+            print(f"  ! purge {username}: HTTP {r.status_code}", file=sys.stderr)
+        # 403 = hard delete not enabled on this instance; fall through.
+        r = coach.delete(f"{base_url}/admin/users/{username}",
+                         headers=csrf_headers(coach), timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            return "disabled"
+        print(f"  ! disable {username}: HTTP {r.status_code}", file=sys.stderr)
+        return "failed"
+    except requests.RequestException as e:
+        print(f"  ! cleanup {username}: {e}", file=sys.stderr)
+        return "failed"
+
+
+def _report_cleanup(counts: dict) -> None:
+    if counts.get("deleted"):
+        print(f"  {counts['deleted']} account(s) permanently deleted.")
+    if counts.get("disabled"):
+        print(f"  {counts['disabled']} account(s) disabled but NOT deleted — this instance "
+              f"has ALLOW_HARD_DELETE off. Set it and re-run with --cleanup-existing "
+              f"to remove them for good.")
+    if counts.get("failed"):
+        print(f"  {counts['failed']} account(s) could not be cleaned up (see errors above).",
+              file=sys.stderr)
+
+
 def disable_synthetic_students(base_url: str, coach: requests.Session,
                                 students: list[SyntheticStudent]) -> None:
     if not students:
         return
     print(f"Cleaning up {len(students)} synthetic student account(s)...")
+    counts: dict = {}
     for s in students:
-        try:
-            r = coach.delete(f"{base_url}/admin/users/{s.username}",
-                              headers=csrf_headers(coach), timeout=REQUEST_TIMEOUT)
-            if r.status_code != 200:
-                print(f"  ! failed to disable {s.username}: HTTP {r.status_code}", file=sys.stderr)
-        except requests.RequestException as e:
-            print(f"  ! failed to disable {s.username}: {e}", file=sys.stderr)
-    print("Cleanup done (accounts disabled, not hard-deleted — see auth.disable_user).")
+        outcome = _purge_or_disable(base_url, coach, s.username)
+        counts[outcome] = counts.get(outcome, 0) + 1
+    _report_cleanup(counts)
 
 
 # ---------------------------------------------------------------------------

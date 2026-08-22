@@ -727,7 +727,16 @@ Three properties are what make this safe enough to exist:
 - **Nothing goes without being counted first.** Every delete fetches a preview and puts the real cascade in the confirmation: *"This removes: 1 assessment window, 1 test, 41 student responses."* A cascade whose size is a surprise is the failure mode worth engineering against, since deleting one season can reasonably mean deleting a term's worth of student work. A test asserts the preview and the delete report the same numbers.
 - **Files are moved, not erased.** Deleting an event, a PDF, a source or a textbook relocates it under `<DATA_ROOT>/.deleted/`. The app can't see it any more, but a PDF library that took a season to assemble isn't destroyed by one click in a browser. Clearing that directory stays an operator's decision, made over SSH, with restic still covering it meanwhile.
 
-Coach-only on top of the flag, you can't delete your own account, and every delete is logged at WARNING with who did it and what went. Cascade policy lives in [`deletion.py`](deletion.py); each module keeps only record-level primitives that touch its own storage.
+Coach-only on top of the flag, you can't delete your own account, and every delete is logged at WARNING with who did it and what went.
+
+**Bulk cleanup by username prefix** (operator only, no route — a prefix match that removes hundreds of accounts plus their responses belongs behind a shell prompt, not a button):
+
+```
+python deletion.py --purge-prefix loadtest_          # dry run: lists, counts, deletes nothing
+python deletion.py --purge-prefix loadtest_ --yes    # actually delete
+```
+
+This exists for `loadtest_*` accounts specifically. A capacity run creates hundreds of synthetic students, and before hard delete existed [`loadtest_students.py`](loadtest_students.py) could only *disable* them on cleanup — so an instance that's been load-tested a few times accumulates disabled accounts that make Manage Users unreadable. The dry run reports the full blast radius (accounts, responses, roster entries) before you commit, an empty prefix matches nothing rather than everyone, and it honours `ALLOW_HARD_DELETE` so dropping to a shell can't route around the instance's own setting. Cascade policy lives in [`deletion.py`](deletion.py); each module keeps only record-level primitives that touch its own storage.
 
 **Note on "built-in" events**: there aren't any. `circuit_lab` and `thermodynamics` ship via `_seed_default_events()` specifically so they stay editable and archivable like any user-registered event ([`events.py`](events.py)'s `_BUILTIN_SLUGS` is deliberately empty), which also means they are deletable. The refusal path exists for any event later hardcoded into the registry literal.
 
