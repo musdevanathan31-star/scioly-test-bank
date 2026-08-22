@@ -200,6 +200,8 @@ On the **Tests** dashboard, pick the season, then:
 
 ### Run a test window and grade results
 
+On the **Grade** page each free-response answer has a **✓ Full** button next to its score box — one click awards the maximum points for that question and saves immediately, instead of typing the number in. It greys out once that answer is already at full marks, so you can see at a glance which ones you've already given full credit. Type in the box instead for partial credit.
+
 Once a test is live and its window opens, rostered students see it as "Current" on **My Tests** and can take it (one question at a time, no correctness feedback, countdown to close). After the window closes (or sooner):
 1. Click **Grade** on the test's row (Tests dashboard) — lists every free-response answer needing a score, with the snapshotted reference answer alongside each student's submission. Enter points (capped at that question's max) per answer; autosaves on blur.
 2. The row's "N/M FRQs graded" badge tracks progress; **Release grades** stays disabled until every FRQ for every submitted response is graded.
@@ -407,6 +409,7 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Go live / un-publish a test | Coach | Tests dashboard |
 | Grant a student a personal makeup window | Coach | Tests dashboard → + Makeup window |
 | Grade free-response answers | Coach, assigned Volunteer | Tests dashboard → Grade |
+| Award full marks on one answer in one click | Coach, assigned Volunteer | Grade page → ✓ Full next to the score box |
 | Release grades | Coach only | Tests dashboard → Release grades |
 | Take a live test | Student | My Tests |
 | View your own released results | Student | My Tests |
