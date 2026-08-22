@@ -7,7 +7,7 @@ last would silently overwrite the other's change. Confirmed directly: 15
 threads calling auth.create_user() concurrently for distinct usernames
 persisted only 1 of 15 accounts before the fix (auth._users_transaction(),
 seasons._seasons_transaction()/_rosters_transaction(),
-testing._windows_transaction()/_tests_transaction()/_responses_transaction(),
+testing._windows_transaction()/_tests_transaction()/_response_transaction(),
 build_question_bank._state_transaction()).
 
 Each test below uses a threading.Barrier so every worker thread starts its
@@ -131,7 +131,7 @@ def test_testing_concurrent_save_answer_no_lost_updates(tmp_path, monkeypatch):
     concurrently for the SAME (test_id, username) must all survive — the
     highest real-world-severity instance of this bug (many students
     autosaving during one timed window, all hitting one shared file)."""
-    monkeypatch.setattr(testing_mod, "RESPONSES_FILE", tmp_path / "test_responses.json")
+    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
     testing_mod.start_or_get_response("test1", "bob", num_questions=N)
 
     def _make(i):
@@ -149,7 +149,7 @@ def test_testing_concurrent_start_or_get_response_creates_once(tmp_path, monkeyp
     """Two simultaneous first-loads of the same (test, student) must not
     each shuffle their own question_order and silently clobber the other —
     every caller must observe the SAME response."""
-    monkeypatch.setattr(testing_mod, "RESPONSES_FILE", tmp_path / "test_responses.json")
+    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
     results: list = [None] * N
 
     def _make(i):
@@ -161,12 +161,12 @@ def test_testing_concurrent_start_or_get_response_creates_once(tmp_path, monkeyp
 
     orders = {tuple(r.question_order) for r in results}
     assert len(orders) == 1, "concurrent first-loads produced different question_order snapshots"
-    by_user = testing_mod._load_all_responses().get("test1", {})
+    by_user = testing_mod.get_responses_for_test("test1")
     assert len(by_user) == 1
 
 
 def test_testing_concurrent_set_manual_grade_distinct_questions_no_lost_updates(tmp_path, monkeypatch):
-    monkeypatch.setattr(testing_mod, "RESPONSES_FILE", tmp_path / "test_responses.json")
+    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
     testing_mod.start_or_get_response("test1", "dave", num_questions=N)
 
     def _make(i):
@@ -178,6 +178,28 @@ def test_testing_concurrent_set_manual_grade_distinct_questions_no_lost_updates(
     assert len(resp.manual_grade) == N, (
         f"expected {N} manual grades, found {len(resp.manual_grade)} — lost updates"
     )
+
+
+def test_testing_response_locks_are_per_pair_not_shared(tmp_path, monkeypatch):
+    """Deterministic (no threading, no flakiness risk) check of the exact
+    property the per-(test_id, username) redesign exists for: the SAME
+    pair always resolves to the SAME lock object (so concurrent saves for
+    one student's one test still serialize correctly against each other),
+    but DIFFERENT pairs resolve to DIFFERENT lock objects (so they never
+    contend with each other) — the opposite of the old single-
+    RESPONSES_FILE design, where every pair on every test shared one lock
+    and that sharing was exactly what made latency grow super-linearly
+    under concurrent load (see loadtest_students.py's results)."""
+    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
+
+    lock_a1 = testing_mod._lock_for(testing_mod._response_path("testA", "alice"))
+    lock_a2 = testing_mod._lock_for(testing_mod._response_path("testA", "alice"))
+    lock_b = testing_mod._lock_for(testing_mod._response_path("testA", "bob"))
+    lock_c = testing_mod._lock_for(testing_mod._response_path("testB", "alice"))
+
+    assert lock_a1 is lock_a2, "same (test_id, username) pair must reuse the same lock"
+    assert lock_a1 is not lock_b, "different students on the same test must not share a lock"
+    assert lock_a1 is not lock_c, "the same student on different tests must not share a lock"
 
 
 # ---------------------------------------------------------------------------

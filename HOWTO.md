@@ -348,7 +348,7 @@ Load each school's landing page and compare the question counts against the old 
 
 ### Measuring server capacity (load testing)
 
-Not a role in the app; this is for whoever needs to know "how many students can log in and take a test at once" before a real tournament. `spec.md`'s `--workers`/lock discussion has the reasoning: the ceiling isn't computable from CPU/RAM, because every answer autosave round-trips ONE global file (`testing.py`'s `RESPONSES_FILE`) behind ONE global lock, shared by every student on every test, and `gunicorn --workers` is hard-locked to 1. The only reliable way to know the ceiling is to measure it.
+Not a role in the app; this is for whoever needs to know "how many students can log in and take a test at once" before a real tournament. `spec.md`'s `--workers`/lock discussion has the reasoning: `gunicorn --workers` is hard-locked to 1, and `--threads` is the only adjustable knob, so the ceiling depends on how much load one process's thread pool can actually absorb — not computable from CPU/RAM specs. (Response storage itself used to be a second, worse bottleneck — one global file/lock shared by every student on every test — but that's fixed as of the per-`(test_id, username)`-file redesign; see README.md's "Measuring server capacity" for both halves of the story.) The only reliable way to know the remaining ceiling is to measure it.
 
 **1. Create a throwaway test, by hand, via the normal coach UI:**
 - Club Management → New season (note its `season_id`).

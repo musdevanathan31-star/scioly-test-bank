@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
 Console load test for "how many students can log in and take a test at
-once" — see HOWTO.md's "Load-testing capacity" section for the full
-walkthrough and the architectural reason this has to be measured rather
-than computed from CPU/RAM: every answer autosave round-trips ONE global
-JSON file behind ONE global lock (testing.py's RESPONSES_FILE /
-_responses_transaction()), and gunicorn --workers is hard-locked to 1
-(see deploy/qbank.service), so the real ceiling depends on write-
-contention behavior under load, not raw compute.
+once" — see HOWTO.md's "Measuring server capacity (load testing)" section
+for the full walkthrough and the architectural reason this has to be
+measured rather than computed from CPU/RAM: gunicorn --workers is hard-
+locked to 1 (see deploy/qbank.service), so the ceiling depends on how much
+load one process's --threads pool can absorb under real concurrency, not
+raw compute. (Response storage itself used to be a second, worse
+bottleneck here — every answer autosave round-tripped ONE global JSON file
+behind ONE global lock, testing.py's old RESPONSES_FILE/
+_responses_transaction() — but that's fixed as of the per-(test_id,
+username)-file redesign; this tool is what proved the old design's
+super-linear latency growth in the first place.)
 
 This talks HTTP to a REAL running instance (local or the real deployed
 server) rather than importing review_app.py in-process, because the whole

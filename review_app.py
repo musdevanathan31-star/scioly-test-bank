@@ -4648,6 +4648,15 @@ _n_recovered = jobs.recover_interrupted_jobs()
 if _n_recovered:
     print(f"[startup] marked {_n_recovered} leftover 'running' job(s) as interrupted")
 
+# One-time, idempotent: backfills the pre-redesign single-file
+# test_responses.json into the current per-(test_id, username) file layout
+# — see testing.py's migrate_legacy_responses() docstring. No-ops instantly
+# once the legacy file is gone (the common case after the first run).
+_n_migrated = testing.migrate_legacy_responses()
+if _n_migrated:
+    print(f"[startup] migrated {_n_migrated} response(s) from legacy test_responses.json "
+          f"to per-test/per-student files")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Review UI for Sci-Oly question banks")

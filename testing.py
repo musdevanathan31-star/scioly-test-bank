@@ -5,15 +5,23 @@ built by volunteers, published as a frozen snapshot, then administered),
 and Response (one student's in-progress/submitted answers + grading for
 one Test).
 
-Stored as three separate flat JSON files at DATA_ROOT (not one combined
-file, not per-event/per-window directories) — matches auth.py's/seasons.py's
-one-concept-per-file convention, and critically keeps test_responses.json
-(by far the highest-write-volume file — every student's autosave every few
-seconds during a live window) on its own lock so a burst of concurrent
-student autosaves never blocks a coach's read of tests.json for the
-dashboard. All three share the same atomic tempfile+os.replace write helper
-and a lock-registry keyed by filename, mirroring build_question_bank.py's
-per-event _state_locks pattern.
+TestWindow and Test are stored as flat JSON files at DATA_ROOT (matches
+auth.py's/seasons.py's one-concept-per-file convention) — low write volume,
+no concurrent-autosave pattern, so one file/lock each is plenty. Response
+is different: it's by far the highest-write-volume data in this module
+(every student's autosave on every MCQ click/matching pick during a live
+window, no debounce), and a single combined file/lock for every response
+of every test ever measured catastrophically under load (super-linear
+latency growth with concurrent students — see loadtest_students.py and
+README.md's "Measuring server capacity"). So Response gets its own,
+finer-grained scheme: one file per (test_id, username) pair, under
+DATA_ROOT/test_responses/<test_id>/<username>.json — concurrent saves from
+different students, or the same student on different tests, now acquire
+different locks and touch different (small) files instead of all
+serialising through one. All storage still shares the same atomic
+tempfile+os.replace write helper and a lock-registry keyed by path,
+mirroring build_question_bank.py's per-event _state_locks pattern —
+just applied at a per-pair path instead of a per-file one for responses.
 
 A Test is prepared from one event's question bank but is NOT gated by
 `auth.User.events` (a volunteer's bank-edit access) — test-preparation
@@ -38,12 +46,26 @@ REPO_ROOT = Path(__file__).parent
 DATA_ROOT = Path(os.environ.get("DATA_ROOT") or REPO_ROOT)
 WINDOWS_FILE = DATA_ROOT / "test_windows.json"
 TESTS_FILE = DATA_ROOT / "tests.json"
-RESPONSES_FILE = DATA_ROOT / "test_responses.json"
+RESPONSES_DIR = DATA_ROOT / "test_responses"
+# Pre-redesign storage: one combined file for every response of every test
+# ever (see module docstring). No longer written to — migrate_legacy_responses()
+# reads it once at startup to backfill RESPONSES_DIR, then renames it out of
+# the way. Kept as a constant (not inlined) so tests can monkeypatch it.
+_LEGACY_RESPONSES_FILE = DATA_ROOT / "test_responses.json"
 
 SCHEMA_VERSION = 1
 
 _lock_registry: dict[str, threading.RLock] = {}
 _registry_lock = threading.Lock()
+
+
+def _response_path(test_id: str, username: str) -> Path:
+    # test_id is always uuid.uuid4().hex (see _ensure_test below) and
+    # username is validated at account-creation time against auth.py's
+    # _USERNAME_RE (^[a-z][a-z0-9_]{1,31}$) — both are already filesystem-
+    # safe with no path-separator/traversal characters possible, so no
+    # escaping is needed here.
+    return RESPONSES_DIR / test_id / f"{username}.json"
 
 
 def _lock_for(path: Path) -> threading.RLock:
@@ -105,23 +127,49 @@ def _tests_transaction():
         _save_json_unlocked(TESTS_FILE, {tid: _test_to_dict(t) for tid, t in tests.items()})
 
 
+class _ResponseBox:
+    """Mutable single-slot holder yielded by _response_transaction() — a
+    plain dict-of-dicts (the old _responses_transaction()'s shape) doesn't
+    make sense once there's exactly one Response in scope per transaction.
+    Read the current value via `box.value` (None if this pair has no
+    response yet); assign `box.value = new_response` to have it persisted
+    when the block exits normally."""
+    __slots__ = ("value",)
+
+    def __init__(self, value: "Response | None"):
+        self.value = value
+
+
 @contextlib.contextmanager
-def _responses_transaction():
-    """Same as _windows_transaction(), for RESPONSES_FILE — by far the
-    highest-write-volume file (every student's autosave every few seconds
-    during a live window), so this is the most exposed instance of the
-    lost-update race in this module. Mutators that need to read-then-merge
-    (save_answer's answers dict, set_manual_grade's manual_grade dict) must
-    do the read and the write inside the SAME transaction, not via a
-    separate get_response() call followed by _save_response() — composing
-    two transactions reopens the same race one level up (two answers saved
-    around the same time would still drop one)."""
-    with _lock_for(RESPONSES_FILE):
-        raw = _load_json_unlocked(RESPONSES_FILE, {})
-        data = {tid: {u: _dict_to_response(d) for u, d in by_user.items()} for tid, by_user in raw.items()}
-        yield data
-        out = {tid: {u: _response_to_dict(r) for u, r in by_user.items()} for tid, by_user in data.items()}
-        _save_json_unlocked(RESPONSES_FILE, out)
+def _response_transaction(test_id: str, username: str):
+    """Same load -> mutate -> save-under-one-lock shape as
+    _windows_transaction()/_tests_transaction(), but scoped to one
+    (test_id, username) pair's own file — the whole point of the
+    per-pair redesign (see module docstring) is that two different
+    students, or the same student on two different tests, never share a
+    lock or a file, so concurrent autosave load no longer serialises
+    globally the way the old single RESPONSES_FILE design did. Mutators
+    that need to read-then-merge (save_answer's answers dict,
+    set_manual_grade's manual_grade dict) still do the read and the write
+    inside the SAME transaction, not via a separate get_response() call
+    followed by a save — composing two transactions would still reopen a
+    lost-update race, just now scoped to one pair instead of the whole
+    file.
+
+    Always re-saves box.value at exit if it's not None, even if the caller
+    only read and returned early without reassigning it (e.g.
+    start_or_get_response's "already exists" path) — matches the other
+    two transactions' unconditional-save-at-exit behavior exactly, just
+    now rewriting one small per-pair file instead of every response in
+    the app on every call."""
+    path = _response_path(test_id, username)
+    with _lock_for(path):
+        raw = _load_json_unlocked(path, None)
+        box = _ResponseBox(_dict_to_response(raw) if raw is not None else None)
+        yield box
+        if box.value is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _save_json_unlocked(path, _response_to_dict(box.value))
 
 
 def _now_iso() -> str:
@@ -590,17 +638,61 @@ def _dict_to_response(d: dict) -> Response:
     )
 
 
-def _load_all_responses() -> dict[str, dict[str, Response]]:
-    raw = _load_json(RESPONSES_FILE, {})
-    return {tid: {u: _dict_to_response(d) for u, d in by_user.items()} for tid, by_user in raw.items()}
+def migrate_legacy_responses() -> int:
+    """One-time, idempotent migration from the pre-redesign single-file
+    _LEGACY_RESPONSES_FILE to the current per-(test_id, username) file
+    layout. Meant to be called once at process startup — see
+    review_app.py, called at module level right next to
+    jobs.recover_interrupted_jobs() for the identical reason: gunicorn
+    imports review_app:app directly and never calls main(), so anything
+    that must run in production has to live at module level, before the
+    app starts accepting requests.
+
+    Returns 0 immediately once the legacy file is gone (the common case
+    after the first successful run). Skips any pair whose new file
+    already exists, so a partial or repeated run resumes rather than
+    redoing or clobbering work. Never deletes the legacy file — renames
+    it to "test_responses.json.migrated" once every record has been
+    written out, so a mistake here is trivially recoverable by hand
+    instead of a silent data-loss risk."""
+    if not _LEGACY_RESPONSES_FILE.exists():
+        return 0
+    with _lock_for(_LEGACY_RESPONSES_FILE):
+        if not _LEGACY_RESPONSES_FILE.exists():
+            return 0
+        raw = _load_json_unlocked(_LEGACY_RESPONSES_FILE, {})
+        migrated = 0
+        for test_id, by_user in raw.items():
+            for username, resp_dict in by_user.items():
+                path = _response_path(test_id, username)
+                if path.exists():
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _save_json_unlocked(path, resp_dict)
+                migrated += 1
+        _LEGACY_RESPONSES_FILE.rename(
+            _LEGACY_RESPONSES_FILE.with_name(_LEGACY_RESPONSES_FILE.name + ".migrated"))
+    return migrated
 
 
 def get_response(test_id: str, username: str) -> Response | None:
-    return _load_all_responses().get(test_id, {}).get(username)
+    raw = _load_json(_response_path(test_id, username), None)
+    return _dict_to_response(raw) if raw is not None else None
 
 
 def get_responses_for_test(test_id: str) -> dict[str, Response]:
-    return _load_all_responses().get(test_id, {})
+    """Every student's response for one test — only ever reads that test's
+    own subdirectory, never touches any other test's data (unlike the old
+    design, where this necessarily loaded every response in the app)."""
+    test_dir = RESPONSES_DIR / test_id
+    if not test_dir.is_dir():
+        return {}
+    result: dict[str, Response] = {}
+    for path in test_dir.glob("*.json"):
+        raw = _load_json(path, None)
+        if raw is not None:
+            result[path.stem] = _dict_to_response(raw)
+    return result
 
 
 def start_or_get_response(test_id: str, username: str, num_questions: int) -> Response:
@@ -618,16 +710,14 @@ def start_or_get_response(test_id: str, username: str, num_questions: int) -> Re
     disk."""
     import random
 
-    with _responses_transaction() as data:
-        by_user = data.setdefault(test_id, {})
-        existing = by_user.get(username)
-        if existing is not None:
-            return existing
+    with _response_transaction(test_id, username) as box:
+        if box.value is not None:
+            return box.value
         order = list(range(num_questions))
         random.shuffle(order)
         r = Response(student_username=username, test_id=test_id, question_order=order,
                      started_at=_now_iso(), last_saved_at=_now_iso())
-        by_user[username] = r
+        box.value = r
         return r
 
 
@@ -638,8 +728,8 @@ def save_answer(test_id: str, username: str, number: str, answer_payload: dict) 
     lose answers (two autosave requests close together would each merge
     into their own stale copy of `answers`, and the second save would wipe
     out whatever the first one added)."""
-    with _responses_transaction() as data:
-        existing = (data.get(test_id) or {}).get(username)
+    with _response_transaction(test_id, username) as box:
+        existing = box.value
         if existing is None:
             raise ValueError("no in-progress response — load the test first")
         if existing.status != "in_progress":
@@ -647,7 +737,7 @@ def save_answer(test_id: str, username: str, number: str, answer_payload: dict) 
         answers = dict(existing.answers)
         answers[str(number)] = answer_payload
         updated = replace(existing, answers=answers, last_saved_at=_now_iso())
-        data.setdefault(test_id, {})[username] = updated
+        box.value = updated
     return updated
 
 
@@ -684,8 +774,8 @@ def submit_response(test_id: str, username: str, snapshot: list, now: datetime |
     (never trusting client-side grading), sets status. FRQ items are left
     for manual grading (Part 5) — grading_status is derived on read from
     whether every FRQ has a manual_grade, not stored here."""
-    with _responses_transaction() as data:
-        existing = (data.get(test_id) or {}).get(username)
+    with _response_transaction(test_id, username) as box:
+        existing = box.value
         if existing is None:
             raise ValueError("no in-progress response to submit")
         if existing.status != "in_progress":
@@ -705,7 +795,7 @@ def submit_response(test_id: str, username: str, snapshot: list, now: datetime |
         updated = replace(existing, auto_grade=auto_grade,
                           status="auto_submitted_late" if late else "submitted",
                           submitted_at=_now_iso())
-        data.setdefault(test_id, {})[username] = updated
+        box.value = updated
     return updated
 
 
@@ -731,8 +821,8 @@ def set_manual_grade(test_id: str, student_username: str, number: str, points_ea
                      max_points: float, graded_by: str = "", comment: str = "") -> Response:
     if not (0 <= points_earned <= max_points):
         raise ValueError(f"points_earned must be between 0 and {max_points}")
-    with _responses_transaction() as data:
-        resp = (data.get(test_id) or {}).get(student_username)
+    with _response_transaction(test_id, student_username) as box:
+        resp = box.value
         if resp is None:
             raise ValueError("no response on file for this student")
         manual_grade = dict(resp.manual_grade)
@@ -741,27 +831,38 @@ def set_manual_grade(test_id: str, student_username: str, number: str, points_ea
             "graded_by": graded_by, "graded_at": _now_iso(), "comment": comment,
         }
         updated = replace(resp, manual_grade=manual_grade)
-        data.setdefault(test_id, {})[student_username] = updated
+        box.value = updated
     return updated
 
 
 def release_grades(test_id: str, snapshot: list, released_by: str = "") -> int:
-    """Batch-flips released=True (+released_at/released_by) on every
-    submitted response for this test simultaneously. Per-response storage
-    (not a single Test-level flag) because "released" is fundamentally
-    about what a student can see of THEIR OWN response — a per-response
-    fact, even though every response for a test is released at once.
-    Requires test_grading_complete() first; raises otherwise (the route
-    re-checks this server-side regardless of whether the UI's button was
-    disabled, never trusting client state)."""
+    """Flips released=True (+released_at/released_by) on every submitted
+    response for this test. Per-response storage (not a single Test-level
+    flag) because "released" is fundamentally about what a student can see
+    of THEIR OWN response — a per-response fact, even though every
+    response for a test is released at once. Requires
+    test_grading_complete() first; raises otherwise (the route re-checks
+    this server-side regardless of whether the UI's button was disabled,
+    never trusting client state).
+
+    Unlike the old design, this can no longer hold one lock across every
+    student's release at once — each (test_id, username) pair has its own
+    file/lock now, which is the whole point (see module docstring). So
+    this reads the qualifying usernames once, then re-checks each one's
+    status fresh inside ITS OWN transaction before flipping the flag —
+    that per-student re-check is what keeps the same guarantee the old
+    single big lock gave for free: nothing here acts on a status that's
+    gone stale between the initial scan and that student's own lock."""
     if not test_grading_complete(test_id, snapshot):
         raise ValueError("not every free-response question has been graded yet")
-    with _responses_transaction() as data:
-        by_user = data.setdefault(test_id, {})
-        count = 0
-        for username, r in list(by_user.items()):
-            if r.status not in ("submitted", "auto_submitted_late"):
+    count = 0
+    for username, r in get_responses_for_test(test_id).items():
+        if r.status not in ("submitted", "auto_submitted_late"):
+            continue
+        with _response_transaction(test_id, username) as box:
+            current = box.value
+            if current is None or current.status not in ("submitted", "auto_submitted_late"):
                 continue
-            by_user[username] = replace(r, released=True, released_at=_now_iso(), released_by=released_by)
+            box.value = replace(current, released=True, released_at=_now_iso(), released_by=released_by)
             count += 1
     return count

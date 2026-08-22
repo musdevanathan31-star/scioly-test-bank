@@ -38,7 +38,7 @@ def _patch_files(monkeypatch, tmp_path):
     monkeypatch.setattr(seasons, "ROSTERS_FILE", tmp_path / "season_rosters.json")
     monkeypatch.setattr(testing_mod, "WINDOWS_FILE", tmp_path / "test_windows.json")
     monkeypatch.setattr(testing_mod, "TESTS_FILE", tmp_path / "tests.json")
-    monkeypatch.setattr(testing_mod, "RESPONSES_FILE", tmp_path / "test_responses.json")
+    monkeypatch.setattr(testing_mod, "RESPONSES_DIR", tmp_path / "test_responses")
 
 
 def _force_not_current(season_id: str) -> None:
