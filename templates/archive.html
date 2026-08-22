@@ -728,11 +728,22 @@ async function removeSelectedDuplicates(scope, everySet){
   DUPSEL.clear();
   DUPALL = false;
   updateDupBar();
-  const failed = (j.result.failed || []).length;
+  const fails = j.result.failed || [];
   document.getElementById("dupmsg").textContent =
     `Removed ${j.result.count.toLocaleString()} file(s), reclaiming `
     + `${fmtBytes(j.result.reclaimed_bytes)}`
-    + (failed ? `; ${failed} could not be removed.` : ".");
+    + (fails.length ? `; ${fails.length} could not be removed.` : ".");
+  if(fails.length){
+    // A count in a muted span is easy to miss, and the reason is the part
+    // that says what to do about it.
+    const lines = fails.slice(0, 5)
+      .map(f => `  ${f.path}\n    ${f.error}`).join("\n");
+    const more = fails.length > 5
+      ? `\n\n…and ${fails.length - 5} more.` : "";
+    await confirmModal(
+      `${fails.length} file(s) could not be removed:\n\n${lines}${more}`,
+      {wide: true, confirmLabel: "OK"});
+  }
   await refreshStatus();
   await loadDuplicates(true);
   go(CURRENT);

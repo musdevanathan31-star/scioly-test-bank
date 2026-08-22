@@ -372,11 +372,14 @@ def test_groups_under_a_folder_only_count_local_copies(dups):
     assert len(groups[0]["paths"]) == 2
 
 
-def test_an_unknown_hash_removes_nothing(dups):
+def test_an_unknown_id_touches_nothing_and_says_so(dups):
     ops, ta = dups
     before = len(list(ta.archive_root().rglob("*.pdf")))
-    result = ops.remove_duplicates(["deadbeefdeadbeef"])
-    assert result["count"] == 0
+    # It used to return count 0 and look like a success, which is precisely
+    # how a sweep that matched nothing became indistinguishable from one
+    # that worked.
+    with pytest.raises(ops.ArchiveOpError):
+        ops.remove_duplicates(["deadbeefdeadbeef"])
     assert len(list(ta.archive_root().rglob("*.pdf"))) == before
 
 
@@ -541,3 +544,38 @@ def test_a_missing_file_does_not_abandon_the_batch(dups):
     assert result["count"] == len(doomed) - 1
     # The keeper still survives, which is the invariant that matters.
     assert (ta.archive_root() / result["kept"][0]).is_file()
+
+
+def test_a_sweep_that_matches_nothing_is_an_error_not_a_success(dups):
+    ops, _ta = dups
+    # The reported symptom: remove appeared to succeed, the count did not
+    # move, and a rebuild proved nothing had been deleted. "Removed 0" must
+    # never be indistinguishable from a sweep that worked.
+    with pytest.raises(ops.ArchiveOpError, match="are in the current index"):
+        ops.remove_duplicates(["9999-deadbeefdeadbeef"])
+
+
+def test_a_stale_id_from_a_rebuilt_index_is_reported(dups):
+    ops, ta = dups
+    stale = ta.load_index()["duplicates"][0]["id"]
+    # Rebuild underneath the open page, changing the groups.
+    for rel in ("Division B/Circuit Lab/2019/UF Invitational/test.pdf",
+                "_UnknownDivision/_UnknownEvent/2019/xz9a8f7b6c5d4e3f2a1b0/copy.pdf"):
+        (ta.archive_root() / rel).unlink()
+    ta.save_index(ta.build_index())
+    with pytest.raises(ops.ArchiveOpError, match="reload the page"):
+        ops.remove_duplicates([stale])
+
+
+def test_a_sweep_where_every_file_fails_raises(dups, monkeypatch):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+
+    def refuse(*a, **kw):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(ops.shutil, "move", refuse)
+    with pytest.raises(ops.ArchiveOpError, match="Permission denied"):
+        ops.remove_duplicates([group["id"]])
+    # And nothing was quietly dropped from the index on the way out.
+    assert ta.load_index()["duplicates"][0]["paths"] == group["paths"]

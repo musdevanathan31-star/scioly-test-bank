@@ -345,6 +345,14 @@ def remove_duplicates(ids: list | None, scope: str = "", by: str = "",
                 if len(local) > 1:
                     scoped.append({**g, "paths": local})
             groups = scoped
+        if not groups:
+            # Reporting "removed 0" as success is how a sweep that matched
+            # nothing looks identical to one that worked. The usual cause is
+            # an index rebuilt underneath the open page, so the ids the
+            # client is holding no longer exist.
+            raise ArchiveOpError(
+                "none of the selected sets are in the current index — "
+                "reload the page (the index may have been rebuilt) and try again")
         plan = ta.plan_dedupe(groups)
 
         targets = [(rel, entry["size"])
@@ -380,8 +388,13 @@ def remove_duplicates(ids: list | None, scope: str = "", by: str = "",
                    paths=[rel for rel, _s in removed],
                    kept=[g["keep"] for g in plan["groups"]],
                    bytes=sum(size for _rel, size in removed))
+        if failed and not removed:
+            # Every single one failed: that is a fault, not a partial result,
+            # and it must not be dressed up as a completed sweep.
+            raise ArchiveOpError(
+                f"nothing could be removed. First error: {failed[0]['error']}")
         return {"action": "dedupe", "removed": [rel for rel, _s in removed],
-                "failed": failed,
+                "matched": len(groups), "failed": failed,
                 "kept": [g["keep"] for g in plan["groups"]],
                 "count": len(removed), "trash": str(dest_root),
                 "reclaimed_bytes": sum(size for _rel, size in removed)}
