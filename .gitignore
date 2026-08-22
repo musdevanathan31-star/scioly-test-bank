@@ -4,6 +4,11 @@
 auth_users.json
 seasons.json
 season_rosters.json
+assessment_windows.json
+assessments.json
+assessment_responses/
+# Pre-rename names, still ignored so an instance that hasn't been migrated
+# yet (or a stale local checkout) can't commit its live data by accident.
 test_windows.json
 tests.json
 test_responses.json*
