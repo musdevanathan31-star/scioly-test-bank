@@ -64,6 +64,7 @@ import scrape_scioly  # noqa: E402
 import download_event  # noqa: E402
 import presence  # noqa: E402
 import deletion  # noqa: E402
+import tournament_archive  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -2627,6 +2628,53 @@ def api_jobs_active_count():
     else:
         slugs = list(user.events)
     return jsonify(jobs.active_job_summary(slugs))
+
+
+# ---------------------------------------------------------------------------
+# Routes — tournament archive (Phase 1: read-only browse)
+#
+# Coach-only for now. Volunteer scoping needs the event-folder -> slug
+# mapping that Phase 2 introduces; until that exists there is no way to say
+# which archive subtree belongs to an event a volunteer can access, and
+# guessing from folder names would leak the rest. See TODO_archive.md.
+# ---------------------------------------------------------------------------
+
+@app.route("/archive")
+@coach_required
+def archive_page():
+    return render_template("archive.html",
+                           archive_name=tournament_archive.ARCHIVE_DIRNAME)
+
+
+@app.route("/api/archive/list")
+@coach_required
+def api_archive_list():
+    """One level of the tree. `?path=` is archive-relative; empty is root."""
+    rel = request.args.get("path", "") or ""
+    try:
+        listing = tournament_archive.list_dir(rel)
+    except ValueError as e:            # containment failure
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError:
+        return jsonify({"error": f"no such folder: {rel}"}), 404
+    listing["breadcrumbs"] = tournament_archive.breadcrumbs(listing["rel"])
+    return jsonify(listing)
+
+
+@app.route("/api/archive/status")
+@coach_required
+def api_archive_status():
+    return jsonify({**tournament_archive.summary(),
+                    "build": tournament_archive.build_status(),
+                    "archive_dir": str(tournament_archive.archive_root())})
+
+
+@app.route("/api/archive/reindex", methods=["POST"])
+@coach_required
+def api_archive_reindex():
+    if not tournament_archive.exists():
+        return jsonify({"error": "the archive directory does not exist yet"}), 400
+    return jsonify({"ok": True, "build": tournament_archive.start_build()})
 
 
 @app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])

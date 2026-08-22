@@ -220,6 +220,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
 | `templates/*.html` | Jinja2 page templates for the review UI (`events`, `event_index`, `browse`, `review`, `sources`, `quiz`, `event_jobs`, `admin_jobs`, `event_scan`, `settings`) |
 | `deletion.py` | Cascade policy for permanent deletion — previews and deletes; gated on `ALLOW_HARD_DELETE` |
+| `tournament_archive.py` | Index and read-only browse for the uploaded tournament corpus at `<DATA_ROOT>/tournament_archive/` — see [`TODO_archive.md`](TODO_archive.md) |
 | `presence.py` | In-memory active-user registry behind the header badge and the landing page's per-event counts — see "Who's active right now" |
 | `text_utils.py` | Shared text-normalization helpers (`strip_points`) used by the pipeline, scraper, and generator without an import cycle |
 | `scioly_assessments.json` | Pre-scraped metadata for **all** Science Olympiad tests, 887 entries |

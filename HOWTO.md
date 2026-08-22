@@ -235,6 +235,25 @@ Two specifics worth knowing:
 
 If you don't see these buttons, the flag isn't set on your instance, which is the intended setting once you're running real tests.
 
+### Browsing the tournament archive
+
+**☰ → Tournament archive** (coach only) shows the uploaded collection of past
+tournament tests, laid out as `<Division>/<Event>/<Year>/<Tournament>`. Click
+through one level at a time; each folder shows how many files and how much
+data sit beneath it.
+
+Right now this is **read-only** — you can look, but nothing here moves,
+renames or deletes yet. That is deliberate: browsing has to prove itself
+against the full collection before anything is built that can change it.
+
+Two things to know:
+
+- **Rebuild index** is what makes the file counts appear, and it needs
+  running once after you upload. Browsing works without it; you just see
+  folders marked *not indexed* instead of totals.
+- Folders you add after the last rebuild still show up immediately — only
+  their totals wait for the next one.
+
 ### What only a coach can do, at a glance
 
 | Action | Coach | Volunteer |

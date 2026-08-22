@@ -1,0 +1,156 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Tournament archive · {{ school_name }} Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:1100px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:14px}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:4px;font-size:13px;
+  margin-bottom:10px}
+.crumbs a{cursor:pointer}
+.crumbs .sep{color:var(--muted)}
+.rowlist{border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.row{display:flex;align-items:center;gap:10px;padding:8px 12px;font-size:13px;
+  border-bottom:1px solid var(--line-soft)}
+.row:last-child{border-bottom:none}
+.row:hover{background:var(--row-hover)}
+.row .ico{width:18px;text-align:center}
+.row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row.dir .nm{color:var(--accent);cursor:pointer}
+.row .num{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;
+  white-space:nowrap}
+.empty{padding:14px;color:var(--muted);font-size:13px}
+.statline{display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:12px;
+  color:var(--fg-soft);margin-bottom:10px}
+.pathhint{font-family:ui-monospace,Consolas,monospace;font-size:12px;
+  background:var(--bg-alt);border:1px solid var(--line);border-radius:4px;
+  padding:2px 6px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <h1>Tournament archive</h1>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+  <section>
+    <div class="statline" id="stat"><span class="spinner"></span> loading…</div>
+    <div>
+      <button id="reindex">Rebuild index</button>
+      <span class="muted" id="buildmsg"></span>
+    </div>
+  </section>
+
+  <section>
+    <div class="crumbs" id="crumbs"></div>
+    <div class="rowlist" id="listing"><div class="empty">loading…</div></div>
+  </section>
+</div>
+<script>
+const ARCHIVE_NAME = {{ archive_name|tojson }};
+let CURRENT = "";
+
+function fmtBytes(n){
+  if(n === null || n === undefined) return "";
+  const u = ["B","KB","MB","GB","TB"];
+  let i = 0, v = n;
+  while(v >= 1024 && i < u.length - 1){ v /= 1024; i++; }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+}
+
+async function refreshStatus(){
+  const r = await fetch(`${APP_ROOT}/api/archive/status`);
+  const s = await r.json();
+  const el = document.getElementById("stat");
+  if(!s.root_exists){
+    el.innerHTML = `<span>No archive directory yet. Upload into </span>`
+                 + `<span class="pathhint">${esc(s.archive_dir)}</span>`;
+    return s;
+  }
+  if(!s.indexed){
+    el.textContent = "Archive present but not indexed yet — rebuild to browse it.";
+    return s;
+  }
+  const age = s.age_seconds == null ? "" :
+    s.age_seconds < 90 ? "just now"
+    : s.age_seconds < 5400 ? `${Math.round(s.age_seconds / 60)} min ago`
+    : `${Math.round(s.age_seconds / 3600)} h ago`;
+  el.innerHTML = `<span><b>${s.total_files.toLocaleString()}</b> files</span>`
+    + `<span><b>${fmtBytes(s.total_bytes)}</b></span>`
+    + `<span>${s.n_dirs.toLocaleString()} folders</span>`
+    + `<span class="muted">indexed ${esc(age)}</span>`;
+  return s;
+}
+
+async function go(rel){
+  CURRENT = rel || "";
+  const listing = document.getElementById("listing");
+  listing.innerHTML = '<div class="empty">loading…</div>';
+  const r = await fetch(`${APP_ROOT}/api/archive/list?path=${encodeURIComponent(CURRENT)}`);
+  if(!r.ok){
+    const j = await r.json().catch(() => ({}));
+    listing.innerHTML = `<div class="empty">${esc(j.error || "Could not read that folder.")}</div>`;
+    return;
+  }
+  const d = await r.json();
+
+  document.getElementById("crumbs").innerHTML = d.breadcrumbs.map((b, i) =>
+    `${i ? '<span class="sep">/</span>' : ""}<a data-go="${esc(b.rel)}">${esc(b.name)}</a>`
+  ).join("");
+
+  let html = "";
+  d.subdirs.forEach(sd => {
+    // total_files is null for a folder created since the last index build;
+    // saying so beats printing a confident zero.
+    const counts = sd.indexed
+      ? `${(sd.total_files || 0).toLocaleString()} files · ${fmtBytes(sd.total_bytes)}`
+      : "not indexed";
+    html += `<div class="row dir">
+      <span class="ico">📁</span>
+      <span class="nm" data-go="${esc(sd.rel)}">${esc(sd.name)}</span>
+      <span class="muted">${esc(sd.level)}</span>
+      <span class="num">${counts}</span></div>`;
+  });
+  d.files.forEach(f => {
+    html += `<div class="row">
+      <span class="ico">${f.ext === ".pdf" ? "📄" : "•"}</span>
+      <span class="nm">${esc(f.name)}</span>
+      <span class="num">${fmtBytes(f.size)}</span></div>`;
+  });
+  if(!html){
+    html = `<div class="empty">This folder is empty.</div>`;
+  }
+  listing.innerHTML = html;
+}
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-go]");
+  if(t) go(t.dataset.go);
+});
+
+document.getElementById("reindex").addEventListener("click", async () => {
+  const msg = document.getElementById("buildmsg");
+  const r = await fetch(`${APP_ROOT}/api/archive/reindex`, {method: "POST"});
+  const j = await r.json();
+  if(!j.ok){ msg.textContent = j.error || "Could not start."; return; }
+  // Poll rather than block: a first walk over tens of thousands of folders
+  // takes a while, and the page should say so instead of appearing hung.
+  const tick = async () => {
+    const s = await refreshStatus();
+    const b = s.build || {};
+    if(b.running){
+      msg.textContent = `indexing… ${(b.dirs_seen || 0).toLocaleString()} folders`;
+      setTimeout(tick, 1000);
+    } else {
+      msg.textContent = b.error ? `failed: ${b.error}` : "index rebuilt";
+      go(CURRENT);
+      setTimeout(() => { msg.textContent = ""; }, 4000);
+    }
+  };
+  tick();
+});
+
+(async () => { await refreshStatus(); go(""); })();
+</script>
+</body>
+</html>

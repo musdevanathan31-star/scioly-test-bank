@@ -86,6 +86,7 @@
       <a class="nav-link" href="{{ url_for('index') }}">🧪 Events</a>
       {% if current_user.role == "coach" %}
       <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club</a>
+      <a class="nav-link" href="{{ url_for('archive_page') }}">🗃 Tournament archive</a>
       {% endif %}
       {# Settings closes this group for the roles that have one. It's
          available to every role, though, so a student gets it in the last

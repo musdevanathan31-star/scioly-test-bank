@@ -485,6 +485,11 @@ def add_custom_event(
         )
     if slug in EVENTS:
         raise ValueError(f"slug {slug!r} is already registered")
+    if slug in RESERVED_SLUGS:
+        # An event's base_dir is DATA_ROOT/<slug>, so a slug matching one of
+        # these would point the event straight at a directory that is not an
+        # event — the tournament archive, or the shared textbooks folder.
+        raise ValueError(f"slug {slug!r} is reserved for a non-event directory")
     name = (name or "").strip()
     if not name:
         raise ValueError("name is required")
@@ -534,6 +539,12 @@ def archive_custom_event(slug: str) -> None:
     a flag in events_custom.json, fully reversible via unarchive_custom_event.
     Built-ins cannot be archived."""
     _set_archived(slug, True)
+
+
+#: Directory names under DATA_ROOT that are not events and must never be
+#: shadowed by one. An event registered as "tournament_archive" would make
+#: its base_dir the archive itself.
+RESERVED_SLUGS = frozenset({"tournament_archive", "textbooks"})
 
 
 def delete_event_record(slug: str) -> None:
