@@ -141,3 +141,83 @@ def test_the_key_contains_answers_and_the_test_does_not(exported):
     key = c.get(f"{base}/key.md").get_data(as_text=True)
     assert "Resistor" not in student
     assert "Resistor" in key
+
+
+def test_the_link_the_page_builds_is_not_the_markdown_one(exported):
+    import review_app
+    from flask import url_for
+    # The endpoint carries two rules -- /export/<which> and /export/<which>.md
+    # -- and url_for picks one of them. If it ever picks the .md rule, every
+    # download silently becomes markdown no matter what is installed, because
+    # the handler keys off the path ending.
+    with review_app.app.test_request_context("/"):
+        for which in ("test", "key"):
+            built = url_for("api_export_assessment_markdown",
+                            assessment_id="abc123", which=which)
+            assert not built.endswith(".md"), built
+
+
+def test_a_fallback_says_why_in_a_header(exported, monkeypatch):
+    c, base = exported
+    import review_app
+    monkeypatch.setattr(review_app, "_optional_dep_error",
+                        lambda mod: f"Could not import {mod!r} in this interpreter")
+    r = c.get(f"{base}/test")
+    assert r.status_code == 200
+    assert r.headers["Content-Type"].startswith("text/markdown")
+    # Silence here is what made a wrong-interpreter install look like a
+    # deliberate choice of format.
+    assert "reportlab" in r.headers.get("X-Export-Fallback", "")
+
+
+def test_an_explicit_markdown_request_is_not_flagged_as_a_fallback(exported):
+    c, base = exported
+    r = c.get(f"{base}/test.md")
+    assert r.status_code == 200
+    # Asking for markdown and getting it is not a degraded result.
+    assert "X-Export-Fallback" not in r.headers
+
+
+def test_reportlab_is_a_declared_dependency():
+    # It was absent from requirements.txt, so no deployment ever installed
+    # it and the PDF path was dead on every server that had not been
+    # hand-patched.
+    reqs = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(
+        encoding="utf-8")
+    assert "reportlab" in reqs
+
+
+def test_figures_resolve_against_the_assessments_own_event(exported, monkeypatch):
+    """The reported bug: PDFs exported with every figure as "[figure not
+    found]".
+
+    _select_assessment is deliberately independent of _select_event(), so
+    bqb.EVENT during an export request is whatever the context happened to
+    carry — not this assessment's event. Resolving figures from it read the
+    wrong directory. This forces that mismatch and requires the image to
+    still be embedded.
+    """
+    c, base = exported
+    import review_app, build_question_bank as bqb, events
+
+    # Reproduce the real condition: a worker thread that last served some
+    # other event still has that event in its context when the export runs.
+    right = events.EVENTS[sorted(events.EVENTS)[0]]
+    wrong = next(ev for ev in events.EVENTS.values() if ev.slug != right.slug)
+    seen = {}
+    real_figure_dir = review_app._assessment_pdf
+
+    def spy(*a, **kw):
+        bqb.set_event(wrong.slug)          # as a previous request would leave it
+        seen["ambient"] = bqb.EVENT.slug
+        seen["passed"] = kw.get("image_dir")
+        return real_figure_dir(*a, **kw)
+
+    monkeypatch.setattr(review_app, "_assessment_pdf", spy)
+    pdf = c.get(f"{base}/test").get_data()
+    assert seen["ambient"] == wrong.slug, "the mismatch was not reproduced"
+    assert seen["passed"] == right.image_dir, (
+        "the export must pass its own event's image dir, not rely on context")
+    assert pdf[:5] == b"%PDF-"
+    assert b"figure not found" not in pdf
+    assert b"/XObject" in pdf or b"/Image" in pdf

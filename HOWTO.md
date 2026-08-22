@@ -277,6 +277,10 @@ Two things to know:
   while the app runs as its own user, leaving the tree root-owned. Fix the
   ownership (not the mode: `0705` is fine as long as the *owner* is the app's
   user) and the banner clears on the next page load.
+- If the Assessments **Test** / **Key** buttons give you a `.md` file when
+  you expected a PDF, `reportlab` is not importable by the interpreter
+  running the app. It is in `requirements.txt` now, so a redeploy installs
+  it; the server log names the interpreter it actually tried.
 - **Previewing a PDF**: press **Preview** on any file row, or on any copy in
   the duplicates list. Pages render on demand with ‹ / › or the arrow keys.
   A file that will not open says so rather than failing silently — that is

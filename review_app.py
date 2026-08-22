@@ -1817,7 +1817,7 @@ def assessment_grading_page(assessment_id):
 
 
 def _assessment_pdf(snapshot: list, title: str, subtitle: str,
-                    layout: str) -> bytes:
+                    layout: str, image_dir: "Path | None" = None) -> bytes:
     """Render an assessment to PDF, figures included.
 
     This is why PDF is worth having over the markdown export at all:
@@ -1867,9 +1867,18 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
     def _e(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    # Figures MUST resolve against the assessment's own event. _select_assessment
+    # is deliberately independent of _select_event() — an assessment spans
+    # season/window/event and an assigned volunteer may hold no bank access at
+    # all — so bqb.EVENT here is whatever the request context happened to
+    # carry, not this test's event. Reading images from it resolved every
+    # figure against the wrong directory, and every question printed
+    # "[figure not found]".
+    figures_dir = image_dir if image_dir is not None else bqb.EVENT.image_dir
+
     def _figure(fname: str, desc: str):
         """One image, scaled to fit the text column and never upscaled."""
-        path = bqb.EVENT.image_dir / os.path.basename(fname)
+        path = figures_dir / os.path.basename(fname)
         if not path.is_file():
             # Say so rather than dropping it: a question referring to a
             # figure that silently isn't there is worse than a note saying
@@ -2026,14 +2035,23 @@ def api_export_assessment_markdown(assessment_id: str, which: str):
 
     # request.path ending in .md is the explicit "give me text" request.
     wants_markdown = request.path.endswith(".md")
-    if not wants_markdown and _optional_dep_error("reportlab") is None:
+    dep_error = None if wants_markdown else _optional_dep_error("reportlab")
+    if dep_error:
+        # Logged, not swallowed. This branch used to fall through to markdown
+        # in silence, so an install that landed in the wrong interpreter was
+        # indistinguishable from a deliberate choice of format -- the coach
+        # just kept getting .md files with nothing anywhere saying why.
+        app.logger.warning("assessment PDF unavailable, sending markdown: %s",
+                           dep_error)
+    if not wants_markdown and dep_error is None:
         try:
             pdf = _assessment_pdf(
                 snapshot, title=title,
                 # Markdown bold markers mean nothing to reportlab; strip
                 # them rather than printing literal asterisks.
                 subtitle="\n".join(b.replace("**", "") for b in subtitle_bits),
-                layout="key" if which == "key" else "none")
+                layout="key" if which == "key" else "none",
+                image_dir=ev.image_dir if ev else None)
             return Response(pdf, mimetype="application/pdf",
                             headers={"Content-Disposition":
                                      f"attachment; filename={stem}.pdf"})
@@ -2042,8 +2060,13 @@ def api_export_assessment_markdown(assessment_id: str, which: str):
             # markdown below is a worse document, not a failure.
             app.logger.warning("assessment PDF failed, falling back to markdown: %s", e)
 
+    headers = {"Content-Disposition": f"attachment; filename={stem}.md"}
+    if not wants_markdown:
+        # Says why this is markdown when a PDF was expected, without costing
+        # the coach the download.
+        headers["X-Export-Fallback"] = (dep_error or "PDF rendering failed")[:400]
     return Response(md, content_type="text/markdown; charset=utf-8",
-                    headers={"Content-Disposition": f"attachment; filename={stem}.md"})
+                    headers=headers)
 
 
 @app.route("/api/assessments/<assessment_id>/grading")

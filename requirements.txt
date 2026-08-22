@@ -38,6 +38,18 @@ beautifulsoup4>=4.12
 requests>=2.31
 gunicorn>=21.2
 
+# Optional at runtime, installed by default. Both back real features, and
+# leaving them out of this file meant no deployment ever installed them --
+# so the Assessments "Test"/"Key" buttons quietly produced markdown instead
+# of PDF, and Anki export was unavailable, with nothing saying why. The code
+# still degrades gracefully if an install fails, so listing them here cannot
+# break a deploy:
+#   - reportlab: PDF export of assessments and of the question bank, with
+#     the figures markdown cannot carry
+#   - genanki:   .apkg export for flashcard revision
+reportlab>=4.0
+genanki>=0.13
+
 # Test-only — kept here so a single `pip install -r requirements.txt` covers
 # everything a contributor needs.
 pytest>=7.4
