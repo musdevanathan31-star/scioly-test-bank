@@ -579,3 +579,23 @@ def test_a_sweep_where_every_file_fails_raises(dups, monkeypatch):
         ops.remove_duplicates([group["id"]])
     # And nothing was quietly dropped from the index on the way out.
     assert ta.load_index()["duplicates"][0]["paths"] == group["paths"]
+
+
+def test_a_sweep_whose_trash_is_unwritable_reports_the_reason(dups, monkeypatch):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    real_mkdir = Path.mkdir
+
+    def refuse(self, *a, **kw):
+        if ".deleted" in str(self):
+            raise PermissionError(13, "Permission denied")
+        return real_mkdir(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "mkdir", refuse)
+    # The live failure mode: every move fails, `removed` stays empty, so the
+    # ops log is never even created -- and the old code still returned 200
+    # with count 0, which read as a completed sweep.
+    with pytest.raises(ops.ArchiveOpError, match="Permission denied"):
+        ops.remove_duplicates([group["id"]])
+    for rel in group["paths"]:
+        assert (ta.archive_root() / rel).exists(), "nothing should have moved"

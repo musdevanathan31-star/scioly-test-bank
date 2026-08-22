@@ -3056,15 +3056,26 @@ def api_archive_dedupe_remove():
     data = request.get_json() or {}
     ids = data.get("ids") or []
     every = bool(data.get("all"))
+    scope = (data.get("path") or "").strip()
     if not every and (not isinstance(ids, list) or not ids):
         return jsonify({"error": "select at least one set of duplicates"}), 400
+    # Logged before the attempt, not after. A sweep that matches nothing
+    # writes no ops-log entry (nothing is moved), so without this there is no
+    # record that it was ever asked for — which is exactly the state a live
+    # report of "nothing happened" left us in.
+    app.logger.info("archive dedupe: user=%s every=%s scope=%r ids=%d first=%r",
+                    g.user.username, every, scope, len(ids),
+                    (ids[0] if ids else None))
     try:
         result = archive_ops.remove_duplicates(
-            ids, scope=(data.get("path") or "").strip(), by=g.user.username,
-            every=every)
+            ids, scope=scope, by=g.user.username, every=every)
     except archive_ops.ArchiveOpError as e:
-        return jsonify({"error": str(e)}), 400
-    return jsonify({"ok": True, "result": result})
+        app.logger.warning("archive dedupe refused: %s", e)
+        return jsonify({"error": str(e), "requested": len(ids)}), 400
+    app.logger.info("archive dedupe: matched=%d removed=%d failed=%d",
+                    result.get("matched", 0), result["count"],
+                    len(result.get("failed") or []))
+    return jsonify({"ok": True, "result": {**result, "requested": len(ids)}})
 
 
 @app.route("/api/archive/duplicates/in-folder")
