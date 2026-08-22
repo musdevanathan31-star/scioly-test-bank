@@ -407,6 +407,9 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |
+
+While a long action runs (upload/extract, reprocess, a scrape, LLM generation) a progress window shows the server's own console output live. It closes itself a moment after the job **succeeds**; a job that fails or is cancelled leaves it open, because that console is the only place the reason is written. A striped moving bar means "still working" — most PDFs never report a page count to measure against, so there is nothing to show a percentage of.
+
 | Onboard files dropped in via scp (test/key/supplementary/notes) | Coach, Volunteer (assigned events) | Event page → Scan files (next to + Upload test) |
 | Preview a PDF without opening the review page | Coach, Volunteer (assigned events) | Event page → 👁 Preview |
 | Fix a backwards test/key upload | Coach, Volunteer (assigned events) | Event page → ⇄ Swap, or Review page toolbar → ⇄ Swap test/key |

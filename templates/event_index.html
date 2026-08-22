@@ -183,7 +183,7 @@ document.getElementById("upload_test_form").addEventListener("submit", async e =
     document.getElementById("upload_dropdown").classList.remove("on");
     const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: j.job_id,
                                     title: `Extracting ${j.pdf_name}`});
-    handle.onDone(job => {
+    handle.onDone(async job => {
       btn.disabled = false;
       const r2 = job.result || {};
       setStatus(job.status === "succeeded"
@@ -192,7 +192,12 @@ document.getElementById("upload_test_form").addEventListener("submit", async e =
           + (j.supplementary_name ? " (+ figures)" : "")
         : `Extraction ${job.status}: ${job.error || ""}`,
         job.status === "succeeded" ? "ok" : "err");
-      load();
+      try {
+        await load();
+      } catch(e){
+        // The extraction may well have succeeded; only the refresh failed.
+        setStatus(`Extracted, but the list could not refresh: ${e.message}. Reload the page.`, "err");
+      }
     });
   } catch(err){
     setStatus("Upload error: " + err.message, "err");
@@ -211,7 +216,14 @@ function extractGroupKey(name, mode){
 
 async function load(){
   const r = await fetch(`${APP_ROOT}/event/${EVENT_SLUG}/api/pdfs?sort=${sortKey}&order=${sortOrder}`);
+  if(!r.ok){
+    // Previously this went straight to r.json(), which throws on the HTML
+    // error page a 403/500 returns — and the caller never caught it, so the
+    // list was left blank with nothing said. Fail loudly instead.
+    throw new Error(`Could not load the PDF list (HTTP ${r.status})`);
+  }
   let rows = await r.json();
+  if(!Array.isArray(rows)) throw new Error("Unexpected response for the PDF list");
   const groupBy = (document.getElementById("group_by") || {}).value || "";
   // When grouping, sort rows by group then by current sortKey
   if(groupBy){

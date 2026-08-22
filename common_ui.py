@@ -122,6 +122,13 @@ a{color:var(--accent);text-decoration:none}
   overflow:hidden;margin-bottom:6px}
 .jp-bar{height:100%;background:var(--accent);width:0%;
   transition:width .3s ease}
+/* No total to count against: an animated stripe says "still working"
+   where a solid full bar said "done". */
+.jp-bar.indeterminate{background-image:linear-gradient(45deg,
+  rgba(255,255,255,.28) 25%, transparent 25%, transparent 50%,
+  rgba(255,255,255,.28) 50%, rgba(255,255,255,.28) 75%, transparent 75%);
+  background-size:28px 28px;animation:jp-stripes 1s linear infinite}
+@keyframes jp-stripes{from{background-position:0 0}to{background-position:28px 0}}
 .jp-bar.failed{background:var(--bad)}
 .jp-bar.cancelled{background:var(--warn)}
 .jp-meta{font-size:11px;color:var(--muted);margin-bottom:10px;
@@ -522,7 +529,7 @@ window.setLLMKeys = function(keys){
 // once. The Cancel button is shown only when the job payload's `can_cancel`
 // flag is true — computed server-side (jobs.can_cancel), never re-derived
 // client-side.
-window.openJobProgress = function({eventSlug, jobId, title}){
+window.openJobProgress = function({eventSlug, jobId, title, autoClose = true}){
   let modal = document.getElementById("job_progress_modal");
   if(!modal){
     modal = document.createElement("div");
@@ -562,10 +569,25 @@ window.openJobProgress = function({eventSlug, jobId, title}){
   barEl.style.width = "0%";
   barEl.className = "jp-bar";
   metaEl.textContent = "";
-  consoleEl.textContent = "";
+  // Placeholder rather than a blank box: an empty console should say
+  // whether it is still waiting or whether the job printed nothing at all.
+  consoleEl.textContent = "waiting for output…";
+  consoleEl.dataset.empty = "1";
   cancelBtn.style.display = "none";
 
   const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted"];
+
+  // Shared by the per-poll fetch and the final one after the job ends, so
+  // both handle the placeholder identically.
+  function appendLog(payload){
+    if(!payload || !payload.lines || !payload.lines.length) return;
+    if(consoleEl.dataset.empty === "1"){
+      consoleEl.textContent = "";
+      delete consoleEl.dataset.empty;
+    }
+    consoleEl.textContent += payload.lines.join("\n") + "\n";
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+  }
   let logAfter = 0;
   let doneCallback = null;
   let stopped = false;
@@ -595,8 +617,17 @@ window.openJobProgress = function({eventSlug, jobId, title}){
       const pct = Math.min(100, Math.round(100 * job.done_count / job.total));
       barEl.style.width = pct + "%";
       metaEl.textContent = `${job.done_count} / ${job.total}`;
+    } else if(job.status === "running"){
+      // No total to count against — a text-extractable PDF never reports
+      // one, since only the vision-OCR path calls on_progress with a total.
+      // A solid full bar here read as "finished" while the job was still
+      // running, which is exactly the wrong thing to imply.
+      barEl.style.width = "100%";
+      barEl.classList.add("indeterminate");
+      metaEl.textContent = "working…";
     } else {
-      barEl.style.width = (job.status === "running") ? "100%" : "0%";
+      barEl.style.width = "0%";
+      barEl.classList.remove("indeterminate");
       metaEl.textContent = "";
     }
     cancelBtn.style.display = (job.can_cancel && !TERMINAL.includes(job.status)) ? "" : "none";
@@ -604,17 +635,35 @@ window.openJobProgress = function({eventSlug, jobId, title}){
     try {
       const r2 = await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}/log?after=${logAfter}`);
       const lg = await r2.json();
-      if(lg.lines && lg.lines.length){
-        consoleEl.textContent += lg.lines.join("\n") + "\n";
-        consoleEl.scrollTop = consoleEl.scrollHeight;
-      }
+      appendLog(lg);
       logAfter = lg.total || logAfter;
     } catch(e){ /* a missed log line isn't worth aborting the modal over */ }
 
     if(stopped) return;
     if(TERMINAL.includes(job.status)){
       cancelBtn.style.display = "none";
+      barEl.classList.remove("indeterminate");
+      barEl.style.width = "100%";
+      // One final fetch. The job force-flushes its remaining output as it
+      // finishes, and polling stops here — without this, the last lines,
+      // which are usually the ones saying what actually happened, are
+      // never collected.
+      try {
+        const r3 = await fetch(`${APP_ROOT}/event/${eventSlug}/api/jobs/${jobId}/log?after=${logAfter}`);
+        const lg3 = await r3.json();
+        appendLog(lg3);
+        logAfter = lg3.total || logAfter;
+      } catch(e){ /* best effort — the status is already known */ }
+      if(consoleEl.dataset.empty === "1")
+        consoleEl.textContent = "(this job produced no console output)";
       if(doneCallback) doneCallback(job);
+      // Auto-close on success only. A failed or cancelled job stays up,
+      // because its console is the only place the reason exists.
+      if(autoClose && job.status === "succeeded"){
+        setTimeout(() => {
+          if(!stopped){ modal._jpStop(); modal.style.display = "none"; }
+        }, 900);
+      }
       return;
     }
     timer = setTimeout(pollOnce, 1500);
