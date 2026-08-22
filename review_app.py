@@ -193,12 +193,22 @@ def _inject_nav():
     (templates/_user_badge.html) — same access rule index() already uses
     (`role != "coach" and slug not in user.events`), but lighter (no per-
     event PDF/state scan) since this now runs on every page render, not
-    just the landing page. A student's `user.events` is always empty, so
-    this naturally yields zero events for them with no extra special-
-    casing — consistent with _select_event()'s blanket student block."""
+    just the landing page.
+
+    Students are excluded explicitly rather than by assuming their
+    `user.events` is empty. That assumption used to be written here and it
+    was wrong: a student can carry event slugs (the Club Management CSV
+    bulk-add takes an `events` column, and a coach can set them from Manage
+    Users), which put Question bank / Test bank / Primary sources in a
+    student's menu. Every one of those links 403s at _select_event, so it
+    was never an access hole — but it listed event names to students and
+    offered them destinations that only ever fail. Matching
+    _select_event()'s blanket student block here keeps the two in step."""
     user = getattr(g, "user", None)
     if user is None:
         return {}
+    if user.role == "student":
+        return {"nav_events": []}
     nav_events = [
         {"slug": slug, "name": ev.name}
         for slug, ev in sorted(EVENTS.items())
