@@ -3599,11 +3599,21 @@ def api_q_diagram_chat_estimate(event_slug, bucket, num):
     return jsonify(result)
 
 
-@app.route("/event/<event_slug>/api/export.<fmt>")
+@app.route("/event/<event_slug>/api/export.<fmt>", methods=["GET", "POST"])
 def api_export(event_slug, fmt):
-    """Export the current bank — `fmt` is csv or json. Whole bank;
-    the browse page sends the filtered subset of `q` UUIDs separately when
-    a filter is active."""
+    """Export the bank. `fmt` is csv, json, apkg or pdf.
+
+    GET exports everything. POST with {"keys": [{"bucket","number"}, ...]}
+    exports just those questions, in the order sent — that ordering matters
+    because the Browse page's sort is the order a coach just arranged the
+    questions into, and a printed paper that ignores it is a different
+    document from the one on screen.
+
+    Only the server-rendered formats actually need this: CSV, JSON and
+    markdown subsets are built client-side from data the page already has,
+    but PDF (reportlab) and Anki (genanki) can only be produced here, so
+    without a way to name a subset they were stuck exporting the whole
+    bank."""
     _select_event(event_slug)
     state = bqb._load_state()
     all_qs = []
@@ -3612,6 +3622,35 @@ def api_export(event_slug, fmt):
             row = dict(q)
             row["_bucket"] = bucket
             all_qs.append(row)
+
+    subset_label = ""
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        keys = payload.get("keys")
+        if not isinstance(keys, list) or not keys:
+            return jsonify({"error": "POST export needs a non-empty 'keys' list"}), 400
+        by_key = {(q.get("_bucket", ""), str(q.get("number", ""))): q for q in all_qs}
+        picked = []
+        for k in keys:
+            q = by_key.get((k.get("bucket", ""), str(k.get("number", ""))))
+            # Silently skip a key that no longer resolves rather than
+            # failing the whole export: the page's data can lag a delete by
+            # another coach, and losing one question from a printout is a
+            # far better outcome than losing the printout.
+            if q is not None:
+                picked.append(q)
+        if not picked:
+            return jsonify({"error": "none of those questions are in this bank any more"}), 400
+        all_qs = picked
+        from werkzeug.utils import secure_filename
+        # Goes straight into a Content-Disposition header, so strip it the
+        # same way every other user-supplied filename in this app is.
+        subset_label = secure_filename(str(payload.get("label") or "subset"))[:40] or "subset"
+
+    def _filename(ext: str) -> str:
+        stem = bqb.EVENT.slug + (f"-{subset_label}" if subset_label else "")
+        return f"{stem}.{ext}"
+
     if fmt == "json":
         # "_contexts" carries the shared case-study passages/tables/diagrams
         # referenced by any question's context_id (bucket::id-namespaced —
@@ -3621,7 +3660,7 @@ def api_export(event_slug, fmt):
         return Response(json.dumps(payload, ensure_ascii=False, indent=2),
                         mimetype="application/json",
                         headers={"Content-Disposition":
-                                 f"attachment; filename={bqb.EVENT.slug}.json"})
+                                 f"attachment; filename={_filename('json')}"})
     if fmt == "csv":
         import csv, io
         buf = io.StringIO()
@@ -3643,17 +3682,17 @@ def api_export(event_slug, fmt):
         return Response(buf.getvalue(),
                         mimetype="text/csv; charset=utf-8",
                         headers={"Content-Disposition":
-                                 f"attachment; filename={bqb.EVENT.slug}.csv"})
+                                 f"attachment; filename={_filename('csv')}"})
     if fmt == "apkg":
         err = _optional_dep_error("genanki")
         if err:
             return jsonify({"error": err}), 400
-        return _export_apkg(all_qs)
+        return _export_apkg(all_qs, _filename("").rstrip("."))
     if fmt == "pdf":
         err = _optional_dep_error("reportlab")
         if err:
             return jsonify({"error": err}), 400
-        return _export_pdf(all_qs, bqb._all_contexts())
+        return _export_pdf(all_qs, bqb._all_contexts(), _filename("").rstrip("."))
     return jsonify({"error": f"unsupported format: {fmt}"}), 400
 
 
@@ -3681,7 +3720,8 @@ def _optional_dep_error(module: str) -> str | None:
                 f"{sys.executable} -m pip install {module}")
 
 
-def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Response":
+def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
+                filename_stem: str = "") -> "Response":
     """Generate a printable PDF: questions front-to-back, answer key at the
     end. One question per logical block, page breaks honoured by reportlab's
     SimpleDocTemplate platypus flow."""
@@ -3806,10 +3846,10 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Resp
     return Response(data,
                     mimetype="application/pdf",
                     headers={"Content-Disposition":
-                             f"attachment; filename={bqb.EVENT.slug}.pdf"})
+                             f"attachment; filename={filename_stem or bqb.EVENT.slug}.pdf"})
 
 
-def _export_apkg(all_qs: list[dict]) -> "Response":
+def _export_apkg(all_qs: list[dict], filename_stem: str = "") -> "Response":
     """Build an Anki .apkg from the question bank.
 
     Layout:
@@ -3960,7 +4000,7 @@ def _export_apkg(all_qs: list[dict]) -> "Response":
     return Response(data,
                     mimetype="application/octet-stream",
                     headers={"Content-Disposition":
-                             f"attachment; filename={bqb.EVENT.slug}.apkg"})
+                             f"attachment; filename={filename_stem or bqb.EVENT.slug}.apkg"})
 
 
 # ---------------------------------------------------------------------------

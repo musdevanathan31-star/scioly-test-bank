@@ -410,7 +410,7 @@ Tracking lives in `presence.py`: in-memory, no file backing, pruned on read. Pre
 
 ## Optional export dependencies
 
-Two export formats need a package that isn't in `requirements.txt`, because neither is needed to run the app: **Anki deck** (`genanki`) and **Printable PDF** (`reportlab`).
+Two export formats need a package that isn't in `requirements.txt`, because neither is needed to run the app: **Anki deck** (`genanki`) and **Printable PDF** (`reportlab`). Printable PDF works with any export scope — everything, the filtered set, or just the questions you've ticked; Anki decks are still whole-bank only, and the menu disables that option rather than silently ignoring a narrower scope.
 
 Install them **into the interpreter that actually serves the app**, which on a deployed instance is the venv, not your login shell:
 

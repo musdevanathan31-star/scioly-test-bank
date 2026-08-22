@@ -177,7 +177,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
     <button class="ghost" data-export="md-key" title="Questions first, then a separate answer-key section — print the top half as a test, keep the rest" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — key at end</button>
     <button class="ghost" data-export="md-inline" title="Each answer immediately under its own question" style="display:block;width:100%;text-align:left;padding:6px 14px">Markdown — answers inline</button>
     <button class="ghost" data-export="apkg" title="Anki deck, sub-decked by topic. Whole bank only. Requires server-side `pip install genanki`." style="display:block;width:100%;text-align:left;padding:6px 14px">Anki deck <span class="muted">(whole bank)</span></button>
-    <button class="ghost" data-export="pdf" title="Printable PDF, answer key at the end. Whole bank only. Requires server-side `pip install reportlab`." style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF <span class="muted">(whole bank)</span></button>
+    <button class="ghost" data-export="pdf" title="Printable PDF, answer key at the end. Works with any scope. Requires server-side `pip install reportlab`." style="display:block;width:100%;text-align:left;padding:6px 14px">Printable PDF</button>
   </div>
   {% include "_user_badge.html" %}
 </header>
@@ -1339,20 +1339,19 @@ function exportScope(){
 function refreshExportCounts(){
   document.getElementById("exp_n_filtered").textContent = FILTERED.length;
   document.getElementById("exp_n_selected").textContent = selectedQs().length;
-  // Anki and PDF are generated server-side from the whole bank, so they
-  // can't honour a scope. Disable rather than silently ignoring it — an
-  // export that quietly returns something other than what was asked for is
-  // worse than one that refuses.
+  // PDF is rendered server-side but now accepts a subset (the page POSTs
+  // the chosen questions), so it honours every scope. Anki still doesn't —
+  // disable it rather than silently returning the whole bank, because an
+  // export that quietly ignores the scope is worse than one that refuses.
   const wholeBankOnly = exportScope() !== "all";
-  ["apkg","pdf"].forEach(k => {
-    const btn = document.querySelector(`[data-export="${k}"]`);
-    if(!btn) return;
+  const btn = document.querySelector('[data-export="apkg"]');
+  if(btn){
     btn.disabled = wholeBankOnly;
     btn.style.opacity = wholeBankOnly ? ".45" : "";
     btn.title = wholeBankOnly
-      ? "Generated server-side from the whole bank — switch scope to \"Everything\" to use this."
-      : btn.dataset.baseTitle || btn.title;
-  });
+      ? "Anki decks are built from the whole bank — switch scope to \"Everything\" to use this."
+      : "Anki deck, sub-decked by topic. Requires server-side `pip install genanki`.";
+  }
 }
 document.getElementById("export_menu").addEventListener("change", e => {
   if(e.target.name === "exp_scope") refreshExportCounts();
@@ -1426,6 +1425,15 @@ document.getElementById("export_menu").addEventListener("click", e => {
     toast("Nothing to export in that scope.", "err");
     return;
   }
+
+  // PDF can only be rendered server-side, so a subset means telling the
+  // server which questions — in the order shown, since that's the order the
+  // coach just sorted them into.
+  if(kind === "pdf"){
+    document.getElementById("export_menu").classList.remove("on");
+    await downloadServerExport("pdf", rows, scope);
+    return;
+  }
   if(kind === "csv"){
     downloadBlob(csvFrom(rows), "text/csv", `${EVENT_SLUG}${suffix}.csv`);
   } else if(kind === "json"){
@@ -1437,6 +1445,36 @@ document.getElementById("export_menu").addEventListener("click", e => {
   }
   document.getElementById("export_menu").classList.remove("on");
 });
+
+// POST the chosen questions and save whatever comes back. Used for formats
+// the browser can't build itself; the fetch patch attaches the CSRF token.
+async function downloadServerExport(fmt, rows, scope){
+  const keys = rows.map(q => ({bucket: q._bucket, number: String(q.number)}));
+  toast(`Building ${fmt.toUpperCase()} for ${keys.length} question${keys.length === 1 ? "" : "s"}…`, "ok");
+  let r;
+  try {
+    r = await fetch(`${API}/export.${fmt}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({keys, label: scope}),
+    });
+  } catch(e){ toast("Export request failed.", "err"); return; }
+  if(!r.ok){
+    // The server sends JSON on refusal (missing dependency, empty subset)
+    // and a binary body on success — surface the former as written.
+    let msg = `Export failed (${r.status})`;
+    try { const j = await r.json(); if(j.error) msg = j.error; } catch(e){}
+    toast(msg, "err");
+    return;
+  }
+  const blob = await r.blob();
+  const name = (r.headers.get("Content-Disposition") || "").match(/filename=([^;]+)/);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name ? name[1].trim() : `${EVENT_SLUG}-${scope}.${fmt}`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+  toast(`Downloaded ${a.download}`, "ok");
+}
 
 function downloadBlob(content, mime, filename){
   const blob = new Blob([content], {type:mime});

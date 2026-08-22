@@ -413,7 +413,7 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Generate questions from a source | Coach, Volunteer (assigned events) | Generate page |
 | Upload a shared textbook | Coach only | Generate page → Shared textbooks |
 | Import questions from JSON | Coach, Volunteer (assigned events) | Generate page → Import panel |
-| Export the bank | Coach, Volunteer (assigned events) | Browse page → Export ▾ |
+| Export the bank, a filtered set, or just what you ticked | Coach, Volunteer (assigned events) | Browse page → Export ▾ (choose scope, then format) |
 | Take a quiz | Coach, Volunteer (assigned events) | Quiz |
 | See whether the server is busy before a big job | Coach, Volunteer | `👥 N active` / `⏳ N jobs` badges in the header |
 | See who else is working in an event | Coach, Volunteer (assigned events) | Landing page → `👥 N here now` on the event row |
