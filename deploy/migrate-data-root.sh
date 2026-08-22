@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Moves an instance's growing data (event directories, auth_users.json,
-# events_custom.json, textbooks/) off its app directory and onto a
+# events_custom.json, textbooks/, seasons.json, season_rosters.json,
+# test_windows.json, tests.json) off its app directory and onto a
 # separate DATA_ROOT -- formalizes the manual rsync runbook in README's
 # "Migrating an instance's data to a new DATA_ROOT" into a reusable,
 # idempotent tool. Mirrors backup-bulk-data.sh's own event-directory
@@ -47,8 +48,11 @@ done
 cd - >/dev/null
 
 # Plus the known top-level data files this app keeps next to the code by
-# default (see README's "Separating app code from data").
-for f in auth_users.json events_custom.json; do
+# default (see README's "Separating app code from data"). auth_users.json
+# has to move here even though it's deliberately excluded from
+# backup-bulk-data.sh's S3 backup -- a migration that left it behind would
+# mean nobody can log into the moved instance.
+for f in auth_users.json events_custom.json seasons.json season_rosters.json test_windows.json tests.json; do
   [ -e "$APP_DIR/$f" ] && PATHS+=("$f")
 done
 

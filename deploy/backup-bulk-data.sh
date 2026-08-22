@@ -18,7 +18,12 @@
 # Deliberately backs up "every top-level directory except known code
 # directories" rather than a hardcoded event list — new events get created
 # as plain directories under the app root (see events.py), so this picks
-# them up automatically without ever needing to edit this script.
+# them up automatically without ever needing to edit this script. Also
+# backs up the season/test-administration flat JSON files (seasons.py/
+# testing.py) alongside the directories — those aren't event directories,
+# so the loop below never finds them on its own. Unlike auth_users.json
+# (deliberately excluded — see README's "Backups" section), none of these
+# hold credentials, so there's no reason to keep them out.
 
 set -euo pipefail
 
@@ -42,6 +47,14 @@ for d in */; do
     [ "$d" = "$ex" ] && skip=true && break
   done
   $skip || TARGETS+=("$d")
+done
+
+# Plus the season/test-administration data files this app keeps as flat
+# top-level JSON next to the event directories (see seasons.py/testing.py)
+# -- the loop above only finds directories, so these need listing
+# explicitly. Mirrors migrate-data-root.sh's equivalent block.
+for f in seasons.json season_rosters.json test_windows.json tests.json; do
+  [ -e "$f" ] && TARGETS+=("$f")
 done
 
 if [ "${#TARGETS[@]}" -eq 0 ]; then
