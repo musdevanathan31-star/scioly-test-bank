@@ -226,6 +226,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `.env.example` | Template for the Anthropic API key |
 | `.scioly_cookies.json` | Cached Anubis cookies (auto-managed; delete to force a fresh bot-bypass) |
 | `events_custom.json` | Auto-generated registry of every registered event, including the Circuit Lab/Thermodynamics defaults (their curated keyword data lives in `events.py` and is seeded in here on first run, but the live registry entry — and any edits/archiving — lives here) |
+| `TODO_archive.md` | Plan for the tournament-archive triage interface — decisions taken, phasing, and known risks |
 | `TODO_brittleness.md` | Self-audit of fragility / brittleness in the codebase with a suggested refactor ordering |
 | `TODO_ux.md` | Self-audit of UX rough edges with suggestions grouped by effort (⚡/🛠/🏗) |
 | `spec.md` | Technical spec — data shapes, pipeline stages, annotation/validation/generation schemas |

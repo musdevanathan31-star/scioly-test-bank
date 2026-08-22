@@ -30,7 +30,16 @@ set -euo pipefail
 APP_DIR="${1:?usage: backup-bulk-data.sh <instance-app-dir> <backup-env-file> [<instance-env-file>]}"
 ENV_FILE="${2:?usage: backup-bulk-data.sh <instance-app-dir> <backup-env-file> [<instance-env-file>]}"
 INSTANCE_ENV_FILE="${3:-}"
-EXCLUDE_DIRS=(deploy static templates tests __pycache__ .git backup)
+# tournament_archive is the raw, not-yet-triaged tournament corpus (tens of
+# GB). Excluded DELIBERATELY, not by oversight: a second copy of it lives in
+# Google Drive, so backing it up nightly would buy nothing for a large S3
+# bill and a very long first upload. Note the exposure shrinks by itself --
+# importing a file MOVES it into <event>/, which this script does back up,
+# so anything triaged is covered from that moment on.
+#
+# Deliberately NOT excluded from deploy/migrate-data-root.sh: on a host
+# move, rsyncing it locally beats re-downloading from Drive.
+EXCLUDE_DIRS=(deploy static templates tests __pycache__ .git backup tournament_archive)
 
 set -a
 source "$ENV_FILE"
