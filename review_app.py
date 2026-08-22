@@ -248,6 +248,26 @@ def hard_delete_required(view):
     return wrapped
 
 
+def _home_url_for(user) -> str:
+    """Where a role lands after logging in with no `next` to honour.
+
+    Coaches and volunteers go to the assessments dashboard rather than the
+    event list: during a season the recurring job is preparing, running and
+    grading the week's assessments, while curating the question bank is the
+    off-season task. The event list stays at "/" and is one click away in
+    the menu — several pages use "/" as their "back to event list" target,
+    so it keeps meaning what it always did.
+
+    Students go straight to their own page instead of bouncing through "/"
+    only to be redirected out of it by index().
+    """
+    if user.role == "student":
+        return url_for("my_assessments_page")
+    if user.role in ("coach", "volunteer"):
+        return url_for("assessments_dashboard_page")
+    return url_for("index")
+
+
 def coach_required(view):
     """Gate a route to coaches only. Apply directly under @app.route."""
     @wraps(view)
@@ -348,7 +368,7 @@ def login():
         _clear_login_failures(ip)
         session.clear()
         session["username"] = user.username
-        next_url = request.args.get("next") or url_for("index")
+        next_url = request.args.get("next") or _home_url_for(user)
         resp = redirect(next_url)
         # Non-HttpOnly by design — the frontend's fetch patch needs to read
         # this to attach X-CSRF-Token. It's a CSRF defense, not a secret.
