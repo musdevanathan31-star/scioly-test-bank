@@ -224,6 +224,8 @@ Two specifics worth knowing:
 
 - **Deleting one student's response** on the Grade page removes only that response, so a student who submitted by accident can retake the test. Everyone else's answers, and the test itself, are untouched.
 - **Deleting an event** moves its folder of PDFs and images into a `.deleted` directory on the server rather than erasing it, so an accident is recoverable — but only by whoever administers the box, not from this app.
+- **Deleting a test PDF** also removes the questions extracted from it — the bank keys questions by the PDF they came from, so leaving them would strand questions whose source can no longer be opened. The dialog tells you how many.
+- **Source files and shared textbooks** can be deleted the same way, from the Primary sources page. Deleting a source leaves the markdown already generated from it in place.
 
 If you don't see these buttons, the flag isn't set on your instance, which is the intended setting once you're running real tests.
 

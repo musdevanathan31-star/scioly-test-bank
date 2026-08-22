@@ -48,6 +48,7 @@
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
+<script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to event review" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Sources &amp; Generation</h1>
@@ -399,6 +400,7 @@ async function loadSources(){
             : '<span class="badge badge-warn">needs processing</span>'}</td>
       <td class="actions">
         ${s.kind === "pdf" ? `<button data-process="${esc(s.name)}" title="Extract text from this PDF and write a sibling .md file">${s.has_markdown ? "Re-process" : "Process → MD"}</button>` : ""}
+        ${HARD_DELETE ? `<button data-purge-src="${esc(s.name)}" style="color:var(--bad)" title="Permanently delete this source file. Moved to the server's .deleted/ directory, not erased. Its generated .md is left in place.">&#128465;</button>` : ""}
       </td>
     </tr>`).join("");
   document.getElementById("src_rows").innerHTML = rows
@@ -1356,6 +1358,7 @@ async function loadTextbooks(){
                 title="(Re-)scan this PDF for embedded bookmarks or 'Chapter N' headings">Detect chapters</button>
         <button class="btn-tiny" data-tb-manual="${esc(t.id)}"
                 title="Type chapter boundaries in by hand">Set chapters manually</button>
+        ${HARD_DELETE ? `<button class="btn-tiny" data-purge-tb="${esc(t.name)}" style="color:var(--bad)" title="Permanently delete this shared textbook. Moved to the server's .deleted/ directory, not erased.">&#128465;</button>` : ""}
       </td>
     </tr>`;
   }).join("");
@@ -1488,5 +1491,16 @@ document.getElementById("textbook_manual_save").addEventListener("click", async 
 // loadSources() (wrapped above) refreshes the textbook optgroup itself
 // after repopulating #gen_source, so a single call covers both.
 loadSources();
+</script>
+<script>
+document.addEventListener("click", async e => {
+  const src = e.target.closest("[data-purge-src]");
+  if(src && await hardDelete("source", `${EVENT_SLUG}/${encodeURIComponent(src.dataset.purgeSrc)}`, src.dataset.purgeSrc)){
+    location.reload(); return;
+  }
+  const tb = e.target.closest("[data-purge-tb]");
+  if(tb && await hardDelete("textbook", encodeURIComponent(tb.dataset.purgeTb), tb.dataset.purgeTb))
+    location.reload();
+});
 </script>
 </body></html>

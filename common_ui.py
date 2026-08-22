@@ -210,6 +210,9 @@ a{color:var(--accent);text-decoration:none}
 .nav-group-items a{display:block;padding:4px 8px;font-size:12px;color:var(--fg-soft);
   text-decoration:none;border-radius:4px}
 .nav-group-items a:hover{background:var(--hover)}
+/* Groups the navigation menu into bands (take tests / question bank /
+   running the club / everyone) so a long list reads as four short ones. */
+.nav-sep{height:1px;background:var(--line);margin:6px 8px}
 """
 
 # Common JS helpers injected into every page. Provides:

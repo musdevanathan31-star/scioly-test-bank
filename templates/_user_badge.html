@@ -24,26 +24,55 @@
     <div class="nav-identity">
       Signed in as <b>{{ current_user.display_name or current_user.username }}</b> ({{ current_user.role }})
     </div>
-    {% if current_user.role != "student" %}
-    <a class="nav-link" href="{{ url_for('index') }}">Event Management</a>
-    {% endif %}
-    {% if nav_events %}
-      {{ nav_event_group("Test bank", "event_index") }}
-      {{ nav_event_group("Question bank", "browse_page") }}
-      {{ nav_event_group("Primary sources", "sources_page") }}
-    {% endif %}
-    {% if current_user.role == "coach" %}
-      <a class="nav-link" href="{{ url_for('admin_jobs_page') }}">Jobs</a>
-      <a class="nav-link" href="{{ url_for('club_management_page') }}">Club Management</a>
-    {% elif nav_events %}
-      {{ nav_event_group("Jobs", "event_jobs_page") }}
-    {% endif %}
-    {% if current_user.role in ("coach", "volunteer") %}
-      <a class="nav-link" href="{{ url_for('tests_dashboard_page') }}">Test management</a>
-    {% endif %}
-    <a class="nav-link" href="{{ url_for('scores_page') }}">Scores</a>
+
+    {# Ordered by how often each role actually reaches for it, not by the
+       order these features were built. A student's menu is the first group
+       plus Settings; everything else is hidden rather than shown-and-403'd,
+       so the menu never offers a destination the route would refuse.
+       Each condition below mirrors its route's own guard:
+         my_tests_page      @student_required
+         tests_dashboard    @coach_or_volunteer_required
+         club_management /
+         admin_jobs_page    @coach_required
+         index()            redirects students to My Tests
+         per-event pages    _select_event (blocks students, enforces access)
+                            — already reflected in nav_events. #}
+
+    {# --- Taking tests and results: what a student comes here for -------- #}
     {% if current_user.role == "student" %}
-      <a class="nav-link" href="{{ url_for('my_tests_page') }}">My Tests</a>
+      <a class="nav-link" href="{{ url_for('my_tests_page') }}">📝 My Tests</a>
+    {% endif %}
+    <a class="nav-link" href="{{ url_for('scores_page') }}">🏆 Scores</a>
+
+    {# --- The question bank itself, per event ---------------------------- #}
+    {% if nav_events %}
+    <div class="nav-sep"></div>
+      {{ nav_event_group("📚 Question bank", "browse_page") }}
+      {{ nav_event_group("🗂 Test bank", "event_index") }}
+      {{ nav_event_group("📄 Primary sources", "sources_page") }}
+    {% endif %}
+
+    {# --- Running the club ----------------------------------------------- #}
+    {% if current_user.role in ("coach", "volunteer") %}
+    <div class="nav-sep"></div>
+      <a class="nav-link" href="{{ url_for('tests_dashboard_page') }}">🗓 Test management</a>
+      <a class="nav-link" href="{{ url_for('index') }}">🧪 Event Management</a>
+      {% if current_user.role == "coach" %}
+      <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club Management</a>
+      <a class="nav-link" href="{{ url_for('admin_jobs_page') }}">⏳ Jobs</a>
+      {% elif nav_events %}
+      {{ nav_event_group("⏳ Jobs", "event_jobs_page") }}
+      {% endif %}
+      {# Settings closes this group for the roles that have one. It's
+         available to every role, though, so a student gets it in the last
+         group instead — rendering it here only would hide it from them. #}
+      <a class="nav-link" href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys">⚙ Settings</a>
+    {% endif %}
+
+    {# --- Everyone ------------------------------------------------------- #}
+    <div class="nav-sep"></div>
+    {% if current_user.role not in ("coach", "volunteer") %}
+    <a class="nav-link" href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys">⚙ Settings</a>
     {% endif %}
     {% if current_user.role in ("coach", "volunteer") %}
     {# Hidden until JS confirms this browser has a personal LLM key set
@@ -52,10 +81,9 @@
     <span id="cost-badge" class="cost-badge" style="display:none;margin:4px 10px"
           title="Anthropic API spend this process. Hover for details.">$0.00</span>
     {% endif %}
-    <button type="button" class="nav-link" id="navNotifBtn" style="width:100%;text-align:left">Notifications</button>
-    <a class="nav-link" href="{{ url_for('settings_page') }}" title="Account settings, LLM API keys">⚙ Settings</a>
+    <button type="button" class="nav-link" id="navNotifBtn" style="width:100%;text-align:left">🔔 Notifications</button>
     <form action="{{ url_for('logout') }}" method="post" style="margin:0">
-      <button type="submit" class="nav-link" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;font:inherit">Logout</button>
+      <button type="submit" class="nav-link" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;font:inherit">🚪 Logout</button>
     </form>
   </div>
 </div>

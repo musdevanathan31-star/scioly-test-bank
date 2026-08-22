@@ -35,6 +35,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
+<script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
   <a href="{{ request.script_root }}/" title="Back to event list" style="font-size:18px">←</a>
   <h1>{{ event_name }} — Review</h1>
@@ -260,6 +261,7 @@ async function load(){
         }</td>
         <td class="row-actions">
           <button class="ghost" data-preview="${r.name}" title="Preview this PDF in a slide-in panel without leaving this list">👁 Preview</button>
+          ${HARD_DELETE ? `<button class="ghost" data-purge-pdf="${r.name}" style="color:var(--bad)" title="Permanently delete this PDF and the questions extracted from it. The file is moved to the server's .deleted/ directory, not erased.">&#128465;</button>` : ""}
           <a href="${viewQ}" title="See these questions in the browse view"><button class="ghost">View questions</button></a>
           <button class="ghost" data-reprocess="${r.name}" title="Wipe cache and re-extract; replays your annotations">Reprocess</button>
           ${r.has_key ? `<button class="ghost" data-swap="${r.name}" title="The test and key files got named backwards — swap them">⇄ Swap</button>` : ""}
@@ -520,5 +522,13 @@ document.getElementById("pd_zoom_in").addEventListener("click", () => {
 });
 
 load();
+</script>
+<script>
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-purge-pdf]");
+  if(!b) return;
+  if(await hardDelete("pdf", `${EVENT_SLUG}/${encodeURIComponent(b.dataset.purgePdf)}`, b.dataset.purgePdf))
+    location.reload();
+});
 </script>
 </body></html>

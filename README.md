@@ -688,7 +688,7 @@ Order matters — provisioning creates the accounts the secrets must be owned by
 - **"Remove" an event** (`events.py`'s `archive_custom_event`) sets an `archived` flag — it disappears from the landing page but its directory, PDFs, and state file are never touched. Unarchive it from the landing page's "Show archived events" section.
 - **"Remove" a user** (`auth.py`'s `disable_user`) sets a `disabled` flag — blocks login and kicks any active session immediately, but the account and all their work stay intact. Re-enable from Manage Users.
 - Single/bulk question delete were already soft (recorded in `annotations[...].deleted`, survive reprocess) — unchanged.
-- There's still no route that deletes an uploaded file (test/key/source/textbook PDF) at all — by design.
+- Uploaded files (test/key/source/textbook PDFs) have no soft-delete either — with `ALLOW_HARD_DELETE` unset there is no route that removes them at all, by design; with it set they can be deleted, and are moved to `.deleted/` rather than erased (see [Hard delete](#hard-delete-allow_hard_delete)).
 - Real cleanup, when an operator actually wants it: `python archive.py --purge-snapshots-older-than-days N` removes old snapshot files from disk. Nothing equivalent exists for archived events or disabled users — handle those by hand if truly necessary.
 
 ### Hard delete (`ALLOW_HARD_DELETE`)
@@ -703,12 +703,15 @@ The stance above is the default and should stay the default. But a pre-productio
 | Test window | its tests → responses |
 | Test | its responses |
 | Student response | just that one response, so a student can retake |
+| Test/key PDF | its extracted questions (the bank buckets questions by source filename); **the file is moved**, see below |
+| Generation source | just that file; its generated `.md` is left in place |
+| Shared textbook | just that file |
 
 Three properties are what make this safe enough to exist:
 
 - **Off unless switched on.** Routes 403 and the buttons don't render. Going to production is deleting one line from `.env`, not reverting code — the capability can't quietly outlive the reason it was enabled.
 - **Nothing goes without being counted first.** Every delete fetches a preview and puts the real cascade in the confirmation: *"This removes: 1 test window, 1 test, 41 student responses."* A cascade whose size is a surprise is the failure mode worth engineering against, since deleting one season can reasonably mean deleting a term's worth of student work. A test asserts the preview and the delete report the same numbers.
-- **Event files are moved, not erased.** Deleting an event relocates its directory to `<DATA_ROOT>/.deleted/<slug>-<timestamp>/`. The app can't see it any more, but a PDF library that took a season to assemble isn't destroyed by one click in a browser. Clearing that directory stays an operator's decision, made over SSH, with restic still covering it meanwhile.
+- **Files are moved, not erased.** Deleting an event, a PDF, a source or a textbook relocates it under `<DATA_ROOT>/.deleted/`. The app can't see it any more, but a PDF library that took a season to assemble isn't destroyed by one click in a browser. Clearing that directory stays an operator's decision, made over SSH, with restic still covering it meanwhile.
 
 Coach-only on top of the flag, you can't delete your own account, and every delete is logged at WARNING with who did it and what went. Cascade policy lives in [`deletion.py`](deletion.py); each module keeps only record-level primitives that touch its own storage.
 

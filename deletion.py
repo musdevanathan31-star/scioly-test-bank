@@ -53,7 +53,8 @@ TRASH_DIRNAME = ".deleted"
 #: Entity kinds this module can preview and delete, in the order a cascade
 #: reaches them. Used by review_app to validate the :kind path segment
 #: rather than maintaining a second list.
-KINDS = ("user", "season", "event", "window", "test", "response")
+KINDS = ("user", "season", "event", "window", "test", "response",
+         "pdf", "source", "textbook")
 
 
 class DeletionError(Exception):
@@ -250,6 +251,126 @@ def delete_response(test_id: str, username: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Uploaded files: test/key PDFs, generation source material, shared textbooks
+#
+# README long said "there's still no route that deletes an uploaded file at
+# all — by design", and that reasoning still holds for a live instance: a
+# source PDF is the input the whole bank was derived from, and losing one
+# silently is unrecoverable in a way losing a season record is not. These
+# exist under the same ALLOW_HARD_DELETE gate as everything else here, and
+# like events they MOVE the file to the trash directory rather than
+# unlinking it, so a misclick costs an operator one `mv` rather than a
+# re-download of something that may no longer be online.
+#
+# Deleting a test PDF also drops its extracted questions, because the bank
+# keys questions by the PDF filename they came from ("bucket"). Leaving the
+# bucket behind would strand questions whose source can never be reopened,
+# re-cropped, or re-processed — so the preview states that count up front.
+# ---------------------------------------------------------------------------
+
+def _contained(base: Path, name: str) -> Path:
+    """Resolve `name` directly under `base`, refusing anything that escapes.
+
+    deletion.py deliberately doesn't import review_app (that would be a
+    cycle), so this repeats _safe_join's containment check rather than
+    reaching for it. Same rule: a bare ".." survives secure_filename, so
+    containment is verified after resolving, not assumed from the string.
+    """
+    candidate = (base / name).resolve()
+    base_resolved = base.resolve()
+    if candidate == base_resolved or base_resolved not in candidate.parents:
+        raise DeletionError(f"unsafe filename: {name!r}")
+    return candidate
+
+
+def _move_to_trash(path: Path, label: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest_dir = trash_dir() / f"{label}-{stamp}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / path.name
+    shutil.move(str(path), str(dest))
+    return str(dest)
+
+
+def _event_or_raise(slug: str):
+    ev = events_mod.EVENTS.get(slug)
+    if ev is None:
+        raise DeletionError(f"no such event: {slug}")
+    return ev
+
+
+def _file_stats(path: Path) -> dict:
+    return {"files": 1, "bytes": path.stat().st_size}
+
+
+def preview_pdf(slug: str, filename: str) -> dict:
+    ev = _event_or_raise(slug)
+    path = _contained(ev.base_dir, filename)
+    if not path.is_file():
+        raise DeletionError(f"no such file: {filename}")
+    # Questions are bucketed by source PDF filename, so the bucket key is
+    # the filename itself.
+    import build_question_bank as bqb
+    bqb.set_event(slug)
+    state = bqb._load_state()
+    n_questions = len(state.get("questions", {}).get(filename, []) or [])
+    return {"kind": "pdf", "label": filename, "questions": n_questions,
+            "moves_to": str(trash_dir()), **_file_stats(path)}
+
+
+def delete_pdf(slug: str, filename: str) -> dict:
+    info = preview_pdf(slug, filename)
+    ev = events_mod.EVENTS[slug]
+    path = _contained(ev.base_dir, filename)
+
+    import build_question_bank as bqb
+    bqb.set_event(slug)
+    with bqb._state_transaction() as state:
+        state.get("questions", {}).pop(filename, None)
+        state.get("annotations", {}).pop(filename, None)
+
+    moved_to = _move_to_trash(path, f"{slug}-pdf")
+    return {"kind": "pdf", "files": 1, "bytes": info["bytes"],
+            "questions": info["questions"], "moved_to": moved_to}
+
+
+def preview_source(slug: str, filename: str) -> dict:
+    ev = _event_or_raise(slug)
+    path = _contained(ev.texts_dir, filename)
+    if not path.is_file():
+        raise DeletionError(f"no such source: {filename}")
+    return {"kind": "source", "label": filename,
+            "moves_to": str(trash_dir()), **_file_stats(path)}
+
+
+def delete_source(slug: str, filename: str) -> dict:
+    info = preview_source(slug, filename)
+    ev = events_mod.EVENTS[slug]
+    path = _contained(ev.texts_dir, filename)
+    return {"kind": "source", "files": 1, "bytes": info["bytes"],
+            "moved_to": _move_to_trash(path, f"{slug}-source")}
+
+
+def textbooks_dir() -> Path:
+    return events_mod.DATA_ROOT / "textbooks"
+
+
+def preview_textbook(filename: str) -> dict:
+    path = _contained(textbooks_dir(), filename)
+    if not path.is_file():
+        raise DeletionError(f"no such textbook: {filename}")
+    return {"kind": "textbook", "label": filename,
+            "moves_to": str(trash_dir()), **_file_stats(path)}
+
+
+def delete_textbook(filename: str) -> dict:
+    info = preview_textbook(filename)
+    path = _contained(textbooks_dir(), filename)
+    return {"kind": "textbook", "files": 1, "bytes": info["bytes"],
+            "moved_to": _move_to_trash(path, "textbook")}
+
+
+# ---------------------------------------------------------------------------
 # Dispatch — one table so review_app has a single route pair rather than
 # twelve near-identical ones, and so KINDS can't drift from what's wired.
 # ---------------------------------------------------------------------------
@@ -257,10 +378,12 @@ def delete_response(test_id: str, username: str) -> dict:
 _PREVIEW = {
     "user": preview_user, "season": preview_season, "event": preview_event,
     "window": preview_window, "test": preview_test, "response": preview_response,
+    "pdf": preview_pdf, "source": preview_source, "textbook": preview_textbook,
 }
 _DELETE = {
     "user": delete_user, "season": delete_season, "event": delete_event,
     "window": delete_window, "test": delete_test, "response": delete_response,
+    "pdf": delete_pdf, "source": delete_source, "textbook": delete_textbook,
 }
 
 

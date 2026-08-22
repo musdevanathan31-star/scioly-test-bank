@@ -30,14 +30,37 @@ def app_modules(monkeypatch):
     auth/seasons/events/testing all resolve DATA_ROOT at import time, so
     the env var has to be set before the reload rather than patched after.
     """
+    import build_question_bank as bqb
+    # tests/test_heuristics.py calls bqb.set_event("circuit_lab") at import
+    # time, which pytest runs before any fixture here. Capture whatever is
+    # active so teardown can put it back rather than guessing a slug.
+    previous_event = bqb.current_event()
+
     tmp = tempfile.mkdtemp(prefix="deletion-test-")
     monkeypatch.setenv("DATA_ROOT", tmp)
     monkeypatch.setenv("ALLOW_HARD_DELETE", "true")
     import auth, events, seasons, testing, deletion
     for mod in (auth, events, seasons, testing, deletion):
         importlib.reload(mod)
-    return {"auth": auth, "events": events, "seasons": seasons,
-            "testing": testing, "deletion": deletion, "root": Path(tmp)}
+    yield {"auth": auth, "events": events, "seasons": seasons,
+           "testing": testing, "deletion": deletion, "root": Path(tmp)}
+
+    # Teardown matters here in a way it doesn't for most fixtures: these
+    # modules resolve DATA_ROOT at import time and hold it in module
+    # globals, so a reload under the temp root leaks into every later test
+    # in the session. Some of these tests also call bqb.set_event() on
+    # scratch events, which leaves build_question_bank's active-event
+    # ContextVar pointing at an event that has no topic keywords -- that
+    # alone was enough to make tests/test_heuristics.py's classify_topic
+    # cases fail when run after this file, and pass when run alone.
+    monkeypatch.undo()
+    for mod in (auth, events, seasons, testing, deletion):
+        importlib.reload(mod)
+    if previous_event is not None:
+        # Re-resolve by slug, not by re-binding the old object: `events` was
+        # just reloaded, so the registry holds new Event instances and the
+        # stale one would point at the temp DATA_ROOT.
+        bqb.set_event(previous_event.slug)
 
 
 def _season_with_test(mods, season_id="2027"):
@@ -257,3 +280,78 @@ def test_dispatch_tables_cover_exactly_the_declared_kinds(app_modules):
     deletion = app_modules["deletion"]
     assert set(deletion._PREVIEW) == set(deletion.KINDS)
     assert set(deletion._DELETE) == set(deletion.KINDS)
+
+
+# ---------------------------------------------------------------------------
+# Uploaded files: PDFs, generation sources, shared textbooks
+# ---------------------------------------------------------------------------
+
+def _make_event_with_pdf(mods, slug="scratch_ev", fname="scratch_2024_b_x_test.pdf"):
+    events = mods["events"]
+    events.add_custom_event(slug, "Scratch")
+    ev = events.EVENTS[slug]
+    ev.base_dir.mkdir(parents=True, exist_ok=True)
+    (ev.base_dir / fname).write_bytes(b"%PDF-1.4 fake")
+    return ev, fname
+
+
+def test_deleting_a_pdf_reports_and_removes_its_extracted_questions(app_modules):
+    deletion = app_modules["deletion"]
+    ev, fname = _make_event_with_pdf(app_modules)
+
+    import build_question_bank as bqb
+    bqb.set_event(ev.slug)
+    with bqb._state_transaction() as state:
+        state.setdefault("questions", {})[fname] = [{"number": "1"}, {"number": "2"}]
+
+    preview = deletion.preview_pdf(ev.slug, fname)
+    assert preview["questions"] == 2, "the cascade must be stated up front"
+
+    result = deletion.delete_pdf(ev.slug, fname)
+    assert result["questions"] == 2
+    assert not (ev.base_dir / fname).exists()
+    assert Path(result["moved_to"]).is_file(), "PDFs are moved, not erased"
+
+    bqb.set_event(ev.slug)
+    assert fname not in bqb._load_state().get("questions", {})
+
+
+def test_deleting_a_source_and_a_textbook_moves_them_to_trash(app_modules):
+    deletion, events = app_modules["deletion"], app_modules["events"]
+    events.add_custom_event("srcev", "Src")
+    ev = events.EVENTS["srcev"]
+    ev.texts_dir.mkdir(parents=True, exist_ok=True)
+    (ev.texts_dir / "wiki.md").write_text("notes", encoding="utf-8")
+
+    res = deletion.delete_source("srcev", "wiki.md")
+    assert not (ev.texts_dir / "wiki.md").exists()
+    assert Path(res["moved_to"]).read_text(encoding="utf-8") == "notes"
+
+    tb = deletion.textbooks_dir()
+    tb.mkdir(parents=True, exist_ok=True)
+    (tb / "physics.pdf").write_bytes(b"book")
+    res = deletion.delete_textbook("physics.pdf")
+    assert not (tb / "physics.pdf").exists()
+    assert Path(res["moved_to"]).read_bytes() == b"book"
+
+
+@pytest.mark.parametrize("bad", ["../../secret.json", "..", "sub/../../out.pdf"])
+def test_file_deletes_refuse_paths_that_escape_their_directory(app_modules, bad):
+    # These routes take a filename straight from a URL, so containment is
+    # the whole security story — a traversal here would move arbitrary
+    # files out of the instance.
+    deletion, events = app_modules["deletion"], app_modules["events"]
+    events.add_custom_event("travev", "Trav")
+    with pytest.raises(deletion.DeletionError):
+        deletion.preview_pdf("travev", bad)
+    with pytest.raises(deletion.DeletionError):
+        deletion.preview_textbook(bad)
+
+
+def test_missing_files_raise_rather_than_reporting_success(app_modules):
+    deletion, events = app_modules["deletion"], app_modules["events"]
+    events.add_custom_event("emptyev", "Empty")
+    with pytest.raises(deletion.DeletionError, match="no such file"):
+        deletion.preview_pdf("emptyev", "nope.pdf")
+    with pytest.raises(deletion.DeletionError, match="no such event"):
+        deletion.preview_pdf("no_such_event", "x.pdf")
