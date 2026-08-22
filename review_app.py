@@ -66,6 +66,7 @@ import presence  # noqa: E402
 import deletion  # noqa: E402
 import tournament_archive  # noqa: E402
 import archive_map  # noqa: E402
+import archive_ops  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -2764,6 +2765,86 @@ def api_archive_map_save():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "mapped": len(entries)})
+
+
+# --- Phase 3: mutations ----------------------------------------------------
+#
+# Coach-only, and every one of them previews first. Organising inherently
+# means deleting junk, so these do not sit behind ALLOW_HARD_DELETE —
+# requiring it would mean leaving user/season/event deletion switched on for
+# the whole triage effort. Deletes go to the shared trash instead.
+
+def _archive_op_args(data):
+    """Pull the arguments for one action out of a request body."""
+    action = (data.get("action") or "").strip().lower()
+    if action == "rename":
+        return action, (data.get("path") or "", data.get("name") or "")
+    if action == "move":
+        return action, (data.get("path") or "", data.get("dest") or "")
+    if action == "delete":
+        return action, (data.get("path") or "",)
+    if action == "create":
+        return action, (data.get("path") or "", data.get("name") or "")
+    raise archive_ops.ArchiveOpError(f"unknown action: {action or '(none)'}")
+
+
+@app.route("/api/archive/preview", methods=["POST"])
+@coach_required
+def api_archive_preview():
+    """What this action would do. Never touches the filesystem."""
+    try:
+        action, args = _archive_op_args(request.get_json() or {})
+        return jsonify({"ok": True, "preview": archive_ops.PREVIEWS[action](*args)})
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:                     # containment failure
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/archive/apply", methods=["POST"])
+@coach_required
+def api_archive_apply():
+    """Carry out one action. The client is expected to have previewed it,
+    but this re-previews internally rather than trusting that — the tree can
+    change between the two calls."""
+    handlers = {"rename": archive_ops.rename, "move": archive_ops.move,
+                "delete": archive_ops.delete, "create": archive_ops.create_folder}
+    try:
+        action, args = _archive_op_args(request.get_json() or {})
+        result = handlers[action](*args, by=g.user.username)
+        return jsonify({"ok": True, "result": result})
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except OSError as e:
+        return jsonify({"error": f"filesystem refused: {e}"}), 500
+
+
+@app.route("/api/archive/prune-empty", methods=["POST"])
+@coach_required
+def api_archive_prune_empty():
+    """Requirement 4's other half: drop folders that hold nothing at all."""
+    rel = (request.get_json() or {}).get("path") or ""
+    try:
+        return jsonify({"ok": True,
+                        "result": archive_ops.delete_empty_folders(
+                            rel, by=g.user.username)})
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/archive/ops")
+@coach_required
+def api_archive_ops():
+    """Recent mutations, newest first — the audit trail for a 65GB reshuffle."""
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 50))))
+    except ValueError:
+        limit = 50
+    return jsonify({"ops": archive_ops.read_ops(limit)})
 
 
 @app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])

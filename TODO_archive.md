@@ -99,10 +99,32 @@ Import is open to volunteers (they already have this power via web upload);
 mapping, indexing and duplicate review stay coach-only. Pure metadata; still
 no file moves.
 
-**Phase 3 — mutations.** Rename, move, create, delete, each previewing the
-real counts ("moves 412 files, 3.1GB") before applying. Bulk moves run as
-jobs so they report progress. Path containment validated server-side on
-every request, the way `deletion.py` does it.
+**Phase 3 — mutations.** *Done.* Rename, move, create, delete and prune-empty,
+each previewing the real counts ("moves 412 files, 3.1GB") from the index
+before applying — the numbers are already there, so acting on a guess is
+never necessary. Path containment validated server-side on every request,
+the way `deletion.py` does it, on the write routes as well as the read one.
+
+Coach-only, and deliberately **not** behind `ALLOW_HARD_DELETE`: organising
+inherently means deleting junk, and gating it on that flag would mean
+leaving user/season/event deletion switched on for the whole triage effort.
+Deletes go to the shared `<DATA_ROOT>/.deleted/` trash instead, in a folder
+named for the archive-relative path — basenames here are meaningless
+("test.pdf", a thousand times over), so a coach restoring something needs to
+know which one it was.
+
+Every mutation appends to `archive_ops.jsonl` with both paths and the user.
+That is an audit trail now and the prerequisite for undo later; neither can
+be reconstructed after the fact. Logging never raises — losing an audit line
+must not roll back a move that already happened on disk.
+
+**The index is patched, not rebuilt.** Re-walking 65GB after each rename
+would make the tool unusable at this size. The patch maintains keys, subdir
+lists and the totals up both ancestor chains; tests compare the patched
+index against a full rebuild, because silent drift here makes every total on
+every page wrong from then on. Duplicate groups are deliberately *not*
+maintained — a half-updated group would propose deleting a file that is not
+a copy of anything — so `stale_duplicates` marks them for the next rebuild.
 
 **Phase 4 — import into an event.** From a `<Tournament>` node, pick PDFs,
 choose a role, and they move into the event directory under the naming

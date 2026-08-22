@@ -25,6 +25,10 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .pathhint{font-family:ui-monospace,Consolas,monospace;font-size:12px;
   background:var(--bg-alt);border:1px solid var(--line);border-radius:4px;
   padding:2px 6px}
+.opsbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.rowops{display:none;gap:4px;white-space:nowrap}
+.row:hover .rowops{display:flex}
+.rowops button{font-size:11px;padding:1px 6px}
 .steps{margin-top:10px;display:none}
 .step{display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0}
 .step .mark{width:16px;text-align:center}
@@ -67,6 +71,13 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 
   <section>
     <div class="crumbs" id="crumbs"></div>
+    {% if is_coach %}
+    <div class="opsbar">
+      <button id="newfolder" class="ghost">New folder</button>
+      <button id="prune" class="ghost">Remove empty folders</button>
+      <span class="muted" id="opsmsg"></span>
+    </div>
+    {% endif %}
     <div class="rowlist" id="listing"><div class="empty">loading…</div></div>
   </section>
 </div>
@@ -129,6 +140,15 @@ async function refreshStatus(){
   return s;
 }
 
+function rowOps(rel, fileOnly){
+  if(!IS_COACH) return "";
+  const p = esc(rel);
+  return `<span class="rowops">`
+    + (fileOnly ? "" : `<button class="ghost" data-op="rename" data-path="${p}">Rename</button>`
+                     + `<button class="ghost" data-op="move" data-path="${p}">Move</button>`)
+    + `<button class="ghost" data-op="delete" data-path="${p}">Delete</button></span>`;
+}
+
 async function go(rel){
   CURRENT = rel || "";
   const listing = document.getElementById("listing");
@@ -156,7 +176,8 @@ async function go(rel){
       <span class="ico">📁</span>
       <span class="nm" data-go="${esc(sd.rel)}">${esc(sd.name)}</span>
       <span class="muted">${esc(sd.level)}</span>
-      <span class="num">${counts}</span></div>`;
+      <span class="num">${counts}</span>
+      ${rowOps(sd.rel)}</div>`;
   });
   d.files.forEach(f => {
     // Only THAT it has a copy, not where — the duplicates view answers
@@ -165,11 +186,13 @@ async function go(rel){
     const dup = f.dup
       ? `<span class="badge badge-warn" title="An identical file exists elsewhere in the archive">copy</span>`
       : "";
+    const frel = (CURRENT ? CURRENT + "/" : "") + f.name;
     html += `<div class="row">
       <span class="ico">${f.ext === ".pdf" ? "📄" : "•"}</span>
       <span class="nm">${esc(f.name)}</span>
       ${dup}
-      <span class="num">${fmtBytes(f.size)}</span></div>`;
+      <span class="num">${fmtBytes(f.size)}</span>
+      ${rowOps(frel, true)}</div>`;
   });
   if(!html){
     html = `<div class="empty">This folder is empty.</div>`;
@@ -284,6 +307,104 @@ document.getElementById("cancel").addEventListener("click", async e => {
   // poll notices the build stop and setBuilding() hides it.
   setTimeout(() => { e.target.disabled = false;
                      e.target.textContent = "Cancel"; }, 2000);
+});
+
+// --- Phase 3: mutations ---------------------------------------------------
+// Every action previews first and shows the real counts before it happens.
+// A mis-scoped move across 65GB has no undo button, and the numbers are
+// already in the index, so there is no reason to act on a guess.
+
+async function previewOp(body){
+  const r = await fetch(`${APP_ROOT}/api/archive/preview`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  return r.json();
+}
+
+async function applyOp(body){
+  const r = await fetch(`${APP_ROOT}/api/archive/apply`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  return r.json();
+}
+
+function describe(p){
+  if(p.files === 0) return "It is empty.";
+  const est = p.estimated ? " (counted just now — not yet indexed)" : "";
+  return `${p.files.toLocaleString()} file${p.files === 1 ? "" : "s"}, `
+       + `${fmtBytes(p.bytes)}${est}.`;
+}
+
+async function runOp(body, prompt, opts){
+  const pre = await previewOp(body);
+  if(pre.error){ await confirmModal(pre.error, {confirmLabel: "OK"}); return false; }
+  const p = pre.preview;
+  const dest = p.dest ? `\n\nDestination: ${p.dest}` : "";
+  if(!await confirmModal(`${prompt}\n\n${describe(p)}${dest}`,
+                         Object.assign({wide: true}, opts || {}))) return false;
+  const res = await applyOp(body);
+  if(res.error){ await confirmModal(res.error, {confirmLabel: "OK"}); return false; }
+  await refreshStatus();
+  go(CURRENT);
+  return true;
+}
+
+document.addEventListener("click", async e => {
+  const btn = e.target.closest("[data-op]");
+  if(!btn) return;
+  const op = btn.dataset.op;
+  const path = btn.dataset.path || "";
+  const name = path.split("/").pop();
+
+  if(op === "rename"){
+    const next = window.prompt(`New name for "${name}":`, name);
+    if(next === null || next === name) return;
+    await runOp({action: "rename", path, name: next},
+                `Rename "${name}" to "${next}"?`);
+  } else if(op === "move"){
+    // A path box rather than a tree picker: the destination is frequently a
+    // folder that does not exist yet, and typing it is how a coach fixes a
+    // misfiled tournament without first creating the shell by hand.
+    const parent = window.prompt(
+      "Move into which folder?\nArchive-relative path, blank for the top level:",
+      CURRENT);
+    if(parent === null) return;
+    await runOp({action: "move", path, dest: parent.trim()},
+                `Move "${name}"?`);
+  } else if(op === "delete"){
+    await runOp({action: "delete", path},
+                `Delete "${name}"?\n\nIt moves to the trash, so this can be undone.`,
+                {danger: true, confirmLabel: "Delete"});
+  }
+});
+
+document.getElementById("newfolder").addEventListener("click", async () => {
+  const name = window.prompt(`New folder inside "${CURRENT || ARCHIVE_NAME}":`);
+  if(!name) return;
+  await runOp({action: "create", path: CURRENT, name},
+              `Create "${name}"?`, {confirmLabel: "Create"});
+});
+
+document.getElementById("prune").addEventListener("click", async () => {
+  const where = CURRENT || ARCHIVE_NAME;
+  if(!await confirmModal(
+      `Remove every empty folder under "${where}"?\n\n`
+      + "Only folders holding nothing at all — a folder with files in it is "
+      + "left alone. Empty folders have no content to recover, so these are "
+      + "removed outright rather than trashed.",
+      {wide: true, confirmLabel: "Remove empty folders"})) return;
+  const r = await fetch(`${APP_ROOT}/api/archive/prune-empty`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({path: CURRENT})});
+  const j = await r.json();
+  const msg = document.getElementById("opsmsg");
+  if(j.error){ msg.textContent = j.error; return; }
+  const n = j.result.count;
+  msg.textContent = n ? `Removed ${n} empty folder${n === 1 ? "" : "s"}.`
+                      : "No empty folders found.";
+  setTimeout(() => { msg.textContent = ""; }, 6000);
+  await refreshStatus();
+  go(CURRENT);
 });
 }
 

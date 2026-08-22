@@ -166,3 +166,72 @@ def test_a_bad_slug_is_rejected_with_a_reason(app_ctx):
                               json={"pairs": {"Division B/Circuit Lab": "nope"}})
     assert r.status_code == 400
     assert "no such event" in r.get_json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 mutations
+# ---------------------------------------------------------------------------
+
+def test_a_volunteer_cannot_mutate_the_archive(app_ctx):
+    client, am, slug = app_ctx
+    # Even inside a subtree they legitimately hold: organising is a coach
+    # job, and a volunteer moving a folder changes what everyone else sees.
+    am.set_many({"Division B/Circuit Lab": slug})
+    c = client("vol1")
+    for body in ({"action": "rename", "path": "Division B/Circuit Lab", "name": "X"},
+                 {"action": "move", "path": "Division B/Circuit Lab", "dest": ""},
+                 {"action": "delete", "path": "Division B/Circuit Lab"},
+                 {"action": "create", "path": "Division B/Circuit Lab", "name": "X"}):
+        assert c.post("/api/archive/apply", json=body).status_code == 403, body
+        assert c.post("/api/archive/preview", json=body).status_code == 403
+    assert c.post("/api/archive/prune-empty", json={"path": ""}).status_code == 403
+    assert c.get("/api/archive/ops").status_code == 403
+
+
+def test_preview_does_not_touch_the_filesystem(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    before = sorted(p.as_posix() for p in ta.archive_root().rglob("*"))
+    r = client("coach1").post("/api/archive/preview",
+                              json={"action": "delete", "path": "Division B/Anatomy"})
+    assert r.get_json()["preview"]["files"] == 1
+    assert sorted(p.as_posix() for p in ta.archive_root().rglob("*")) == before
+
+
+def test_a_coach_can_rename_through_the_api(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    r = client("coach1").post("/api/archive/apply",
+                              json={"action": "rename",
+                                    "path": "Division B/Anatomy", "name": "Anatomy B"})
+    assert r.get_json()["ok"] is True
+    assert (ta.archive_root() / "Division B/Anatomy B").is_dir()
+
+
+def test_an_unknown_action_is_refused(app_ctx):
+    client, _am, _slug = app_ctx
+    r = client("coach1").post("/api/archive/apply",
+                              json={"action": "chmod", "path": "Division B"})
+    assert r.status_code == 400
+    assert "unknown action" in r.get_json()["error"]
+
+
+def test_traversal_is_refused_by_the_mutation_routes_too(app_ctx):
+    client, _am, _slug = app_ctx
+    c = client("coach1")
+    # The browse route's containment check protects reads; these are writes.
+    for body in ({"action": "delete", "path": "../outside"},
+                 {"action": "rename", "path": "..", "name": "x"},
+                 {"action": "create", "path": "../..", "name": "x"}):
+        assert c.post("/api/archive/apply", json=body).status_code == 400, body
+
+
+def test_the_ops_log_is_readable_after_a_change(app_ctx):
+    client, _am, _slug = app_ctx
+    c = client("coach1")
+    c.post("/api/archive/apply", json={"action": "create",
+                                       "path": "Division B", "name": "Fresh"})
+    ops = c.get("/api/archive/ops").get_json()["ops"]
+    assert ops[0]["action"] == "create"
+    assert ops[0]["dest"] == "Division B/Fresh"
+    assert ops[0]["by"] == "coach1"

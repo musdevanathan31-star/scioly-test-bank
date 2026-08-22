@@ -239,6 +239,147 @@ def build_index(progress=None, should_cancel=None, find_dupes: bool = True) -> d
 
 
 # ---------------------------------------------------------------------------
+# Incremental index maintenance
+#
+# A rename touches one subtree. Re-walking 65GB to learn that would make
+# every mutation cost a full rebuild, which is the difference between a tool
+# a coach uses and one they avoid. So the index is patched in place.
+#
+# These are deliberately narrow: they maintain exactly the fields the browse
+# view reads (keys, subdirs lists, and the totals that aggregate up the
+# ancestor chain). Anything more subtle -- duplicate groups in particular --
+# is left to go stale rather than half-maintained, and `stale_duplicates`
+# says so, because a wrong duplicate group proposes deleting a file that is
+# not a copy of anything.
+# ---------------------------------------------------------------------------
+
+def _ancestors(rel: str):
+    """Every ancestor key of `rel`, nearest first, ending at the root ("")."""
+    parts = [p for p in rel.split("/") if p]
+    for i in range(len(parts) - 1, 0, -1):
+        yield "/".join(parts[:i])
+    yield ""
+
+
+def _parent_of(rel: str) -> str:
+    return rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+
+def _adjust_totals(dirs: dict, start_rel: str, d_files: int, d_bytes: int) -> None:
+    for anc in _ancestors(start_rel):
+        entry = dirs.get(anc)
+        if entry is None:
+            continue
+        entry["total_files"] = max(0, entry.get("total_files", 0) + d_files)
+        entry["total_bytes"] = max(0, entry.get("total_bytes", 0) + d_bytes)
+
+
+def _subtree_keys(dirs: dict, rel: str) -> list:
+    prefix = rel + "/"
+    return [k for k in dirs if k == rel or k.startswith(prefix)]
+
+
+def index_move(old_rel: str, new_rel: str) -> None:
+    """Re-key a subtree after a rename or move, and fix both ancestor chains.
+
+    A rename inside one parent nets to zero on totals; a move between parents
+    subtracts from the old chain and adds to the new. Doing both
+    unconditionally handles either without a special case.
+    """
+    index = load_index()
+    if index is None:
+        return
+    dirs = index.get("dirs") or {}
+    entry = dirs.get(old_rel)
+    if entry is None:
+        return
+    files, size = entry.get("total_files", 0), entry.get("total_bytes", 0)
+
+    moved = {}
+    for key in _subtree_keys(dirs, old_rel):
+        sub = dirs.pop(key)
+        suffix = key[len(old_rel):]
+        new_key = new_rel + suffix
+        sub["rel"] = new_key
+        sub["depth"] = len([p for p in new_key.split("/") if p])
+        moved[new_key] = sub
+    dirs.update(moved)
+
+    old_parent, new_parent = _parent_of(old_rel), _parent_of(new_rel)
+    old_name = old_rel.rsplit("/", 1)[-1]
+    new_name = new_rel.rsplit("/", 1)[-1]
+    src_parent = dirs.get(old_parent)
+    if src_parent is not None and old_name in (src_parent.get("subdirs") or []):
+        src_parent["subdirs"] = [n for n in src_parent["subdirs"] if n != old_name]
+        src_parent["n_subdirs"] = len(src_parent["subdirs"])
+    dst_parent = dirs.get(new_parent)
+    if dst_parent is not None and new_name not in (dst_parent.get("subdirs") or []):
+        dst_parent["subdirs"] = sorted(
+            (dst_parent.get("subdirs") or []) + [new_name], key=str.lower)
+        dst_parent["n_subdirs"] = len(dst_parent["subdirs"])
+
+    _adjust_totals(dirs, old_rel, -files, -size)
+    _adjust_totals(dirs, new_rel, files, size)
+    index["stale_duplicates"] = True
+    save_index(index)
+
+
+def index_remove(rel: str) -> None:
+    """Drop a subtree and subtract its totals from every ancestor."""
+    index = load_index()
+    if index is None:
+        return
+    dirs = index.get("dirs") or {}
+    entry = dirs.get(rel)
+    if entry is None:
+        return
+    files, size = entry.get("total_files", 0), entry.get("total_bytes", 0)
+    for key in _subtree_keys(dirs, rel):
+        dirs.pop(key, None)
+    parent = dirs.get(_parent_of(rel))
+    name = rel.rsplit("/", 1)[-1]
+    if parent is not None:
+        parent["subdirs"] = [n for n in (parent.get("subdirs") or []) if n != name]
+        parent["n_subdirs"] = len(parent["subdirs"])
+    _adjust_totals(dirs, rel, -files, -size)
+    index["stale_duplicates"] = True
+    save_index(index)
+
+
+def index_remove_file(rel: str, size: int) -> None:
+    """Drop one file: its own directory's counts, and every ancestor's totals."""
+    index = load_index()
+    if index is None:
+        return
+    dirs = index.get("dirs") or {}
+    parent = dirs.get(_parent_of(rel))
+    if parent is not None:
+        parent["n_files"] = max(0, parent.get("n_files", 0) - 1)
+    _adjust_totals(dirs, rel, -1, -size)
+    index["stale_duplicates"] = True
+    save_index(index)
+
+
+def index_add_dir(rel: str) -> None:
+    """Register a newly created (necessarily empty) folder."""
+    index = load_index()
+    if index is None:
+        return
+    dirs = index.get("dirs") or {}
+    if rel in dirs:
+        return
+    dirs[rel] = vars(DirEntry(
+        rel=rel, depth=len([p for p in rel.split("/") if p])))
+    parent = dirs.get(_parent_of(rel))
+    name = rel.rsplit("/", 1)[-1]
+    if parent is not None and name not in (parent.get("subdirs") or []):
+        parent["subdirs"] = sorted(
+            (parent.get("subdirs") or []) + [name], key=str.lower)
+        parent["n_subdirs"] = len(parent["subdirs"])
+    save_index(index)
+
+
+# ---------------------------------------------------------------------------
 # Duplicate detection
 #
 # Filenames are meaningless here — the same test turns up as "test.pdf",
