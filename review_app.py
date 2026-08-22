@@ -3645,22 +3645,40 @@ def api_export(event_slug, fmt):
                         headers={"Content-Disposition":
                                  f"attachment; filename={bqb.EVENT.slug}.csv"})
     if fmt == "apkg":
-        try:
-            import genanki  # type: ignore
-        except ImportError:
-            return jsonify({
-                "error": "genanki not installed. Run: pip install genanki",
-            }), 400
+        err = _optional_dep_error("genanki")
+        if err:
+            return jsonify({"error": err}), 400
         return _export_apkg(all_qs)
     if fmt == "pdf":
-        try:
-            import reportlab  # type: ignore  # noqa: F401
-        except ImportError:
-            return jsonify({
-                "error": "reportlab not installed. Run: pip install reportlab",
-            }), 400
+        err = _optional_dep_error("reportlab")
+        if err:
+            return jsonify({"error": err}), 400
         return _export_pdf(all_qs, bqb._all_contexts())
     return jsonify({"error": f"unsupported format: {fmt}"}), 400
+
+
+def _optional_dep_error(module: str) -> str | None:
+    """None if `module` imports here, otherwise a message that says enough
+    to actually fix it.
+
+    "X not installed" was wrong often enough to be worth replacing. The
+    import can fail with the package plainly installed -- most commonly
+    because the serving interpreter isn't the one it was installed into
+    (this app runs under gunicorn from a venv, so `pip install X` in a
+    login shell frequently lands somewhere the app never looks), and
+    occasionally because the package is present but its own internals
+    fail to import, which still raises ImportError. Naming the
+    interpreter and quoting the real exception distinguishes those without
+    a round trip through the logs."""
+    import importlib
+    try:
+        importlib.import_module(module)
+        return None
+    except ImportError as e:
+        return (f"Could not import {module!r} in the interpreter serving this "
+                f"app ({sys.executable}): {e}. If it is installed elsewhere, "
+                f"install it for THIS interpreter: "
+                f"{sys.executable} -m pip install {module}")
 
 
 def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None) -> "Response":

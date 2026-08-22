@@ -19,6 +19,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [Workflow](#workflow)
 - [The cache & annotations](#the-cache--annotations)
 - [Who's active right now](#whos-active-right-now)
+- [Optional export dependencies](#optional-export-dependencies)
 - [Cost notes](#cost-notes)
 - [Configuration](#configuration)
   - [Separating app code from data (`DATA_ROOT`)](#separating-app-code-from-data-data_root)
@@ -406,6 +407,19 @@ The server is intentionally underpowered and runs **one gunicorn worker per inst
 "Active" means **made a real request in the last 5 minutes**. The two header badges poll themselves every 20s, and those polls are deliberately excluded (`_PRESENCE_EXEMPT_ENDPOINTS` in `review_app.py`) — otherwise every idle open tab would count forever and the number would measure tabs, not people, while correlating with load not at all.
 
 Tracking lives in `presence.py`: in-memory, no file backing, pruned on read. Presence is worthless the moment it's stale and rebuilds itself from live traffic within one window, so persisting it would add I/O to every request to buy nothing. **This is exact only because `--workers 1`** — under more workers each would see a fraction of the traffic and every count would silently read low. That puts it on the same list as the state lock and the job queue: redesign before raising `--workers`, not after.
+
+## Optional export dependencies
+
+Two export formats need a package that isn't in `requirements.txt`, because neither is needed to run the app: **Anki deck** (`genanki`) and **Printable PDF** (`reportlab`).
+
+Install them **into the interpreter that actually serves the app**, which on a deployed instance is the venv, not your login shell:
+
+```
+sudo /opt/qbank/venv/bin/pip install reportlab genanki
+sudo systemctl restart qbank
+```
+
+`pip install reportlab` in a shell is the common failure here — it installs into the system Python while gunicorn keeps running from `/opt/qbank/venv`, so the app still can't import it. If an export reports a missing package you believe is installed, the error names the exact interpreter it tried and quotes the real import error; compare that path against where you installed. (The same import can also fail with the package present but its own internals broken — a missing Pillow, say — which is why the message quotes the underlying exception rather than asserting "not installed".)
 
 ## Cost notes
 
