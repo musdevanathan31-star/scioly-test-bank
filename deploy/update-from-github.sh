@@ -68,6 +68,9 @@ git -C "$SRC" reset --hard "origin/$REF" 2>/dev/null || true   # no-op for a pin
 SHA=$(git -C "$SRC" rev-parse --short HEAD)
 log "Fetched $REF @ $SHA"
 
+# Into qbank-deploy's OWN venv, for validation only. The serving venv
+# (/opt/qbank/venv) is a different one and is updated by
+# qbank-apply-update.sh — installing here does not reach the running app.
 "$VENV/bin/pip" install -q -r "$SRC/requirements.txt"
 # -B / no:cacheprovider: this clone is qbank-deploy's own, but it was the
 # *root*-run validation before this fix that first left root-owned

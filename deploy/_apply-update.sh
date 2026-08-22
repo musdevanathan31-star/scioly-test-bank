@@ -45,6 +45,31 @@ cd "$SRC"
 CODE_PATHS=(*.py templates static deploy requirements.txt requirements-dev.txt)
 cd - >/dev/null
 
+# Dependencies, into the venv the services actually run from.
+#
+# update-from-github.sh also runs pip, but against /opt/qbank-deploy/venv --
+# qbank-deploy's own *validation* venv, which is a different venv from the
+# one gunicorn uses. Before this step, a newly declared requirement was
+# installed where the tests run and nowhere else, so the feature needing it
+# stayed quietly unavailable in production while the deploy reported
+# success. That is exactly how reportlab went missing and every assessment
+# export came out as markdown.
+#
+# Runs before anything is copied or restarted, and aborts the whole deploy
+# on failure: if the dependencies for the new code cannot be installed, the
+# right outcome is that the currently-running version keeps running.
+SHARED_VENV="${QBANK_VENV:-/opt/qbank/venv}"
+if [ -x "$SHARED_VENV/bin/pip" ]; then
+  if "$SHARED_VENV/bin/pip" install -q -r "$SRC/requirements.txt"; then
+    log "dependencies synced into $SHARED_VENV"
+  else
+    log "FAILED to install requirements into $SHARED_VENV — nothing deployed"
+    exit 1
+  fi
+else
+  log "WARNING: no pip at $SHARED_VENV/bin/pip — dependencies NOT synced"
+fi
+
 mapfile -t INSTANCE_LINES < <(grep -v '^\s*#' "$INSTANCES_CONF" | grep -v '^\s*$')
 log "Deploying already-validated $SHA to ${#INSTANCE_LINES[@]} instance(s)"
 
