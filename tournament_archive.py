@@ -834,11 +834,46 @@ def index_age_seconds(index: dict | None = None) -> float | None:
     return max(0.0, time.time() - float(idx.get("built_at") or 0))
 
 
+def writability() -> dict:
+    """Whether this process can actually change the archive.
+
+    Every read-only feature here -- browsing, indexing, hashing, preview --
+    works fine on a tree the app can only read, so a permissions problem is
+    invisible until the first mutation, and then it fails per file rather
+    than once. Moving a file out of a directory needs write on the
+    *directory*, so that is what gets checked.
+
+    The realistic cause is an archive uploaded by scp as root while the app
+    runs as its own user: the tree ends up owned by root, and the app lands
+    in "other" with read and traverse but no write.
+    """
+    root = archive_root()
+    if not root.is_dir():
+        return {"writable": True, "reason": ""}
+    if not os.access(root, os.W_OK | os.X_OK):
+        return {"writable": False,
+                "reason": f"{root} is not writable by the server. Organising, "
+                          "importing and removing duplicates will all fail "
+                          "until its ownership is fixed."}
+    try:
+        import deletion
+        trash = deletion.trash_dir()
+    except Exception:                            # noqa: BLE001
+        return {"writable": True, "reason": ""}
+    probe = trash if trash.exists() else trash.parent
+    if not os.access(probe, os.W_OK | os.X_OK):
+        return {"writable": False,
+                "reason": f"{trash} is not writable by the server. Deletions "
+                          "move there, so nothing can be removed until its "
+                          "ownership is fixed."}
+    return {"writable": True, "reason": ""}
+
+
 def summary() -> dict:
     """Top-level numbers for the archive page header."""
     idx = load_index()
     if not idx:
-        return {"indexed": False, "root_exists": exists()}
+        return {"indexed": False, "root_exists": exists(), **writability()}
     root = idx["dirs"].get("", {})
     return {
         "indexed": True,
@@ -849,6 +884,7 @@ def summary() -> dict:
         "total_files": root.get("total_files", 0),
         "total_bytes": root.get("total_bytes", 0),
         "duplicates": duplicate_summary(idx),
+        **writability(),
     }
 
 

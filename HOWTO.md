@@ -270,6 +270,13 @@ Two things to know:
   tournament are filled in from the folder path. Files **move** — they leave
   the archive, which is how the backlog shrinks. Volunteers can import into
   the events they already hold.
+- If a **"The archive is read-only to this server"** banner appears, the app
+  cannot write to the archive tree. Browsing, indexing, preview and duplicate
+  detection all still work — they only read — but organising, importing and
+  removing duplicates will fail. The usual cause is uploading by scp as root
+  while the app runs as its own user, leaving the tree root-owned. Fix the
+  ownership (not the mode: `0705` is fine as long as the *owner* is the app's
+  user) and the banner clears on the next page load.
 - **Previewing a PDF**: press **Preview** on any file row, or on any copy in
   the duplicates list. Pages render on demand with ‹ / › or the arrow keys.
   A file that will not open says so rather than failing silently — that is

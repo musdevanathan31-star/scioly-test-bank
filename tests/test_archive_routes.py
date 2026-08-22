@@ -502,3 +502,27 @@ def test_every_set_still_respects_a_folder_scope(app_ctx):
                           json={"all": True, "path": "Division B"})
     # "Every set" is still bounded by the folder the coach was looking at.
     assert (ta.archive_root() / outside).exists()
+
+
+def test_a_read_only_archive_warns_both_roles(app_ctx):
+    import tournament_archive as ta
+    client, am, slug = app_ctx
+    am.set_many({"Division B/Circuit Lab": slug})
+    real = ta.os.access
+
+    def no_write(path, mode, *a, **kw):
+        if str(path) == str(ta.archive_root()) and mode & ta.os.W_OK:
+            return False
+        return real(path, mode, *a, **kw)
+
+    ta.os.access = no_write
+    try:
+        coach = client("coach1").get("/api/archive/status").get_json()
+        vol = client("vol1").get("/api/archive/status").get_json()
+    finally:
+        ta.os.access = real
+    assert coach["writable"] is False
+    # A volunteer loses the whole-archive totals but must keep this: import
+    # is a mutation, and it will fail for exactly the same reason.
+    assert vol["writable"] is False
+    assert "total_files" not in vol

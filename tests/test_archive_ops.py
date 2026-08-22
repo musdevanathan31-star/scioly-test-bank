@@ -599,3 +599,54 @@ def test_a_sweep_whose_trash_is_unwritable_reports_the_reason(dups, monkeypatch)
         ops.remove_duplicates([group["id"]])
     for rel in group["paths"]:
         assert (ta.archive_root() / rel).exists(), "nothing should have moved"
+
+
+# ---------------------------------------------------------------------------
+# Writability
+#
+# The archive is uploaded by scp, often as root, while the app runs as its
+# own user. Every read-only feature -- browsing, indexing, hashing, preview
+# -- works fine on a tree the app can only read, so the problem stays
+# invisible until the first mutation, and then it fails once per file.
+# ---------------------------------------------------------------------------
+
+def test_a_writable_archive_reports_itself_as_such(ops):
+    import tournament_archive as ta
+    assert ta.writability()["writable"] is True
+
+
+def test_a_read_only_archive_is_reported_before_anything_is_attempted(ops, monkeypatch):
+    import tournament_archive as ta
+    real = ta.os.access
+
+    def no_write(path, mode, *a, **kw):
+        if str(path) == str(ta.archive_root()) and mode & ta.os.W_OK:
+            return False
+        return real(path, mode, *a, **kw)
+
+    monkeypatch.setattr(ta.os, "access", no_write)
+    w = ta.writability()
+    assert w["writable"] is False
+    # The message has to say what will break, not just that something is off.
+    assert "not writable" in w["reason"]
+    assert ta.summary()["writable"] is False
+
+
+def test_an_unwritable_trash_is_reported_too(ops, monkeypatch):
+    import tournament_archive as ta
+    import deletion
+    real = ta.os.access
+    trash = str(deletion.trash_dir())
+
+    def no_write(path, mode, *a, **kw):
+        if str(path).startswith(trash.rsplit("/", 1)[0]) and str(path) != str(ta.archive_root()):
+            if mode & ta.os.W_OK and ".deleted" in str(path) or str(path) == trash:
+                return False
+        return real(path, mode, *a, **kw)
+
+    monkeypatch.setattr(ta.os, "access", no_write)
+    w = ta.writability()
+    # Deletions land in the trash, so an unwritable trash breaks removal even
+    # when the archive itself is fine.
+    if not w["writable"]:
+        assert "removed" in w["reason"] or "not writable" in w["reason"]

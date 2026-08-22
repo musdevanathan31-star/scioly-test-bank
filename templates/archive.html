@@ -45,6 +45,9 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .pvpath{font-family:ui-monospace,Consolas,monospace;font-size:11px;
   color:var(--muted);padding:0 14px 8px;word-break:break-all}
 .dupbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.warnbar{background:var(--warn-bg,#fff4e5);border:1px solid var(--warn-line,#e0b070);
+  color:var(--warn-fg,#7a4a00);border-radius:6px;padding:10px 14px;
+  margin-bottom:14px;font-size:13px}
 .rowops{display:none;gap:4px;white-space:nowrap}
 .row:hover .rowops{display:flex}
 .rowops button{font-size:11px;padding:1px 6px}
@@ -65,6 +68,11 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
   {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
+  {# Shown to both roles: every read-only feature works on a tree the app
+     cannot write, so nothing else reveals the problem until a mutation
+     fails. #}
+  <div class="warnbar" id="rowarn" style="display:none"></div>
+
   {# Indexing and duplicate review are whole-archive operations, so they
      belong to the role that can see the whole archive. A volunteer gets the
      browser and nothing else. #}
@@ -194,8 +202,26 @@ async function refreshStatus(){
   const r = await fetch(`${APP_ROOT}/api/archive/status`, {cache: "no-store"});
   const s = await r.json();
   // A volunteer has no status panel: the totals describe the whole archive,
-  // most of which is not theirs to see.
-  if(!IS_COACH) return s;
+  // most of which is not theirs to see. The writability warning still
+  // applies to them, though -- importing is a mutation.
+  if(!IS_COACH){
+    const w = document.getElementById("rowarn");
+    if(w && s.writable === false){
+      w.style.display = "";
+      w.innerHTML = "<b>The archive is read-only to this server.</b> "
+                  + "Importing will fail until an administrator fixes it.";
+    }
+    return s;
+  }
+  const warn = document.getElementById("rowarn");
+  if(warn){
+    // Read-only works fine on a tree the app cannot write, so this would
+    // otherwise stay invisible until a mutation failed once per file.
+    warn.style.display = s.writable === false ? "" : "none";
+    warn.innerHTML = s.writable === false
+      ? `<b>The archive is read-only to this server.</b> ${esc(s.reason || "")}`
+      : "";
+  }
   const el = document.getElementById("stat");
   const d = s.duplicates || {};
   const dupsec = document.getElementById("dupsec");

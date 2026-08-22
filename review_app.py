@@ -2717,6 +2717,8 @@ def api_archive_status():
         # Whole-archive totals are a coach's view of the backlog. A
         # volunteer's numbers would be wrong for what they can see, and
         # right about what they cannot.
+        # "writable"/"reason" deliberately survive: importing is a
+        # volunteer action, so they need to know it will not work.
         for key in ("total_files", "total_bytes", "n_dirs", "duplicates",
                     "archive_dir"):
             payload.pop(key, None)
