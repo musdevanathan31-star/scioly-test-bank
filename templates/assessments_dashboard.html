@@ -238,6 +238,13 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 <script>
 const CANDIDATES_BY_EVENT = {{ candidates_by_event|tojson }};
 const STUDENTS_BY_EVENT = {{ students_by_event|tojson }};
+
+// Student display names are user-supplied and go straight into innerHTML
+// below. Defined locally, as every other template in this app does --
+// common_js does not provide one.
+function esc(s){ return (s == null ? "" : String(s))
+  .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+  .replaceAll('"',"&quot;").replaceAll("'","&#39;"); }
 document.getElementById("season_picker").addEventListener("change", (e) => {
   location.href = `${APP_ROOT}/assessments?season=${encodeURIComponent(e.target.value)}`;
 });

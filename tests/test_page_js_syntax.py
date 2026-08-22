@@ -75,6 +75,7 @@ def rendered_pages(tmp_path_factory):
     review_app.app.config["SESSION_COOKIE_SECURE"] = False
     paths = {
         "coach1": ["/", "/scores", "/assessments", "/club", "/admin/jobs", "/settings",
+                   "/archive",
                    f"/event/{slug}/", f"/event/{slug}/browse", f"/event/{slug}/sources",
                    f"/event/{slug}/quiz", f"/event/{slug}/jobs", f"/event/{slug}/scan",
                    f"/assessments/{a.assessment_id}/build",
@@ -109,7 +110,7 @@ def test_every_page_was_reachable(rendered_pages):
     pages, _tmp = rendered_pages
     # If a page 404s or 500s it silently drops out of the sweep, which would
     # make this file quietly stop covering it.
-    assert len(pages) >= 17, sorted(pages)
+    assert len(pages) >= 18, sorted(pages)
 
 
 def test_no_page_has_a_javascript_syntax_error(rendered_pages):
@@ -128,3 +129,177 @@ def test_no_page_has_a_javascript_syntax_error(rendered_pages):
                            if "Error" in ln), result.stderr.strip()[:200])
             failures.append(f"{name}: {detail}")
     assert not failures, "inline JS failed to parse:\n  " + "\n  ".join(failures)
+
+
+# ---------------------------------------------------------------------------
+# Undefined helpers
+#
+# `node --check` parses; it does not resolve names. A page calling esc()
+# without defining it parses perfectly and then throws
+# "ReferenceError: esc is not defined" at runtime, aborting whatever handler
+# touched it. That shipped on /archive, where the helper every other
+# template defines locally had simply been left out.
+#
+# Static rather than executed: running these scripts would need a DOM. So
+# this collects bare call sites -- name( with no dot in front -- and
+# requires each one to be declared somewhere in the same page's bundle, or
+# to be a browser/language builtin.
+# ---------------------------------------------------------------------------
+
+#: Followed by "(" in normal code without being function calls.
+_KEYWORDS = {
+    "if", "for", "while", "switch", "catch", "return", "typeof", "function",
+    "new", "await", "of", "in", "do", "else", "delete", "void", "yield",
+    "throw", "case", "instanceof", "with", "async", "get", "set",
+    "constructor", "super", "this", "import", "export", "default",
+}
+
+#: Globals the browser or the language provides.
+_BUILTINS = {
+    "fetch", "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+    "parseInt", "parseFloat", "isNaN", "isFinite", "alert", "confirm", "prompt",
+    "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
+    "Array", "Object", "String", "Number", "Boolean", "Math", "JSON", "Date",
+    "Promise", "RegExp", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Error",
+    "URL", "URLSearchParams", "FormData", "Blob", "File", "FileReader",
+    "atob", "btoa", "structuredClone", "queueMicrotask", "requestAnimationFrame",
+    "Image", "Audio", "AbortController", "IntersectionObserver",
+    "MutationObserver", "ResizeObserver", "CustomEvent", "Event", "Intl",
+    "BigInt", "Proxy", "Reflect", "TextEncoder", "TextDecoder", "print",
+    "matchMedia", "getComputedStyle", "scrollTo", "open", "close", "Headers",
+    "Request", "Response", "AbortSignal", "Notification", "WebSocket",
+}
+
+#: Provided by <script src=> tags, which this sweep deliberately does not
+#: read -- they are third-party files, not code we wrote.
+_EXTERNAL = {"renderMathInElement", "katex", "MathJax"}
+
+_CALL = re.compile(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(")
+_DECL = re.compile(
+    r"(?:function\s*\*?\s+([A-Za-z_$][\w$]*)"
+    r"|(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+    r"|class\s+([A-Za-z_$][\w$]*))")
+#: Callback parameters: a name declared only as an argument, e.g.
+#: `function openJobProgress(slug, jobId, onDone)`, then invoked as onDone().
+#: Over-approximates slightly by also matching `if (x) {`, which is harmless.
+_SIGNATURE = re.compile(r"\(([^()]*)\)\s*(?:=>|\{)")
+_ARROW = re.compile(r"([A-Za-z_$][\w$]*)\s*=>")
+#: Object-method shorthand -- `onDone(cb){ ... }` is a definition that
+#: looks exactly like a call.
+_METHOD = re.compile(r"([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{")
+_IDENT = re.compile(r"^[A-Za-z_$][\w$]*")
+#: Destructured lists, extra declarators, and assignment to a bare global.
+_LOOSE_DECL = re.compile(r"([A-Za-z_$][\w$]*)\s*(?:=[^=]|,)")
+
+
+def _strip_comments_and_strings(js: str) -> str:
+    """Blank out comments and string bodies, keeping code positions.
+
+    Prose is full of "word (" — a comment saying "brittle (see below)" would
+    otherwise read as a call to brittle(). Template literals keep their
+    ${...} contents, which really are code.
+    """
+    out = []
+    i, n = 0, len(js)
+    #: A "/" starts a regex only where a value is expected. Without this,
+    #: a pattern like /"/g is read as the start of a string and swallows
+    #: everything up to the next quote -- which silently hid whole function
+    #: declarations and made defined helpers look undefined.
+    prev_significant = ""
+    while i < n:
+        ch = js[i]
+        nxt = js[i + 1] if i + 1 < n else ""
+        if ch == "/" and nxt not in "/*" and (
+                prev_significant == "" or prev_significant in "(,=:[!&|?{};+-*%~^<>"):
+            i += 1
+            in_class = False
+            while i < n:
+                if js[i] == "\\":
+                    i += 2
+                    continue
+                if js[i] == "[":
+                    in_class = True
+                elif js[i] == "]":
+                    in_class = False
+                elif js[i] == "/" and not in_class:
+                    break
+                elif js[i] == "\n":
+                    break
+                i += 1
+            i += 1
+            while i < n and js[i] in "gimsuyd":     # flags
+                i += 1
+            out.append(" 0 ")
+            prev_significant = "0"
+            continue
+        if not ch.isspace():
+            prev_significant = ch
+        if ch == "/" and nxt == "/":
+            while i < n and js[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i < n and not (js[i] == "*" and js[i + 1:i + 2] == "/"):
+                i += 1
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            while i < n and js[i] != quote:
+                i += 2 if js[i] == "\\" else 1
+            i += 1
+            out.append('""')
+            continue
+        if ch == "`":
+            # Walk the literal, emitting only what is inside ${ }.
+            i += 1
+            while i < n and js[i] != "`":
+                if js[i] == "\\":
+                    i += 2
+                    continue
+                if js[i] == "$" and js[i + 1:i + 2] == "{":
+                    i += 2
+                    depth = 1
+                    start = i
+                    while i < n and depth:
+                        if js[i] == "{":
+                            depth += 1
+                        elif js[i] == "}":
+                            depth -= 1
+                        i += 1
+                    out.append(" " + _strip_comments_and_strings(js[start:i - 1]) + " ")
+                    continue
+                i += 1
+            i += 1
+            out.append('""')
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def test_no_page_calls_an_undefined_helper(rendered_pages):
+    pages, _tmp = rendered_pages
+    failures = []
+    for name, html in sorted(pages.items()):
+        bundle = "\n;\n".join(_INLINE_SCRIPT.findall(html))
+        if not bundle:
+            continue
+        bundle = _strip_comments_and_strings(bundle)
+        declared = {m for groups in _DECL.findall(bundle) for m in groups if m}
+        declared |= set(_LOOSE_DECL.findall(bundle))
+        declared |= set(_ARROW.findall(bundle))
+        declared |= set(_METHOD.findall(bundle))
+        for params in _SIGNATURE.findall(bundle):
+            for part in params.split(","):
+                m = _IDENT.match(part.strip().lstrip(".{[ "))
+                if m:
+                    declared.add(m.group(0))
+        called = set(_CALL.findall(bundle))
+        missing = sorted(called - declared - _BUILTINS - _KEYWORDS - _EXTERNAL)
+        if missing:
+            failures.append(f"{name}: {', '.join(missing)}")
+    assert not failures, (
+        "pages call helpers that are never defined:\n  " + "\n  ".join(failures))

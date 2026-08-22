@@ -25,6 +25,15 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .pathhint{font-family:ui-monospace,Consolas,monospace;font-size:12px;
   background:var(--bg-alt);border:1px solid var(--line);border-radius:4px;
   padding:2px 6px}
+.steps{margin-top:10px;display:none}
+.step{display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0}
+.step .mark{width:16px;text-align:center}
+.step .lbl{flex:1}
+.step .cnt{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
+.step.pending{color:var(--muted)}
+.step.running{font-weight:600}
+.step.done .mark{color:var(--ok,#3a7)}
+.step.failed,.step.cancelled{color:var(--muted)}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -37,8 +46,10 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     <div class="statline" id="stat"><span class="spinner"></span> loading…</div>
     <div>
       <button id="reindex">Rebuild index</button>
+      <button id="cancel" class="ghost" style="display:none">Cancel</button>
       <span class="muted" id="buildmsg"></span>
     </div>
+    <div class="steps" id="steps"></div>
   </section>
 
   <section id="dupsec" style="display:none">
@@ -55,6 +66,15 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 <script>
 const ARCHIVE_NAME = {{ archive_name|tojson }};
 let CURRENT = "";
+let POLLING = false;
+
+// Every folder and file name here comes off a disk we do not control, and
+// this corpus already contains mojibake and stray punctuation. Defined
+// locally because common_js does not provide one -- the same convention
+// every other template in this app follows.
+function esc(s){ return (s == null ? "" : String(s))
+  .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+  .replaceAll('"',"&quot;").replaceAll("'","&#39;"); }
 
 function fmtBytes(n){
   if(n === null || n === undefined) return "";
@@ -160,7 +180,8 @@ document.getElementById("duptoggle").addEventListener("click", async e => {
   box.innerHTML = '<div class="empty">loading…</div>';
   const r = await fetch(`${APP_ROOT}/api/archive/duplicates?limit=50`);
   const j = await r.json();
-  box.innerHTML = (j.groups || []).map(g => `
+  const groups = Array.isArray(j.groups) ? j.groups : [];
+  box.innerHTML = groups.map(g => `
     <div class="rowlist" style="margin-bottom:8px">
       <div class="row"><span class="ico">⧉</span>
         <span class="nm">${g.paths.length} copies · ${fmtBytes(g.size)} each</span>
@@ -169,36 +190,97 @@ document.getElementById("duptoggle").addEventListener("click", async e => {
         <span class="nm muted">${esc(p)}</span></div>`).join("")}
     </div>`).join("")
     || '<div class="empty">No duplicates found.</div>';
-  if(j.total > (j.groups || []).length){
-    box.innerHTML += `<div class="empty">Showing ${j.groups.length} of `
+  if(j.total > groups.length){
+    box.innerHTML += `<div class="empty">Showing ${groups.length} of `
       + `${j.total.toLocaleString()} sets.</div>`;
   }
 });
 
-document.getElementById("reindex").addEventListener("click", async () => {
+const MARKS = {pending: "○", running: "◐", done: "✓",
+               failed: "✕", cancelled: "—", skipped: "—"};
+
+function renderSteps(build){
+  const box = document.getElementById("steps");
+  const steps = (build && build.steps) || [];
+  if(!steps.length){ box.style.display = "none"; return; }
+  box.style.display = "";
+  box.innerHTML = steps.map(st => {
+    // A total of null means "no idea how many yet" — the walk cannot know
+    // its own size until it has finished. Showing a bare running count
+    // beats inventing a denominator.
+    let cnt = "";
+    if(st.status === "running" || st.status === "done"){
+      cnt = st.total ? `${st.count.toLocaleString()} / ${st.total.toLocaleString()}`
+                     : (st.count ? st.count.toLocaleString() : "");
+    }
+    return `<div class="step ${esc(st.status)}">
+      <span class="mark">${MARKS[st.status] || "○"}</span>
+      <span class="lbl">${esc(st.label)}</span>
+      <span class="cnt">${cnt}</span></div>`;
+  }).join("");
+}
+
+function setBuilding(running){
+  document.getElementById("reindex").disabled = running;
+  document.getElementById("cancel").style.display = running ? "" : "none";
+}
+
+async function pollBuild(){
+  if(POLLING) return;
+  POLLING = true;
   const msg = document.getElementById("buildmsg");
-  const r = await fetch(`${APP_ROOT}/api/archive/reindex`, {method: "POST"});
-  const j = await r.json();
-  if(!j.ok){ msg.textContent = j.error || "Could not start."; return; }
-  // Poll rather than block: a first walk over tens of thousands of folders
-  // takes a while, and the page should say so instead of appearing hung.
   const tick = async () => {
     const s = await refreshStatus();
     const b = s.build || {};
+    renderSteps(b);
+    setBuilding(!!b.running);
     if(b.running){
-      msg.textContent = `${b.phase || "indexing"}… `
-        + `${(b.dirs_seen || 0).toLocaleString()}`;
+      msg.textContent = "rebuilding…";
       setTimeout(tick, 1000);
-    } else {
-      msg.textContent = b.error ? `failed: ${b.error}` : "index rebuilt";
-      go(CURRENT);
-      setTimeout(() => { msg.textContent = ""; }, 4000);
+      return;
     }
+    POLLING = false;
+    msg.textContent = b.cancelled ? "cancelled — previous index kept"
+      : b.error ? `failed: ${b.error}` : "index rebuilt";
+    go(CURRENT);
+    setTimeout(() => { msg.textContent = ""; }, 6000);
   };
   tick();
+}
+
+document.getElementById("reindex").addEventListener("click", async () => {
+  const msg = document.getElementById("buildmsg");
+  setBuilding(true);                    // immediately, not after the round trip
+  const r = await fetch(`${APP_ROOT}/api/archive/reindex`, {method: "POST"});
+  const j = await r.json();
+  if(!j.ok){
+    setBuilding(false);
+    msg.textContent = j.error || "Could not start.";
+    return;
+  }
+  renderSteps(j.build);
+  // Poll rather than block: a first walk over tens of thousands of folders
+  // takes a while, and the page should say so instead of appearing hung.
+  pollBuild();
 });
 
-(async () => { await refreshStatus(); go(""); })();
+document.getElementById("cancel").addEventListener("click", async e => {
+  e.target.disabled = true;
+  e.target.textContent = "cancelling…";
+  await fetch(`${APP_ROOT}/api/archive/cancel`, {method: "POST"});
+  // Cancellation is cooperative, so the button does not reset here — the
+  // poll notices the build stop and setBuilding() hides it.
+  setTimeout(() => { e.target.disabled = false;
+                     e.target.textContent = "Cancel"; }, 2000);
+});
+
+(async () => {
+  const s = await refreshStatus();
+  // Someone else may have started a rebuild, or the coach may have
+  // reloaded mid-build: pick it up rather than showing an idle page.
+  if(s.build && s.build.running){ renderSteps(s.build); setBuilding(true); pollBuild(); }
+  go("");
+})();
 </script>
 </body>
 </html>

@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -271,3 +272,122 @@ def test_duplicate_scanning_can_be_skipped(dupes):
     index = dupes.build_index(find_dupes=False)
     assert index["duplicates"] == []
     assert index["dirs"], "the directory walk should still have happened"
+
+
+# ---------------------------------------------------------------------------
+# The rebuild as a job: named steps, and cancellation
+#
+# A rebuild over 65GB is long enough that the page has to say more than
+# "working". These pin the two properties that make it usable: every step is
+# visible from the start (so a coach can see what has not begun), and
+# cancelling leaves the previous index intact rather than a partial one.
+# ---------------------------------------------------------------------------
+
+def test_the_duplicates_payload_keeps_groups_as_a_list(dupes):
+    # The summary carries its own "groups" key -- an integer count. Spreading
+    # it into the payload overwrote the list of groups with that number, and
+    # the client got a number where it expected an array.
+    dupes.save_index(dupes.build_index())
+    payload = dupes.duplicate_groups(limit=10)
+    assert isinstance(payload["groups"], list)
+    assert payload["summary"]["groups"] == payload["total"] == len(payload["groups"])
+
+
+def test_every_step_is_listed_before_the_build_starts(archive):
+    # "Not started" is information: it is how a coach knows hashing is still
+    # to come rather than skipped.
+    status = archive.build_status()
+    assert [s["id"] for s in status["steps"]] == [
+        sid for sid, _label in archive.BUILD_STEPS]
+    assert all(s["status"] == "pending" for s in status["steps"])
+
+
+def test_a_finished_build_marks_every_step_done(archive):
+    _run_build(archive)
+    status = archive.build_status()
+    assert not status["running"]
+    assert status["error"] is None and status["cancelled"] is False
+    assert [s["status"] for s in status["steps"]] == ["done"] * 4
+
+
+def test_the_hash_step_reports_a_denominator(dupes):
+    _run_build(dupes)
+    hashed = next(s for s in dupes.build_status()["steps"] if s["id"] == "hash")
+    # Candidates, not every file: the whole point is that most files are
+    # ruled out by size alone and never read. Six here -- the three big
+    # copies plus the decoy that merely shares their size, and the two
+    # small ones. The unique and empty files never enter the count.
+    assert hashed["total"] == 6
+    assert hashed["count"] == hashed["total"]
+
+
+def test_cancelling_leaves_the_previous_index_untouched(archive):
+    _run_build(archive)
+    before = archive.load_index()
+    assert before is not None
+
+    # Cancel before the walk can finish, then confirm nothing was overwritten.
+    archive._cancel_flag.set()
+    try:
+        archive.build_index(should_cancel=archive._cancel_flag.is_set)
+    except InterruptedError:
+        pass
+    finally:
+        archive._cancel_flag.clear()
+
+    after = archive.load_index()
+    assert after["built_at"] == before["built_at"]
+    assert after["dirs"].keys() == before["dirs"].keys()
+
+
+def test_a_cancelled_build_says_so_and_does_not_report_failure(archive, monkeypatch):
+    # start_build() clears the flag, so cancelling has to happen after the
+    # thread is under way -- which is the real sequence anyway.
+    real = archive.build_index
+
+    def slow(*a, **kw):
+        time.sleep(0.5)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(archive, "build_index", slow)
+    archive.start_build()
+    archive.cancel_build()
+    _wait_for_idle(archive, timeout=10)
+    archive._cancel_flag.clear()
+    status = archive.build_status()
+    # Cancelling is a choice, not a fault: surfacing it as an error would
+    # send a coach looking for a problem that does not exist.
+    assert status["cancelled"] is True
+    assert status["error"] is None
+    assert any(s["status"] == "cancelled" for s in status["steps"])
+
+
+def test_a_second_start_joins_the_running_build(archive, monkeypatch):
+    # Two clicks must not mean two walks over tens of thousands of folders.
+    started = []
+    real = archive.build_index
+
+    def slow(*a, **kw):
+        started.append(1)
+        time.sleep(0.3)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(archive, "build_index", slow)
+    archive.start_build()
+    archive.start_build()
+    _wait_for_idle(archive, timeout=10)
+    assert len(started) == 1
+
+
+def _run_build(mod, timeout=30):
+    mod.start_build()
+    _wait_for_idle(mod, timeout)
+
+
+def _wait_for_idle(mod, timeout=30):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not mod.build_status()["running"]:
+            return
+        time.sleep(0.02)
+    raise AssertionError("build did not finish")

@@ -2692,6 +2692,14 @@ def api_archive_reindex():
     return jsonify({"ok": True, "build": tournament_archive.start_build()})
 
 
+@app.route("/api/archive/cancel", methods=["POST"])
+@coach_required
+def api_archive_cancel():
+    """Stop a running rebuild. Cooperative, so the reply means "asked", not
+    "stopped" — the page keeps polling status to see it wind down."""
+    return jsonify({"ok": True, "build": tournament_archive.cancel_build()})
+
+
 @app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])
 @coach_required
 @hard_delete_required

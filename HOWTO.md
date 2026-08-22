@@ -259,6 +259,12 @@ Two things to know:
   shows how many sets exist and how much space keeping one copy each would
   reclaim; individual files carry a **copy** badge in the listing. Nothing
   is deleted for you.
+- **Rebuilding** shows each step — scan folders, compare by size, hash
+  candidates, save — so you can see what is finished, what is running and
+  what has not started. The button stays disabled until it ends, and
+  **Cancel** stops it at the next file. Cancelling keeps the previous index:
+  a half-written one is worse than a stale one, because nothing downstream
+  can tell it is partial.
 
 ### What only a coach can do, at a glance
 

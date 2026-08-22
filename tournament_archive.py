@@ -130,6 +130,22 @@ class DirEntry:
     subdirs: list = field(default_factory=list)   # names only
 
 
+#: Named build steps, in order. The UI renders every one of them up front
+#: so a long rebuild shows what is done, what is running and what has not
+#: started — a single mutating status line cannot say that.
+STEP_WALK = "walk"
+STEP_COMPARE = "compare"
+STEP_HASH = "hash"
+STEP_SAVE = "save"
+
+BUILD_STEPS = [
+    (STEP_WALK, "Scan folders"),
+    (STEP_COMPARE, "Compare files by size"),
+    (STEP_HASH, "Hash duplicate candidates"),
+    (STEP_SAVE, "Save index"),
+]
+
+
 def build_index(progress=None, should_cancel=None, find_dupes: bool = True) -> dict:
     """Walk the archive once and summarise every directory.
 
@@ -137,8 +153,10 @@ def build_index(progress=None, should_cancel=None, find_dupes: bool = True) -> d
     already computed rather than re-walking its subtree — the difference
     between linear and quadratic on a corpus this size.
 
-    `progress` is called with a directory count so a long build can report
-    something; `should_cancel` lets the job queue interrupt it.
+    `progress(step_id, count, total)` reports which named step is running
+    and how far it has got; `should_cancel` lets the caller interrupt it.
+    Steps are named rather than free text so the UI can show all of them at
+    once with the finished ones ticked, instead of one label mutating.
     """
     root = archive_root()
     if not root.is_dir():
@@ -191,15 +209,25 @@ def build_index(progress=None, should_cancel=None, find_dupes: bool = True) -> d
 
         seen += 1
         if progress is not None and seen % 250 == 0:
-            progress(seen, phase="scanning folders")
+            progress(STEP_WALK, seen, None)
+
+    if progress is not None:
+        progress(STEP_WALK, seen, seen)
 
     duplicates = []
     if find_dupes:
+        # Cheap and worth reporting on its own: it turns the vague "this
+        # will hash things" into a number the coach can judge the wait by.
+        n_candidates = sum(len(paths) for size, paths in by_size.items()
+                           if size > 0 and len(paths) > 1)
         if progress is not None:
-            progress(seen, phase="looking for duplicates")
+            progress(STEP_COMPARE, len(by_size), len(by_size))
+            progress(STEP_HASH, 0, n_candidates)
         duplicates = find_duplicates(by_size, progress=(
-            (lambda n: progress(n, phase="hashing candidates"))
+            (lambda n: progress(STEP_HASH, n, n_candidates))
             if progress is not None else None), should_cancel=should_cancel)
+        if progress is not None:
+            progress(STEP_HASH, n_candidates, n_candidates)
 
     return {
         "schema": INDEX_SCHEMA_VERSION,
@@ -345,11 +373,14 @@ def duplicate_summary(index: dict | None = None) -> dict:
 def duplicate_groups(limit: int = 100, offset: int = 0) -> dict:
     idx = load_index() or {}
     groups = idx.get("duplicates") or []
+    # The summary is nested, not spread. Spreading it put its own "groups"
+    # key -- an integer count -- on top of the list of groups, so the client
+    # received a number where it expected an array.
     return {
         "total": len(groups),
         "offset": offset,
         "groups": groups[offset:offset + limit],
-        **duplicate_summary(idx),
+        "summary": duplicate_summary(idx),
     }
 
 
@@ -512,14 +543,42 @@ def breadcrumbs(rel: str) -> list:
 # is not.
 # ---------------------------------------------------------------------------
 
-_build_state: dict = {"running": False, "dirs_seen": 0, "started_at": None,
-                      "finished_at": None, "error": None, "phase": ""}
+def _fresh_steps() -> list:
+    return [{"id": sid, "label": label, "status": "pending",
+             "count": 0, "total": None} for sid, label in BUILD_STEPS]
+
+
+_build_state: dict = {"running": False, "started_at": None,
+                      "finished_at": None, "error": None,
+                      "cancelled": False, "steps": _fresh_steps()}
 _build_lock = threading.Lock()
+_cancel_flag = threading.Event()
+
+
+def _snapshot() -> dict:
+    """Caller must hold _build_lock. Steps are copied because the worker
+    mutates them in place and the JSON encoder runs outside the lock."""
+    state = dict(_build_state)
+    state["steps"] = [dict(st) for st in _build_state["steps"]]
+    return state
 
 
 def build_status() -> dict:
     with _build_lock:
-        return dict(_build_state)
+        return _snapshot()
+
+
+def cancel_build() -> dict:
+    """Ask a running build to stop at its next checkpoint.
+
+    Cooperative rather than forced: the walk and the hasher both check the
+    flag, so cancelling costs at most one directory or one file. The
+    existing index is left exactly as it was -- a half-written index is
+    worse than a stale one, because nothing downstream can tell it is
+    partial.
+    """
+    _cancel_flag.set()
+    return build_status()
 
 
 def start_build() -> dict:
@@ -531,27 +590,57 @@ def start_build() -> dict:
     """
     with _build_lock:
         if _build_state["running"]:
-            return dict(_build_state)
-        _build_state.update(running=True, dirs_seen=0, started_at=time.time(),
-                            finished_at=None, error=None, phase="starting")
+            return _snapshot()
+        _cancel_flag.clear()
+        _build_state.update(running=True, started_at=time.time(),
+                            finished_at=None, error=None, cancelled=False,
+                            steps=_fresh_steps())
+
+    def _mark(step_id, status, count=None, total=None):
+        """Set one step's status, and close out any earlier step still shown
+        as running -- progress only ever moves forward, so reaching step N
+        is proof that N-1 finished."""
+        with _build_lock:
+            reached = False
+            for st in _build_state["steps"]:
+                if st["id"] == step_id:
+                    reached = True
+                    st["status"] = status
+                    if count is not None:
+                        st["count"] = count
+                    if total is not None:
+                        st["total"] = total
+                elif not reached and st["status"] == "running":
+                    st["status"] = "done"
+
+    def progress(step_id, count, total=None):
+        _mark(step_id, "running", count, total)
 
     def _run():
-        def progress(n, phase="scanning folders"):
-            with _build_lock:
-                _build_state["dirs_seen"] = n
-                _build_state["phase"] = phase
         try:
-            index = build_index(progress=progress)
+            index = build_index(progress=progress,
+                                should_cancel=_cancel_flag.is_set)
+            _mark(STEP_SAVE, "running")
             save_index(index)
+            _mark(STEP_SAVE, "done")
+        except InterruptedError:
             with _build_lock:
-                _build_state["dirs_seen"] = len(index.get("dirs", {}))
+                _build_state["cancelled"] = True
+                for st in _build_state["steps"]:
+                    if st["status"] in ("running", "pending"):
+                        st["status"] = "cancelled"
         except Exception as e:                      # noqa: BLE001
             with _build_lock:
                 _build_state["error"] = str(e)[:300]
+                for st in _build_state["steps"]:
+                    if st["status"] == "running":
+                        st["status"] = "failed"
+                    elif st["status"] == "pending":
+                        st["status"] = "skipped"
         finally:
             with _build_lock:
                 _build_state["running"] = False
                 _build_state["finished_at"] = time.time()
 
     threading.Thread(target=_run, name="archive-index", daemon=True).start()
-    return build_status()
+    return build_status()      # outside the lock, so this one is safe

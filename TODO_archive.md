@@ -55,6 +55,15 @@ job. Coach-only `/archive` page browsing one level at a time. Read-only —
 nothing can move or delete a file yet, which is the point: it proves the
 index survives 65GB before anything risky is built on it.
 
+The rebuild reports named steps rather than a single mutating status line,
+and is cancellable — both because a first walk over 65GB has no known
+duration. It runs on its own thread rather than `jobs.py`'s queue: that
+queue is keyed by event slug, so the archive would need a pseudo-slug that
+creates a bogus event directory, and it runs strictly one job at a time, so
+a long reindex would block all question extraction. A reindex is idempotent
+and safe to run alongside anything else, which is the opposite of what that
+queue exists to enforce.
+
 Duplicate detection runs as part of the same build, identifying copies by
 **content** since filenames in this corpus are meaningless — the same test
 appears as `test.pdf`, `CircuitLab2019.pdf` and `scan_0001.pdf`. Hashing
