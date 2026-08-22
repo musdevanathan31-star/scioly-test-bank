@@ -135,10 +135,10 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
         <button class="ghost">{{ "Prepare" if et.assessment.status == "preparing" else "View" }}</button>
       </a>
       <a href="{{ url_for('api_export_assessment_markdown', assessment_id=et.assessment.assessment_id, which='test') }}"
-         title="Download this assessment as markdown, for administering it on paper">
+         title="Download this assessment to administer on paper — PDF with figures, or markdown if reportlab isn't installed">
         <button class="ghost">&#11015; Test</button></a>
       <a href="{{ url_for('api_export_assessment_markdown', assessment_id=et.assessment.assessment_id, which='key') }}"
-         title="Download the same questions with an answer key section after them">
+         title="Download the same questions with an answer key after them — PDF with figures, or markdown if reportlab isn't installed">
         <button class="ghost">&#11015; Key</button></a>
       {% if current_user.role == "coach" and hard_delete_enabled() %}
       <button class="ghost purge-test-btn" data-test="{{ et.assessment.assessment_id }}"

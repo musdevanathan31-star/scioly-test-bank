@@ -191,6 +191,8 @@ Note: a season's event lineup only scopes the roster grid and which events a ass
 
 ### Prepare and publish a test
 
+The Assessments dashboard's **⬇ Test** and **⬇ Key** buttons download the paper version. You get a PDF with any question figures embedded; if the server doesn't have `reportlab` installed you get markdown instead, which is the same content without the images. Add `.md` to the URL if you specifically want the text to edit.
+
 On the **Tests** dashboard, pick the season, then:
 1. Expand **+ New assessment window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
 2. For each event row, click the **Assign…** button to open a picker — it lists every coach plus every volunteer who has bank-edit access to that specific event, check off who should prepare it, and **Save**. Only people with bank access to that event (or any coach) are offered here.

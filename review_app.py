@@ -1801,10 +1801,180 @@ def assessment_grading_page(assessment_id):
                             event_name=ev.name if ev else test.event_slug)
 
 
+def _assessment_pdf(snapshot: list, title: str, subtitle: str,
+                    layout: str) -> bytes:
+    """Render an assessment to PDF, figures included.
+
+    This is why PDF is worth having over the markdown export at all:
+    markdown cannot carry an image, so a question whose stem is "identify
+    the component labelled X" printed as a filename reference and was
+    useless on paper. Anything the pipeline attached to a question is
+    embedded here.
+
+    `layout` follows EXPORT_LAYOUTS: "none" for the student copy, "key" for
+    questions followed by an answer-key page.
+    """
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.lib.utils import ImageReader
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepTogether,
+        Table, TableStyle, Image as RLImage,
+    )
+    import io as _io
+
+    buf = _io.BytesIO()
+    margin = 0.75 * inch
+    doc = SimpleDocTemplate(buf, pagesize=LETTER, leftMargin=margin,
+                            rightMargin=margin, topMargin=margin,
+                            bottomMargin=margin, title=title)
+    usable_width = LETTER[0] - 2 * margin
+    # Leave room for the question stem and choices above/below the figure;
+    # a full-page image would technically fit but push everything else off.
+    usable_height = (LETTER[1] - 2 * margin) * 0.72
+
+    styles = getSampleStyleSheet()
+    h1, h2 = styles["Heading1"], styles["Heading2"]
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=11,
+                          leading=14, spaceAfter=6)
+    choice_style = ParagraphStyle("choice", parent=body, leftIndent=18,
+                                  fontSize=10, leading=13)
+    meta_style = ParagraphStyle("meta", parent=body, fontSize=8,
+                                textColor="#888", spaceAfter=4)
+    answer_style = ParagraphStyle("answer", parent=body, leftIndent=18,
+                                  fontSize=10, textColor="#1a6b32")
+    context_style = ParagraphStyle("context", parent=body, backColor="#fffbeb",
+                                   borderColor="#e8c875", borderWidth=1,
+                                   borderPadding=8, spaceAfter=8)
+
+    def _e(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _figure(fname: str, desc: str):
+        """One image, scaled to fit the text column and never upscaled."""
+        path = bqb.EVENT.image_dir / os.path.basename(fname)
+        if not path.is_file():
+            # Say so rather than dropping it: a question referring to a
+            # figure that silently isn't there is worse than a note saying
+            # which file is missing.
+            return Paragraph(f"<i>[figure not found: {_e(fname)}]</i>", meta_style)
+        try:
+            iw, ih = ImageReader(str(path)).getSize()
+            # Fit BOTH axes and never upscale. Clamping width alone lets a
+            # tall figure (a scanned page, the common case) still overflow
+            # the frame, and reportlab refuses to lay out a flowable larger
+            # than the page rather than shrinking it.
+            scale = min(usable_width / iw, usable_height / ih, 1.0)
+            return RLImage(str(path), width=iw * scale, height=ih * scale)
+        except Exception as e:
+            app.logger.warning("assessment PDF: skipping figure %s (%s)", fname, e)
+            return Paragraph(f"<i>[figure could not be embedded: {_e(fname)}]</i>",
+                             meta_style)
+
+    story = []
+    logo_name = (os.environ.get("SCHOOL_LOGO") or "").strip()
+    if logo_name:
+        logo_path = _STATIC_DIR / os.path.basename(logo_name)
+        if logo_path.is_file():
+            try:
+                iw, ih = ImageReader(str(logo_path)).getSize()
+                w = 1.9 * inch
+                story += [RLImage(str(logo_path), width=w, height=w * ih / iw),
+                          Spacer(1, 0.12 * inch)]
+            except Exception as e:
+                app.logger.warning("assessment PDF: logo skipped (%s)", e)
+
+    story.append(Paragraph(_e(title), h1))
+    for line in (subtitle or "").split("\n"):
+        if line.strip():
+            story.append(Paragraph(_e(line.strip()), meta_style))
+    story.append(Spacer(1, 0.18 * inch))
+
+    seen_contexts: set = set()
+    answer_lines: list[str] = []
+    for i, q in enumerate(snapshot, start=1):
+        ctx, ctx_id = q.get("_context"), q.get("context_id")
+        if ctx and ctx_id and ctx_id not in seen_contexts:
+            seen_contexts.add(ctx_id)
+            heading = "Case study" + (f": {ctx['title']}" if ctx.get("title") else "")
+            story.append(Paragraph(f"<b>{_e(heading)}</b><br/>{_e(ctx.get('text',''))}",
+                                   context_style))
+
+        pts = q.get("max_points", 1)
+        block = [Paragraph(f"<b>{i}.</b> ({pts} {'pt' if pts == 1 else 'pts'}) "
+                           f"{_e(q.get('text',''))}", body)]
+        for fname in q.get("images") or []:
+            block.append(_figure(fname, (q.get("image_descriptions") or {}).get(fname, "")))
+            block.append(Spacer(1, 4))
+
+        qtype = q.get("qtype") or "frq"
+        if qtype == "matching":
+            m = q.get("matching") or {}
+            left, right = m.get("left") or [], m.get("right") or []
+            rows = [["#", "Column A", "#", "Column B"]]
+            for n in range(max(len(left), len(right))):
+                l = left[n] if n < len(left) else {}
+                r = right[n] if n < len(right) else {}
+                rows.append([l.get("label", ""), _e(l.get("text", "")) or "—",
+                             r.get("label", ""), _e(r.get("text", "")) or "—"])
+            tbl = Table(rows, colWidths=[0.3 * inch, 2.6 * inch, 0.3 * inch, 2.6 * inch])
+            tbl.setStyle(TableStyle([
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+            ]))
+            block.append(tbl)
+            pairs = m.get("pairs") or {}
+            answer = ", ".join(f"{k}\u2192{v}" for k, v in sorted(pairs.items())) or "—"
+        else:
+            for c in q.get("choices") or []:
+                block.append(Paragraph(
+                    f"<b>{_e(c.get('letter','?'))}.</b> {_e(c.get('text',''))}",
+                    choice_style))
+            answer = _e(q.get("correct_answer") or "—")
+            if not q.get("choices") and layout == "none":
+                # Free response on the student copy needs somewhere to write.
+                block.append(Spacer(1, 0.55 * inch))
+
+        answer_lines.append(f"{i}. {answer}")
+        block.append(Spacer(1, 8))
+        # KeepTogether so a question, its figure and its choices are never
+        # split across a page break -- the one formatting rule that actually
+        # matters on paper.
+        story.append(KeepTogether(block))
+
+    if layout == "key":
+        story.append(PageBreak())
+        story.append(Paragraph("Answer Key", h2))
+        for line in answer_lines:
+            story.append(Paragraph(line, answer_style))
+
+    total = sum(float(q.get("max_points") or 0) for q in snapshot)
+    story.append(Spacer(1, 0.2 * inch))
+    story.append(Paragraph(
+        f"{len(snapshot)} question{'' if len(snapshot) == 1 else 's'}, "
+        f"{total:g} point{'' if total == 1 else 's'} total.", meta_style))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
 @app.route("/assessments/<assessment_id>/export/<which>.md")
+@app.route("/assessments/<assessment_id>/export/<which>")
 @coach_or_volunteer_required
 def api_export_assessment_markdown(assessment_id: str, which: str):
-    """Download a test as markdown, for administering it on paper.
+    """Download an assessment to administer on paper.
+
+    Prefers PDF, because markdown cannot carry an image: a question asking
+    about a labelled diagram exported as a bare filename reference and was
+    useless on the printed page. Falls back to markdown when reportlab
+    isn't installed, so the button always produces something rather than an
+    error about a dependency the coach can't install.
+
+    The explicit `.md` URL always gets markdown, for anyone who wants the
+    text to edit.
 
     `which` is "test" (questions only) or "key" (questions with an answer
     key section after them). Renders from the published snapshot when there
@@ -1838,7 +2008,26 @@ def api_export_assessment_markdown(assessment_id: str, which: str):
         answers="section" if which == "key" else "none")
 
     stem = f"{test.event_slug}-{label or assessment_id[:8]}-{which}".replace(" ", "_")
-    return Response(md, mimetype="text/markdown; charset=utf-8",
+
+    # request.path ending in .md is the explicit "give me text" request.
+    wants_markdown = request.path.endswith(".md")
+    if not wants_markdown and _optional_dep_error("reportlab") is None:
+        try:
+            pdf = _assessment_pdf(
+                snapshot, title=title,
+                # Markdown bold markers mean nothing to reportlab; strip
+                # them rather than printing literal asterisks.
+                subtitle="\n".join(b.replace("**", "") for b in subtitle_bits),
+                layout="key" if which == "key" else "none")
+            return Response(pdf, mimetype="application/pdf",
+                            headers={"Content-Disposition":
+                                     f"attachment; filename={stem}.pdf"})
+        except Exception as e:
+            # Never let a rendering problem cost the coach their download —
+            # markdown below is a worse document, not a failure.
+            app.logger.warning("assessment PDF failed, falling back to markdown: %s", e)
+
+    return Response(md, content_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename={stem}.md"})
 
 
@@ -4427,7 +4616,7 @@ def api_source_raw(event_slug, filename):
     if filename.lower().endswith(".pdf"):
         return send_file(str(p))
     return Response(p.read_text(encoding="utf-8"),
-                    mimetype="text/markdown; charset=utf-8")
+                    content_type="text/markdown; charset=utf-8")
 
 
 @app.route("/event/<event_slug>/api/sources/upload", methods=["POST"])
