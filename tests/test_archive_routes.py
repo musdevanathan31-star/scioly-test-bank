@@ -326,3 +326,131 @@ def test_a_student_cannot_import(app_ctx):
     client, _am, slug = app_ctx
     r = client("stu1").post("/api/archive/import", json={"slug": slug, "items": []})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# PDF preview
+#
+# The archive is the least-trusted content in the system: 65GB downloaded
+# from anywhere, by anyone, over years. So these check that a malformed file
+# is reported rather than crashing the request, and that the access rules
+# apply to bytes as well as to listings.
+# ---------------------------------------------------------------------------
+
+def _real_pdf_bytes():
+    import fitz
+    doc = fitz.open()
+    doc.new_page(width=200, height=200)
+    return doc.tobytes()
+
+
+def test_a_volunteer_cannot_render_a_pdf_they_cannot_see(app_ctx):
+    client, am, slug = app_ctx
+    am.set_many({"Division B/Circuit Lab": slug})
+    r = client("vol1").get("/api/archive/pdf/page/1.png", query_string={
+        "path": "Division C/_UnknownEvent/2021/States/b.pdf"})
+    # Access control has to cover the bytes, not just the folder listing.
+    assert r.status_code == 404
+
+
+def test_a_student_cannot_render_archive_pdfs(app_ctx):
+    client, _am, _slug = app_ctx
+    assert client("stu1").get("/api/archive/pdf/page/1.png", query_string={
+        "path": "Division B/Circuit Lab/2019/UF/test.pdf"}).status_code == 403
+
+
+def test_a_coach_can_render_a_page(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    rel = "Division B/Circuit Lab/2019/UF/test.pdf"
+    (ta.archive_root() / rel).write_bytes(_real_pdf_bytes())
+    c = client("coach1")
+    r = c.get("/api/archive/pdf/page/1.png", query_string={"path": rel})
+    assert r.status_code == 200
+    assert r.data[:4] == b"\x89PNG"
+    # Second request revalidates instead of re-rendering.
+    etag = r.headers["ETag"]
+    again = c.get("/api/archive/pdf/page/1.png", query_string={"path": rel},
+                  headers={"If-None-Match": etag})
+    assert again.status_code == 304
+
+
+def test_a_malformed_pdf_is_reported_not_crashed(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    rel = "Division B/Circuit Lab/2019/UF/test.pdf"
+    (ta.archive_root() / rel).write_bytes(b"this is not a pdf at all")
+    r = client("coach1").get("/api/archive/pdf/info", query_string={"path": rel})
+    # A broken file is data here, not an incident: the coach needs to be told
+    # it will not open so they can delete it.
+    assert r.status_code == 200
+    assert r.get_json()["pages"] == 0
+    assert r.get_json()["error"]
+
+
+def test_pdf_preview_refuses_traversal(app_ctx):
+    client, _am, _slug = app_ctx
+    r = client("coach1").get("/api/archive/pdf/info",
+                             query_string={"path": "../../etc/passwd"})
+    assert r.status_code in (400, 404)
+
+
+def test_tournament_names_are_coach_only(app_ctx):
+    client, _am, _slug = app_ctx
+    assert client("vol1").get("/api/archive/tournament-names").status_code == 403
+    names = client("coach1").get(
+        "/api/archive/tournament-names").get_json()["names"]
+    assert any(n["name"] == "UF" for n in names)
+
+
+# ---------------------------------------------------------------------------
+# Bulk duplicate removal
+# ---------------------------------------------------------------------------
+
+def test_dedupe_routes_are_coach_only(app_ctx):
+    client, _am, _slug = app_ctx
+    c = client("vol1")
+    assert c.post("/api/archive/duplicates/preview", json={}).status_code == 403
+    assert c.post("/api/archive/duplicates/remove",
+                  json={"ids": ["x"]}).status_code == 403
+    assert c.get("/api/archive/duplicates/in-folder").status_code == 403
+
+
+def test_removing_with_no_selection_is_refused(app_ctx):
+    client, _am, _slug = app_ctx
+    r = client("coach1").post("/api/archive/duplicates/remove", json={"ids": []})
+    assert r.status_code == 400
+    assert "select at least one" in r.get_json()["error"]
+
+
+def test_dedupe_preview_touches_nothing(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    body = b"SAME" * 3000
+    for rel in ("Division B/Circuit Lab/2019/UF/a.pdf",
+                "Division B/Anatomy/2020/Regionals/b.pdf"):
+        (ta.archive_root() / rel).write_bytes(body)
+    ta.save_index(ta.build_index())
+    before = sorted(p.as_posix() for p in ta.archive_root().rglob("*"))
+    plan = client("coach1").post("/api/archive/duplicates/preview",
+                                 json={}).get_json()["plan"]
+    # Three: this pair, plus the three identical 100-byte files the fixture
+    # itself writes.
+    assert plan["files"] == 3
+    assert sorted(p.as_posix() for p in ta.archive_root().rglob("*")) == before
+
+
+def test_removing_duplicates_through_the_api_keeps_one(app_ctx):
+    import tournament_archive as ta
+    client, _am, _slug = app_ctx
+    body = b"SAME" * 3000
+    rels = ("Division B/Circuit Lab/2019/UF/a.pdf",
+            "Division B/Anatomy/2020/Regionals/b.pdf")
+    for rel in rels:
+        (ta.archive_root() / rel).write_bytes(body)
+    ta.save_index(ta.build_index())
+    group = ta.load_index()["duplicates"][0]
+    r = client("coach1").post("/api/archive/duplicates/remove",
+                              json={"ids": [group["id"]]})
+    assert r.get_json()["result"]["count"] == 1
+    assert sum(1 for rel in rels if (ta.archive_root() / rel).exists()) == 1

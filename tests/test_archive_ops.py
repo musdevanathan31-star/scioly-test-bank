@@ -256,3 +256,241 @@ def test_an_unwritable_log_does_not_undo_the_move(ops, monkeypatch):
     # already happened on disk would be worse and impossible to reason about.
     ops.rename("Division B/Astronomy", "Astro")
     assert (ta.archive_root() / "Division B/Astro").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Bulk duplicate removal
+#
+# Which copy survives is the whole problem. Deleting the wrong one is not
+# destructive (everything goes to the trash) but it is degrading: the bytes
+# are identical, so the path is the only remaining metadata, and keeping the
+# copy under _UnknownEvent/xz9##/ throws away the only thing that said what
+# the file was.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def dups(monkeypatch):
+    monkeypatch.setenv("DATA_ROOT", tempfile.mkdtemp(prefix="adup-"))
+    import events
+    importlib.reload(events)
+    import deletion
+    importlib.reload(deletion)
+    import tournament_archive as ta
+    importlib.reload(ta)
+    import archive_ops
+    importlib.reload(archive_ops)
+    import archive_import
+    importlib.reload(archive_import)
+
+    body = b"IDENTICAL-CONTENT" * 5000
+
+    def write(rel, data=body):
+        p = ta.archive_root() / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    write("Division B/Circuit Lab/2019/UF Invitational/test.pdf")
+    write("_UnknownDivision/_UnknownEvent/2019/xz9a8f7b6c5d4e3f2a1b0/copy.pdf")
+    write("Division B/Circuit Lab/2019/Regionals/CircuitLab2019.pdf")
+    write("Division C/Astronomy/2020/States/only.pdf", b"unique-content-here")
+    ta.save_index(ta.build_index())
+    return archive_ops, ta
+
+
+def test_the_best_identified_copy_is_the_one_kept(dups):
+    _ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    keeper = ta.choose_keeper(group["paths"])
+    # Properly filed under a real division, event, year and tournament.
+    assert keeper.startswith("Division B/Circuit Lab/2019/")
+    assert "_Unknown" not in keeper
+
+
+def test_a_gibberish_folder_never_wins_over_a_named_one(dups):
+    _ops, ta = dups
+    keeper = ta.choose_keeper([
+        "_UnknownDivision/_UnknownEvent/2019/xz9a8f7b6c5d4e3f2a1b0/copy.pdf",
+        "Division B/Circuit Lab/2019/UF Invitational/test.pdf"])
+    assert keeper == "Division B/Circuit Lab/2019/UF Invitational/test.pdf"
+
+
+def test_the_choice_is_stable_regardless_of_input_order(dups):
+    _ops, ta = dups
+    paths = ta.load_index()["duplicates"][0]["paths"]
+    assert ta.choose_keeper(paths) == ta.choose_keeper(list(reversed(paths)))
+
+
+def test_a_plan_always_keeps_exactly_one_copy(dups):
+    _ops, ta = dups
+    plan = ta.plan_dedupe(ta.load_index()["duplicates"])
+    assert plan["groups"]
+    for g in plan["groups"]:
+        assert g["keep"] not in g["remove"]
+        assert len(g["remove"]) >= 1
+
+
+def test_removing_duplicates_leaves_one_copy_on_disk(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    result = ops.remove_duplicates([group["id"]], by="coach1")
+    survivors = [p for p in group["paths"]
+                 if (ta.archive_root() / p).exists()]
+    assert len(survivors) == 1
+    assert survivors[0] == result["kept"][0]
+    assert result["count"] == len(group["paths"]) - 1
+
+
+def test_removed_duplicates_go_to_the_trash(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    ops.remove_duplicates([group["id"]])
+    trashed = list(ops.trash_dir().rglob("*.pdf"))
+    assert len(trashed) == len(group["paths"]) - 1
+
+
+def test_scoping_to_a_folder_never_deletes_outside_it(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    outside = "_UnknownDivision/_UnknownEvent/2019/xz9a8f7b6c5d4e3f2a1b0/copy.pdf"
+    ops.remove_duplicates([group["id"]], scope="Division B")
+    # Cleaning up "this folder" must not reach out and delete a file
+    # somewhere the coach is not looking.
+    assert (ta.archive_root() / outside).exists()
+
+
+def test_a_group_with_one_local_copy_has_nothing_to_remove(dups):
+    _ops, ta = dups
+    groups = ta.groups_under("Division C")
+    assert groups == []
+
+
+def test_groups_under_a_folder_only_count_local_copies(dups):
+    _ops, ta = dups
+    groups = ta.groups_under("Division B")
+    assert len(groups) == 1
+    assert all(p.startswith("Division B/") for p in groups[0]["paths"])
+    assert len(groups[0]["paths"]) == 2
+
+
+def test_an_unknown_hash_removes_nothing(dups):
+    ops, ta = dups
+    before = len(list(ta.archive_root().rglob("*.pdf")))
+    result = ops.remove_duplicates(["deadbeefdeadbeef"])
+    assert result["count"] == 0
+    assert len(list(ta.archive_root().rglob("*.pdf"))) == before
+
+
+def test_bulk_removal_is_logged(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    ops.remove_duplicates([group["id"]], by="coach1")
+    actions = [e["action"] for e in ops.read_ops()]
+    # Each file's own delete is logged too, so the trail explains the total.
+    assert "dedupe" in actions and "delete" in actions
+
+
+# ---------------------------------------------------------------------------
+# Tournament-name suggestions
+# ---------------------------------------------------------------------------
+
+def test_existing_tournament_names_are_offered(ops):
+    names = [r["name"] for r in ops.tournament_names()]
+    assert "UF" in names and "States" in names
+
+
+def test_the_common_spelling_ranks_first(ops):
+    import tournament_archive as ta
+    for rel in ("Division B/Astronomy/2021/States", "_UnknownDivision/Anatomy/2021/States"):
+        (ta.archive_root() / rel).mkdir(parents=True, exist_ok=True)
+    ta.save_index(ta.build_index())
+    # Standardisation is the point: steer towards the spelling already in use.
+    rows = ops.tournament_names("st")
+    assert rows[0]["name"] == "States"
+    assert rows[0]["count"] >= 2
+
+
+def test_a_query_filters_the_suggestions(ops):
+    assert all("uf" in r["name"].lower() for r in ops.tournament_names("uf"))
+
+
+def test_each_duplicate_group_has_its_own_id(dups):
+    _ops, ta = dups
+    # Small files skip the second hashing pass, and an earlier version reused
+    # the empty string as their digest -- so every small group shared one id
+    # and selecting any of them matched all of them.
+    small = b"tiny"
+    (ta.archive_root() / "Division B/Circuit Lab/2019/UF").mkdir(
+        parents=True, exist_ok=True)
+    for rel in ("Division B/Circuit Lab/2019/UF/s1.pdf",
+                "Division B/Circuit Lab/2019/UF/s2.pdf"):
+        (ta.archive_root() / rel).write_bytes(small)
+    for rel in ("Division B/Circuit Lab/2019/UF/t1.pdf",
+                "Division B/Circuit Lab/2019/UF/t2.pdf"):
+        (ta.archive_root() / rel).write_bytes(b"othr")
+    ta.save_index(ta.build_index())
+    groups = ta.load_index()["duplicates"]
+    ids = [g["id"] for g in groups]
+    assert all(ids), "a group with no id cannot be selected safely"
+    assert len(set(ids)) == len(ids), ids
+
+
+def test_selecting_one_small_group_removes_only_that_group(dups):
+    ops, ta = dups
+    (ta.archive_root() / "Division B/Circuit Lab/2019/UF").mkdir(
+        parents=True, exist_ok=True)
+    for rel in ("Division B/Circuit Lab/2019/UF/s1.pdf",
+                "Division B/Circuit Lab/2019/UF/s2.pdf"):
+        (ta.archive_root() / rel).write_bytes(b"tiny")
+    for rel in ("Division B/Circuit Lab/2019/UF/t1.pdf",
+                "Division B/Circuit Lab/2019/UF/t2.pdf"):
+        (ta.archive_root() / rel).write_bytes(b"othr")
+    ta.save_index(ta.build_index())
+    target = next(g for g in ta.load_index()["duplicates"] if g["size"] == 4
+                  and any(p.endswith("s1.pdf") for p in g["paths"]))
+    ops.remove_duplicates([target["id"]])
+    # The other four-byte group must be untouched.
+    assert (ta.archive_root() / "Division B/Circuit Lab/2019/UF/t1.pdf").exists()
+    assert (ta.archive_root() / "Division B/Circuit Lab/2019/UF/t2.pdf").exists()
+
+
+def test_removing_duplicates_clears_them_from_the_panel(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    ops.remove_duplicates([group["id"]])
+    # One copy survives, so the set is no longer a duplicate set at all.
+    # Leaving it listed makes the panel offer files that are in the trash,
+    # and acting on them reports failures.
+    remaining = [g for g in ta.load_index()["duplicates"]
+                 if g["id"] == group["id"]]
+    assert remaining == []
+
+
+def test_deleting_one_copy_shrinks_its_group(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    assert len(group["paths"]) == 3
+    ops.delete(group["paths"][0])
+    after = next(g for g in ta.load_index()["duplicates"] if g["id"] == group["id"])
+    assert len(after["paths"]) == 2
+    assert after["wasted"] == after["size"]
+
+
+def test_deleting_a_folder_prunes_the_copies_inside_it(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    folder = "_UnknownDivision"
+    inside = [p for p in group["paths"] if p.startswith(folder + "/")]
+    assert inside
+    ops.delete(folder)
+    after = next(g for g in ta.load_index()["duplicates"] if g["id"] == group["id"])
+    assert not any(p.startswith(folder + "/") for p in after["paths"])
+
+
+def test_renaming_follows_the_duplicate_paths(dups):
+    ops, ta = dups
+    group = ta.load_index()["duplicates"][0]
+    ops.rename("Division B/Circuit Lab", "Circuits Lab")
+    after = next(g for g in ta.load_index()["duplicates"] if g["id"] == group["id"])
+    # A group pointing at the old path would offer files that cannot be found.
+    for p in after["paths"]:
+        assert (ta.archive_root() / p).exists(), p

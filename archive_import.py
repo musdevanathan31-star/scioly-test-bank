@@ -26,11 +26,19 @@ from pathlib import Path
 
 from werkzeug.utils import secure_filename
 
+import fitz
+
 import events as events_mod
 import tournament_archive as ta
 import archive_ops
 
 ROLES = ("test", "key", "supplementary", "notes")
+
+DOC_EXTS = (".pdf", ".docx", ".doc", ".md", ".txt")
+#: Scanned figures and diagrams filed next to a test. They cannot be a test
+#: or a key (there is nothing to extract), but they belong with one, so they
+#: import as supplementary and inherit the test's filename stem.
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff")
 
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 _DIVISION_RE = re.compile(r"\b(?:div(?:ision)?\s*)?([abc])\b", re.I)
@@ -86,6 +94,28 @@ def _slugify(text: str) -> str:
     return cleaned[:40]
 
 
+def image_to_pdf(image: Path, dest: Path) -> None:
+    """Wrap an image in a single-page PDF sized to the image.
+
+    Supplementary material is discovered by globbing `<stem>_*.pdf` and
+    opened with fitz, so a bare .png attached to a test is invisible to the
+    viewer and would crash it if it were not. Converting on the way in means
+    no viewer, route or template has to learn about image attachments — the
+    same reasoning behind the .docx conversion on the manual scan path.
+
+    The original is kept beside it. Nothing in this feature destroys a file,
+    and the glob only picks up PDFs, so the image sits there inertly.
+    """
+    src = fitz.open(str(image))
+    pdf_bytes = src.convert_to_pdf()
+    out = fitz.open("pdf", pdf_bytes)
+    out.save(str(dest))
+
+
+def is_image(filename: str) -> bool:
+    return Path(filename).suffix.lower() in IMAGE_EXTS
+
+
 def guess_role(filename: str) -> str:
     """test / key / supplementary from a filename, defaulting to test.
 
@@ -93,6 +123,8 @@ def guess_role(filename: str) -> str:
     one thing worth catching automatically, because importing a key as a
     test puts the answers into the question bank as questions.
     """
+    if is_image(filename):
+        return "supplementary"
     stem = Path(filename).stem.lower()
     if re.search(r"\b(key|answer|answers|solutions?|soln)\b", stem) or \
             re.search(r"(key|answers|solutions)$", stem):
@@ -137,10 +169,18 @@ def plan_import(items: list, slug: str, meta: dict | None = None) -> dict:
         path = ta.safe_path(rel)
         if not path.is_file():
             raise ImportError_(f"no such file: {rel}")
-        if path.suffix.lower() not in (".pdf", ".docx", ".doc", ".md", ".txt"):
-            raise ImportError_(f"{path.name}: only PDF and document files import here")
-        if role != "notes" and path.suffix.lower() not in (".pdf", ".docx", ".doc"):
+        ext = path.suffix.lower()
+        if ext not in DOC_EXTS and ext not in IMAGE_EXTS:
+            raise ImportError_(
+                f"{path.name}: only PDFs, documents and images import here")
+        if role in ("test", "key") and ext not in (".pdf", ".docx", ".doc"):
             raise ImportError_(f"{path.name}: a {role} must be a PDF or Word document")
+        if ext in IMAGE_EXTS and role != "supplementary":
+            # An image cannot be a test or key -- there is nothing to extract
+            # questions from -- but scanned figures and diagrams sitting next
+            # to a test are worth keeping with it.
+            raise ImportError_(
+                f"{path.name}: an image can only be imported as supplementary")
         resolved.append({"rel": rel, "path": path, "role": role,
                          "name": path.name, "bytes": path.stat().st_size})
 
@@ -191,6 +231,14 @@ def plan_import(items: list, slug: str, meta: dict | None = None) -> dict:
             label = _slugify(Path(r["name"]).stem) or "sheet"
             dest_name = f"{stem_prefix}_{label}{ext}"
             where = "event"
+            if ext in IMAGE_EXTS:
+                # The image moves as-is and gains a PDF sibling that the
+                # existing supplementary machinery can actually open.
+                plans_extra = f"{stem_prefix}_{label}.pdf"
+                if plans_extra in seen:
+                    raise ImportError_(
+                        f"two selected images would both become {plans_extra}")
+                seen.add(plans_extra)
         else:
             dest_name = _target_name(ev.filename_prefix, year, division,
                                      chosen, r["role"], ext)
@@ -202,6 +250,9 @@ def plan_import(items: list, slug: str, meta: dict | None = None) -> dict:
         seen.add(dest_name)
         plans.append({"src": r["rel"], "name": r["name"], "role": r["role"],
                       "dest_name": dest_name, "where": where,
+                      "as_pdf": (f"{stem_prefix}_{_slugify(Path(r['name']).stem) or 'sheet'}.pdf"
+                                 if (r["role"] == "supplementary"
+                                     and ext in IMAGE_EXTS) else None),
                       "bytes": r["bytes"]})
 
     return {
@@ -236,6 +287,14 @@ def run_import(items: list, slug: str, meta: dict | None = None,
                 # than overwrite: the file is still safely in the archive.
                 raise ImportError_(f"{entry['dest_name']} appeared while importing")
             shutil.move(str(src), str(dest))
+            if entry.get("as_pdf"):
+                try:
+                    image_to_pdf(dest, dest.parent / entry["as_pdf"])
+                except Exception as e:              # noqa: BLE001
+                    # The move already happened and the image is safely in
+                    # the event directory; failing to wrap it is a degraded
+                    # result, not a reason to abort the batch.
+                    entry["warning"] = f"could not build a PDF view: {e}"
             ta.index_remove_file(entry["src"], entry["bytes"])
             moved.append({**entry, "dest": str(dest)})
             archive_ops.log_op("import", src=entry["src"],

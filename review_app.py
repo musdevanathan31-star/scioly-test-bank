@@ -586,7 +586,13 @@ _render_write_count = 0
 _render_prune_lock = threading.Lock()
 
 
-def _render_cache_key(path: Path, pno: int, dpi: int) -> str:
+#: Cache scope for archive PDFs. They belong to no event, and borrowing a
+#: slug would file them in that event's shard, where clearing it would take
+#: them out too. The leading dot cannot collide with a real slug.
+ARCHIVE_RENDER_SCOPE = ".archive"
+
+
+def _render_cache_key(path: Path, pno: int, dpi: int, scope: str = "") -> str:
     """Identity of one rendered page.
 
     Includes the source file's mtime and size, so replacing a PDF (a
@@ -599,24 +605,29 @@ def _render_cache_key(path: Path, pno: int, dpi: int) -> str:
         stamp = f"{st.st_mtime_ns}:{st.st_size}"
     except OSError:
         stamp = "0:0"
-    raw = f"{bqb.EVENT.slug}\0{path.name}\0{pno}\0{dpi}\0{stamp}"
+    # Archive filenames are not unique across the corpus — "test.pdf" a
+    # thousand times over — so under a scope the full path identifies the
+    # file, where inside an event's shard the basename already does.
+    ident = str(path) if scope else path.name
+    raw = f"{scope or bqb.EVENT.slug}\0{ident}\0{pno}\0{dpi}\0{stamp}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _render_cache_path(key: str) -> Path:
-    """Sharded by event slug first, then by the key's first two hex chars.
+def _render_cache_path(key: str, scope: str = "") -> Path:
+    """Sharded by event slug (or explicit scope) first, then by the key's
+    first two hex chars.
 
     The slug level is what makes per-event clearing possible at all — the
     filename is a hash, so without it there is no way to tell one event's
     cached pages from another's short of deleting everything.
     """
-    return _RENDER_CACHE_DIR / bqb.EVENT.slug / key[:2] / f"{key}.png"
+    return _RENDER_CACHE_DIR / (scope or bqb.EVENT.slug) / key[:2] / f"{key}.png"
 
 
-def _render_cache_read(key: str) -> bytes | None:
+def _render_cache_read(key: str, scope: str = "") -> bytes | None:
     if RENDER_CACHE_MAX_MB <= 0:
         return None
-    f = _render_cache_path(key)
+    f = _render_cache_path(key, scope)
     try:
         data = f.read_bytes()
     except OSError:
@@ -630,10 +641,10 @@ def _render_cache_read(key: str) -> bytes | None:
     return data
 
 
-def _render_cache_write(key: str, png: bytes) -> None:
+def _render_cache_write(key: str, png: bytes, scope: str = "") -> None:
     if RENDER_CACHE_MAX_MB <= 0:
         return
-    f = _render_cache_path(key)
+    f = _render_cache_path(key, scope)
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
         # Same tempfile + os.replace as every other write in this codebase:
@@ -2929,6 +2940,148 @@ def api_archive_import_targets():
         "suggested": suggested if suggested in slugs else None,
         "meta": archive_import.path_metadata(rel),
     })
+
+
+# --- PDF preview -----------------------------------------------------------
+#
+# The archive is the least-trusted content in the system: 65GB of PDFs
+# downloaded from anywhere, by anyone, over years. So this opens them through
+# pdf_safety rather than fitz directly, and renders through the shared disk
+# cache under its own scope — archive files belong to no event, and borrowing
+# a slug would file them in that event's shard.
+
+def _archive_pdf_or_404(rel: str):
+    """Resolve an archive-relative PDF, checking this user may see it."""
+    if not archive_map.can_access(g.user, rel):
+        abort(404, "no such file")
+    try:
+        path = tournament_archive.safe_path(rel)
+    except ValueError:
+        abort(400, "bad path")
+    if not path.is_file():
+        abort(404, "no such file")
+    return path
+
+
+@app.route("/api/archive/pdf/info")
+@coach_or_volunteer_required
+def api_archive_pdf_info():
+    """Page count and size, so the viewer knows how far it can page."""
+    rel = request.args.get("path", "") or ""
+    path = _archive_pdf_or_404(rel)
+    if not pdf_safety.looks_like_pdf(path):
+        return jsonify({"error": "not a PDF", "pages": 0,
+                        "bytes": path.stat().st_size}), 200
+    try:
+        doc = pdf_safety.open_pdf_safely(path)
+    except pdf_safety.UnsafePdfError as e:
+        # A malformed PDF is data here, not an incident: the coach needs to
+        # be told it will not open so they can delete it.
+        return jsonify({"error": str(e), "pages": 0,
+                        "bytes": path.stat().st_size}), 200
+    return jsonify({"pages": doc.page_count, "bytes": path.stat().st_size,
+                    "name": path.name})
+
+
+@app.route("/api/archive/pdf/page/<int:pno>.png")
+@coach_or_volunteer_required
+def api_archive_pdf_page(pno: int):
+    """One page as PNG, through the same two caches the event viewer uses."""
+    rel = request.args.get("path", "") or ""
+    path = _archive_pdf_or_404(rel)
+    try:
+        dpi = max(10, min(300, int(request.args.get("dpi", "110"))))
+    except ValueError:
+        dpi = 110
+
+    scope = ARCHIVE_RENDER_SCOPE
+    key = _render_cache_key(path, pno, dpi, scope)
+    etag = f'"{key}"'
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag,
+                                             "Cache-Control": "private, no-cache"})
+    png = _render_cache_read(key, scope)
+    if png is None:
+        try:
+            doc = pdf_safety.open_pdf_safely(path)
+        except pdf_safety.UnsafePdfError:
+            abort(415, "this PDF could not be opened")
+        if pno < 1 or pno > doc.page_count:
+            abort(404)
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        png = doc[pno - 1].get_pixmap(matrix=mat, colorspace=fitz.csRGB).tobytes("png")
+        _render_cache_write(key, png, scope)
+    return Response(png, mimetype="image/png",
+                    headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+
+
+@app.route("/api/archive/tournament-names")
+@coach_required
+def api_archive_tournament_names():
+    """Type-ahead for renaming a tournament folder.
+
+    Standardisation is the point: showing the spellings already in use
+    steers towards an existing one instead of inventing a third name for the
+    same tournament."""
+    return jsonify({"names": archive_ops.tournament_names(
+        request.args.get("q", "") or "", limit=25)})
+
+
+# --- Bulk duplicate removal ------------------------------------------------
+
+@app.route("/api/archive/duplicates/preview", methods=["POST"])
+@coach_required
+def api_archive_dedupe_preview():
+    """Which copy survives in each group, and which go. Touches nothing."""
+    data = request.get_json() or {}
+    ids = data.get("ids")
+    scope = (data.get("path") or "").strip()
+    groups = (tournament_archive.groups_under(scope)
+              if ids is None else tournament_archive.groups_by_hash(ids))
+    if ids is not None and scope:
+        prefix = scope.rstrip("/") + "/"
+        groups = [{**gr, "paths": [p for p in gr["paths"] if p.startswith(prefix)]}
+                  for gr in groups]
+        groups = [gr for gr in groups if len(gr["paths"]) > 1]
+    return jsonify({"ok": True, "plan": tournament_archive.plan_dedupe(groups)})
+
+
+@app.route("/api/archive/duplicates/remove", methods=["POST"])
+@coach_required
+def api_archive_dedupe_remove():
+    """Delete every copy but one in each named group.
+
+    Ids, never paths: the server re-derives what to remove from its own
+    index, so a client cannot ask for every copy of something to go."""
+    data = request.get_json() or {}
+    ids = data.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "select at least one set of duplicates"}), 400
+    try:
+        result = archive_ops.remove_duplicates(
+            ids, scope=(data.get("path") or "").strip(), by=g.user.username)
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "result": result})
+
+
+@app.route("/api/archive/duplicates/in-folder")
+@coach_required
+def api_archive_duplicates_in_folder():
+    """Duplicate groups with at least two copies inside one folder.
+
+    Copies outside it are excluded from the group rather than the group being
+    dropped: cleaning up "this folder" must not reach out and delete a file
+    somewhere the coach is not looking."""
+    rel = request.args.get("path", "") or ""
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 100))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        limit, offset = 100, 0
+    all_groups = tournament_archive.groups_under(rel)
+    return jsonify({"total": len(all_groups), "offset": offset,
+                    "groups": all_groups[offset:offset + limit]})
 
 
 @app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])

@@ -152,6 +152,38 @@ An answer key is guessed from its filename because getting that wrong puts
 the answers into the question bank *as questions*; everything else defaults
 to `test` and the user chooses.
 
+## Follow-on work (done)
+
+**PDF preview.** Tournament folders are frequently a stripped Drive URL, so
+the only way to know what a file is is to look inside it — which makes the
+viewer a prerequisite for renaming a folder and for judging which copy of a
+duplicate to keep, not a convenience. Rendered through the same two caches
+the event viewer uses, under a `.archive` scope (archive files belong to no
+event, and the key uses the full path because basenames repeat across the
+corpus). Opened via `pdf_safety`: this is the least-trusted content in the
+system, and a malformed file is reported so a coach can delete it rather
+than failing the request.
+
+**Rename with type-ahead.** Names already used elsewhere in the archive are
+offered as you type, ranked by how many folders use each, and an exact match
+is confirmed. Standardisation is the point: seeing "UF Invitational" used 40
+times steers towards it instead of adding a forty-first spelling.
+
+**Bulk duplicate removal**, per-folder and from the duplicates panel
+(tick / select-all-on-page / clear). One copy of each set always survives:
+the best-identified one, preferring a real Division/Event/Year/Tournament
+path over `_Unknown…` or a gibberish folder name. The bytes are identical,
+so the **path is the only metadata left** — deleting the wrong copy is not
+destructive (everything is trashed) but it is degrading. The plan shows
+which copy survives before anything happens, and selection travels as a
+group id rather than paths so a client cannot ask for every copy to go.
+
+**Images import** as supplementary only — there is nothing to extract
+questions from — and gain a single-page PDF sibling, because
+`_supplementary_docs()` globs `*.pdf` and the viewer fitz-opens what it
+finds. Converting on the way in means no viewer, route or template has to
+learn about image attachments. The original is kept beside it.
+
 ## Known risks
 
 - **Duplicate groups go stale after any mutation.** `stale_duplicates` marks

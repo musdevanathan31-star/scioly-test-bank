@@ -270,6 +270,24 @@ Two things to know:
   tournament are filled in from the folder path. Files **move** — they leave
   the archive, which is how the backlog shrinks. Volunteers can import into
   the events they already hold.
+- **Previewing a PDF**: press **Preview** on any file row, or on any copy in
+  the duplicates list. Pages render on demand with ‹ / › or the arrow keys.
+  A file that will not open says so rather than failing silently — that is
+  usually a sign it should be deleted.
+- **Naming a tournament from what is inside it**: when a folder is a stripped
+  Drive URL, open a PDF, read the cover page, then press **Rename this
+  folder…** in the viewer. As you type, names already used elsewhere in the
+  archive appear with how many folders use each — picking one keeps
+  spellings consistent instead of adding a third variation. It also tells
+  you when what you have typed already matches an existing name.
+- **Removing duplicates**: in the duplicates panel, tick sets individually,
+  **Select all on this page**, or **Clear selection**, then **Remove
+  duplicates**. Inside a folder, **Remove duplicates here** does the same for
+  just that folder — copies living elsewhere are left alone. One copy of each
+  set is always kept: the best-identified one, preferring a real
+  Division/Event/Year/Tournament path over `_Unknown…` or a gibberish folder.
+  You are shown exactly which copy survives before anything happens, and
+  removed copies go to the trash.
 - **Rebuilding** shows each step — scan folders, compare by size, hash
   candidates, save — so you can see what is finished, what is running and
   what has not started. The button stays disabled until it ends, and

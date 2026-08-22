@@ -309,3 +309,71 @@ def delete_empty_folders(rel: str = "", by: str = "") -> dict:
                    paths=removed[:50])
         return {"action": "prune_empty", "removed": removed,
                 "count": len(removed)}
+
+
+def remove_duplicates(ids: list, scope: str = "", by: str = "") -> dict:
+    """Delete every copy but one in each named duplicate group.
+
+    Takes group ids, not paths. The server re-derives what to delete from
+    its own index, so a client cannot ask for every copy of something to go.
+
+    Deletions are individual trash moves, so an interruption leaves a
+    coherent half-done state rather than a partial batch nobody can account
+    for. Each one is logged.
+    """
+    with _lock:
+        groups = ta.groups_by_hash(ids)
+        if scope:
+            prefix = scope.rstrip("/") + "/"
+            scoped = []
+            for g in groups:
+                local = [p for p in g["paths"] if p.startswith(prefix)]
+                if len(local) > 1:
+                    scoped.append({**g, "paths": local})
+            groups = scoped
+        plan = ta.plan_dedupe(groups)
+
+        removed, failed = [], []
+        for entry in plan["groups"]:
+            for rel in entry["remove"]:
+                try:
+                    delete(rel, by=by)
+                    removed.append(rel)
+                except (ArchiveOpError, OSError) as e:
+                    # A file that vanished since the index was built is not a
+                    # reason to abandon the rest of the batch.
+                    failed.append({"path": rel, "error": str(e)})
+        if removed:
+            log_op("dedupe", scope=scope, by=by, removed=len(removed),
+                   kept=[g["keep"] for g in plan["groups"]][:50],
+                   bytes=sum(g["size"] for g in plan["groups"]
+                             for _ in g["remove"]))
+        return {"action": "dedupe", "removed": removed, "failed": failed,
+                "kept": [g["keep"] for g in plan["groups"]],
+                "count": len(removed),
+                "reclaimed_bytes": plan["reclaimed_bytes"]}
+
+
+def tournament_names(prefix: str = "", limit: int = 20) -> list:
+    """Existing tournament-folder names, for type-ahead during a rename.
+
+    The point is standardisation: showing what is already in use steers a
+    coach towards an existing spelling instead of inventing a third one for
+    the same tournament. Ranked by how many folders already use the name,
+    because the popular spelling is the one worth converging on.
+    """
+    index = ta.load_index() or {}
+    counts: dict = {}
+    query = (prefix or "").strip().lower()
+    for rel, entry in (index.get("dirs") or {}).items():
+        # Depth 4 is <Division>/<Event>/<Year>/<Tournament> by convention.
+        if entry.get("depth") != 4:
+            continue
+        name = rel.rsplit("/", 1)[-1]
+        counts[name] = counts.get(name, 0) + 1
+    rows = [{"name": n, "count": c} for n, c in counts.items()
+            if not query or query in n.lower()]
+    # Names that start with what was typed first, then the common ones.
+    rows.sort(key=lambda r: (not r["name"].lower().startswith(query),
+                             -r["count"], r["name"].lower()))
+    return rows[:limit]

@@ -30,6 +30,7 @@ importing a file MOVES it into `<DATA_ROOT>/<event>/`, which *is* backed up
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import os
 import threading
@@ -49,7 +50,7 @@ ARCHIVE_DIRNAME = "tournament_archive"
 RESERVED_SLUGS = frozenset({ARCHIVE_DIRNAME})
 
 INDEX_FILE = DATA_ROOT / ".archive_index.json"
-INDEX_SCHEMA_VERSION = 2   # bumped when duplicate detection was added
+INDEX_SCHEMA_VERSION = 3   # bumped when duplicate detection was added
 
 #: What each level of nesting means, for labelling only. Anything deeper is
 #: "file" territory; anything shallower than its name suggests is still
@@ -279,6 +280,38 @@ def _subtree_keys(dirs: dict, rel: str) -> list:
     return [k for k in dirs if k == rel or k.startswith(prefix)]
 
 
+def _prune_duplicates(index: dict, gone: str, is_dir: bool) -> None:
+    """Drop deleted paths from the duplicate groups.
+
+    Exact, not a recompute: removing a path that no longer exists cannot
+    invent a grouping. A group left with fewer than two copies is no longer
+    a duplicate set and goes entirely. Without this the panel keeps offering
+    files that are already in the trash, and acting on them reports failures.
+    """
+    groups = index.get("duplicates") or []
+    prefix = gone.rstrip("/") + "/"
+    kept = []
+    for g in groups:
+        paths = [p for p in g["paths"]
+                 if not (p == gone or (is_dir and p.startswith(prefix)))]
+        if len(paths) < 2:
+            continue
+        g["paths"] = paths
+        g["wasted"] = g["size"] * (len(paths) - 1)
+        kept.append(g)
+    kept.sort(key=lambda g: g["wasted"], reverse=True)
+    index["duplicates"] = kept
+
+
+def _rekey_duplicates(index: dict, old_rel: str, new_rel: str) -> None:
+    """Follow a rename or move, so groups keep pointing at real files."""
+    prefix = old_rel.rstrip("/") + "/"
+    for g in index.get("duplicates") or []:
+        g["paths"] = [
+            new_rel + p[len(old_rel):] if (p == old_rel or p.startswith(prefix)) else p
+            for p in g["paths"]]
+
+
 def index_move(old_rel: str, new_rel: str) -> None:
     """Re-key a subtree after a rename or move, and fix both ancestor chains.
 
@@ -320,6 +353,7 @@ def index_move(old_rel: str, new_rel: str) -> None:
 
     _adjust_totals(dirs, old_rel, -files, -size)
     _adjust_totals(dirs, new_rel, files, size)
+    _rekey_duplicates(index, old_rel, new_rel)
     index["stale_duplicates"] = True
     save_index(index)
 
@@ -342,6 +376,7 @@ def index_remove(rel: str) -> None:
         parent["subdirs"] = [n for n in (parent.get("subdirs") or []) if n != name]
         parent["n_subdirs"] = len(parent["subdirs"])
     _adjust_totals(dirs, rel, -files, -size)
+    _prune_duplicates(index, rel, is_dir=True)
     index["stale_duplicates"] = True
     save_index(index)
 
@@ -356,6 +391,7 @@ def index_remove_file(rel: str, size: int) -> None:
     if parent is not None:
         parent["n_files"] = max(0, parent.get("n_files", 0) - 1)
     _adjust_totals(dirs, rel, -1, -size)
+    _prune_duplicates(index, rel, is_dir=False)
     index["stale_duplicates"] = True
     save_index(index)
 
@@ -471,13 +507,15 @@ def find_duplicates(by_size: dict, progress=None, should_cancel=None) -> list:
             if digest is not None:
                 by_prefix.setdefault(digest, []).append(rel)
 
-        for prefix_paths in by_prefix.values():
+        for prefix_digest, prefix_paths in by_prefix.items():
             if len(prefix_paths) < 2:
                 continue
             # A file smaller than the prefix window was already read whole,
             # so its prefix hash IS its full hash — no second pass needed.
+            # Keep that digest: discarding it gave every small-file group an
+            # empty id, and selecting one of them then matched all of them.
             if size <= _PARTIAL_BYTES:
-                full_groups = {"": prefix_paths}
+                full_groups = {prefix_digest: prefix_paths}
             else:
                 full_groups = {}
                 for rel in prefix_paths:
@@ -493,6 +531,9 @@ def find_duplicates(by_size: dict, progress=None, should_cancel=None) -> list:
                 groups.append({
                     "size": size,
                     "hash": digest[:16],
+                    # Size-qualified so two groups can never collide on a
+                    # truncated digest. This is what the client selects by.
+                    "id": f"{size}-{digest[:16]}",
                     "paths": sorted(same),
                     "wasted": size * (len(same) - 1),
                 })
@@ -523,6 +564,115 @@ def duplicate_groups(limit: int = 100, offset: int = 0) -> dict:
         "groups": groups[offset:offset + limit],
         "summary": duplicate_summary(idx),
     }
+
+
+# ---------------------------------------------------------------------------
+# Bulk duplicate removal
+#
+# Choosing which copy to keep is the whole problem. Deleting the wrong one
+# is not destructive here (everything goes to the trash) but it is
+# *degrading*: keeping the copy under `_UnknownEvent/xz9##/` and deleting the
+# one under `Division B/Circuit Lab/2019/UF Invitational/` throws away the
+# only thing that said what the file was. The bytes are identical; the paths
+# are not, and the path is the metadata.
+#
+# So the keeper is the best-identified copy, and the ranking says so
+# explicitly rather than falling out of sort order.
+# ---------------------------------------------------------------------------
+
+_UNKNOWN_MARKERS = ("_unknowndivision", "_unknownevent", "_unknown", "_unsorted",
+                    "_misc", "_inbox", "_new", "_todo")
+
+#: A folder name that carries no information about the tournament: a stripped
+#: Drive URL, a hash, "copy of ...", "untitled", and similar.
+_NOISE_NAME = re.compile(
+    r"^(untitled|new folder|copy|copy of .*|folder\d*|\d+|[0-9a-f]{8,}|"
+    r"[a-z0-9_-]{20,})$", re.I)
+
+
+def _keeper_rank(rel: str) -> tuple:
+    """Sort key: lower is a better copy to keep.
+
+    Ordered by how much the path tells you about the file, then by
+    shallowness (a file parked at the top is less filed than one sitting in
+    its tournament folder), then lexicographically so the choice is stable
+    and reproducible rather than dependent on walk order.
+    """
+    parts = [p for p in rel.split("/") if p]
+    folders = [p.lower() for p in parts[:-1]]
+    unknown = sum(1 for f in folders
+                  if any(f.startswith(m) for m in _UNKNOWN_MARKERS))
+    noisy = sum(1 for f in folders if _NOISE_NAME.match(f))
+    # A copy at the conventional depth (Division/Event/Year/Tournament/file)
+    # is properly filed; anything shallower is loose.
+    depth_penalty = abs(len(parts) - 5)
+    return (unknown, noisy, depth_penalty, len(rel), rel)
+
+
+def choose_keeper(paths: list) -> str:
+    return sorted(paths, key=_keeper_rank)[0]
+
+
+def plan_dedupe(groups: list) -> dict:
+    """For each group, which copy survives and which go.
+
+    Never returns a group with nothing kept: the invariant this whole
+    feature rests on is that removing duplicates removes *copies*, never the
+    last instance of a file's contents.
+    """
+    plans = []
+    for g in groups:
+        paths = list(g.get("paths") or [])
+        if len(paths) < 2:
+            continue
+        keep = choose_keeper(paths)
+        remove = [p for p in paths if p != keep]
+        plans.append({"hash": g.get("hash"), "size": g.get("size", 0),
+                      "keep": keep, "remove": remove,
+                      "reclaimed": g.get("size", 0) * len(remove)})
+    return {"groups": plans,
+            "files": sum(len(p["remove"]) for p in plans),
+            "reclaimed_bytes": sum(p["reclaimed"] for p in plans)}
+
+
+def groups_under(rel: str = "", limit: int | None = None,
+                 offset: int = 0) -> list:
+    """Duplicate groups with at least two copies inside `rel`.
+
+    Copies *outside* the folder are excluded from the group rather than the
+    group being dropped: cleaning up "this folder" should not reach out and
+    delete a file somewhere the coach is not looking. A group left with one
+    local copy has nothing to remove and disappears.
+    """
+    index = load_index() or {}
+    all_groups = index.get("duplicates") or []
+    if not rel:
+        scoped = all_groups
+    else:
+        prefix = rel.rstrip("/") + "/"
+        scoped = []
+        for g in all_groups:
+            local = [p for p in g["paths"] if p.startswith(prefix)]
+            if len(local) > 1:
+                scoped.append({**g, "paths": local,
+                               "wasted": g["size"] * (len(local) - 1)})
+    scoped.sort(key=lambda g: g["wasted"], reverse=True)
+    if limit is None:
+        return scoped
+    return scoped[offset:offset + limit]
+
+
+def groups_by_hash(ids: list) -> list:
+    """Look groups up by the id the client was shown.
+
+    The client sends back ids rather than paths so the server re-derives what
+    to delete from its own index. A client that sent paths could ask for the
+    deletion of every copy of something.
+    """
+    wanted = {i for i in (ids or []) if i}
+    index = load_index() or {}
+    return [g for g in (index.get("duplicates") or [])
+            if g.get("id") and g["id"] in wanted]
 
 
 def _duplicate_lookup(index: dict | None = None) -> dict:

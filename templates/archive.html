@@ -30,6 +30,21 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .impgrid label{display:flex;flex-direction:column;gap:3px;font-size:12px;
   color:var(--muted)}
 .row .pick{margin:0}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;
+  align-items:center;justify-content:center;padding:20px}
+.sheet{background:var(--bg-card);border:1px solid var(--line);border-radius:8px;
+  max-width:900px;width:100%;max-height:92vh;display:flex;flex-direction:column;
+  overflow:hidden}
+.sheet header{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  border-bottom:1px solid var(--line);background:var(--bg-card)}
+.sheet header .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet .body{overflow:auto;padding:12px;text-align:center;background:var(--bg-alt)}
+.sheet .body img{max-width:100%;height:auto;box-shadow:0 1px 6px rgba(0,0,0,.25)}
+.sheet footer{display:flex;gap:8px;align-items:center;padding:10px 14px;
+  border-top:1px solid var(--line)}
+.pvpath{font-family:ui-monospace,Consolas,monospace;font-size:11px;
+  color:var(--muted);padding:0 14px 8px;word-break:break-all}
+.dupbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
 .rowops{display:none;gap:4px;white-space:nowrap}
 .row:hover .rowops{display:flex}
 .rowops button{font-size:11px;padding:1px 6px}
@@ -70,6 +85,13 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     <div class="statline"><b id="dupline"></b>
       <button class="ghost" id="duptoggle">show</button></div>
     <div id="duplist" style="display:none"></div>
+    <div class="dupbar" id="dupbar" style="display:none">
+      <button class="ghost" id="dupall">Select all on this page</button>
+      <button class="ghost" id="dupnone">Clear selection</button>
+      <span class="muted" id="dupselcount">none selected</span>
+      <button id="dupremove" class="primary" disabled>Remove duplicates</button>
+      <span class="muted" id="dupmsg"></span>
+    </div>
   </section>
   {% endif %}
 
@@ -79,6 +101,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     <div class="opsbar">
       <button id="newfolder" class="ghost">New folder</button>
       <button id="prune" class="ghost">Remove empty folders</button>
+      <button id="foldedupe" class="ghost">Remove duplicates here</button>
       <span class="muted" id="opsmsg"></span>
     </div>
     {% endif %}
@@ -92,6 +115,48 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     <div id="importpanel" style="display:none;margin-top:10px"></div>
   </section>
 </div>
+
+<div class="overlay" id="pv" style="display:none">
+  <div class="sheet">
+    <header>
+      <span class="nm"><b id="pv_name"></b></span>
+      {# Renaming is a coach action; the preview itself is not. #}
+      {% if is_coach %}
+      <button class="ghost" id="pv_rename">Rename this folder…</button>
+      {% endif %}
+      <button class="ghost" id="pv_close">Close</button>
+    </header>
+    <div class="pvpath" id="pv_path"></div>
+    <div class="body">
+      <div class="muted" id="pv_status"></div>
+      <img id="pv_img" alt="">
+    </div>
+    <footer id="pv_nav">
+      <button class="ghost" id="pv_prev">‹ Prev</button>
+      <span class="muted" id="pv_pageno"></span>
+      <button class="ghost" id="pv_next">Next ›</button>
+    </footer>
+  </div>
+</div>
+
+<div class="overlay" id="rn" style="display:none">
+  <div class="sheet" style="max-width:520px">
+    <header><span class="nm"><b>Rename folder</b></span></header>
+    <div class="pvpath" id="rn_where"></div>
+    <div class="body" style="text-align:left;background:var(--bg-card)">
+      <input id="rn_name" style="width:100%" autocomplete="off">
+      <p class="muted" style="font-size:12px;margin:10px 0 4px">
+        Names already used in the archive — picking one keeps spellings
+        consistent:</p>
+      <div class="rowlist" id="rn_list"></div>
+    </div>
+    <footer>
+      <button id="rn_save" class="primary">Rename</button>
+      <button class="ghost" id="rn_cancel">Cancel</button>
+    </footer>
+  </div>
+</div>
+
 <script>
 const ARCHIVE_NAME = {{ archive_name|tojson }};
 const IS_COACH = {{ is_coach|tojson }};
@@ -151,6 +216,15 @@ async function refreshStatus(){
   return s;
 }
 
+// Attaches only when the element is on the page. Coach-only controls are
+// absent for a volunteer, and wrapping their wiring in `if(IS_COACH){...}`
+// instead would block-scope every function declared inside it -- which
+// silently broke the preview's rename button, since that lives outside.
+function on(id, event, fn){
+  const el = document.getElementById(id);
+  if(el) el.addEventListener(event, fn);
+}
+
 function rowOps(rel, fileOnly){
   if(!IS_COACH) return "";
   const p = esc(rel);
@@ -205,6 +279,7 @@ async function go(rel){
       <span class="nm">${esc(f.name)}</span>
       ${dup}
       <span class="num">${fmtBytes(f.size)}</span>
+      ${f.ext === ".pdf" ? `<button class="ghost" data-preview="${esc(frel)}">Preview</button>` : ""}
       ${rowOps(frel, true)}</div>`;
   });
   if(!html){
@@ -218,30 +293,15 @@ document.addEventListener("click", e => {
   if(t) go(t.dataset.go);
 });
 
-if(IS_COACH){
-document.getElementById("duptoggle").addEventListener("click", async e => {
+on("duptoggle", "click", async e => {
   const box = document.getElementById("duplist");
+  const bar = document.getElementById("dupbar");
   if(box.style.display !== "none"){
-    box.style.display = "none"; e.target.textContent = "show"; return;
+    box.style.display = "none"; bar.style.display = "none";
+    e.target.textContent = "show"; return;
   }
-  box.style.display = ""; e.target.textContent = "hide";
-  box.innerHTML = '<div class="empty">loading…</div>';
-  const r = await fetch(`${APP_ROOT}/api/archive/duplicates?limit=50`);
-  const j = await r.json();
-  const groups = Array.isArray(j.groups) ? j.groups : [];
-  box.innerHTML = groups.map(g => `
-    <div class="rowlist" style="margin-bottom:8px">
-      <div class="row"><span class="ico">⧉</span>
-        <span class="nm">${g.paths.length} copies · ${fmtBytes(g.size)} each</span>
-        <span class="num">${fmtBytes(g.wasted)} reclaimable</span></div>
-      ${g.paths.map(p => `<div class="row"><span class="ico"></span>
-        <span class="nm muted">${esc(p)}</span></div>`).join("")}
-    </div>`).join("")
-    || '<div class="empty">No duplicates found.</div>';
-  if(j.total > groups.length){
-    box.innerHTML += `<div class="empty">Showing ${groups.length} of `
-      + `${j.total.toLocaleString()} sets.</div>`;
-  }
+  box.style.display = ""; bar.style.display = "flex"; e.target.textContent = "hide";
+  await loadDuplicates(true);
 });
 
 const MARKS = {pending: "○", running: "◐", done: "✓",
@@ -296,7 +356,7 @@ async function pollBuild(){
   tick();
 }
 
-document.getElementById("reindex").addEventListener("click", async () => {
+on("reindex", "click", async () => {
   const msg = document.getElementById("buildmsg");
   setBuilding(true);                    // immediately, not after the round trip
   const r = await fetch(`${APP_ROOT}/api/archive/reindex`, {method: "POST"});
@@ -312,7 +372,7 @@ document.getElementById("reindex").addEventListener("click", async () => {
   pollBuild();
 });
 
-document.getElementById("cancel").addEventListener("click", async e => {
+on("cancel", "click", async e => {
   e.target.disabled = true;
   e.target.textContent = "cancelling…";
   await fetch(`${APP_ROOT}/api/archive/cancel`, {method: "POST"});
@@ -358,8 +418,23 @@ async function runOp(body, prompt, opts){
   const res = await applyOp(body);
   if(res.error){ await confirmModal(res.error, {confirmLabel: "OK"}); return false; }
   await refreshStatus();
-  go(CURRENT);
+  // Follow the folder. Renaming or moving the folder you are standing in --
+  // which is exactly what the preview's rename button does -- otherwise
+  // leaves the view pointed at a path that no longer exists.
+  go(pathAfter(p, CURRENT));
   return true;
+}
+
+function pathAfter(plan, current){
+  const src = plan.src;
+  if(!src) return current;
+  const inside = current === src || current.startsWith(src + "/");
+  if(!inside) return current;
+  if(plan.action === "delete"){
+    // Nothing to follow to; fall back to the parent.
+    return src.includes("/") ? src.slice(0, src.lastIndexOf("/")) : "";
+  }
+  return plan.dest + current.slice(src.length);
 }
 
 document.addEventListener("click", async e => {
@@ -370,10 +445,7 @@ document.addEventListener("click", async e => {
   const name = path.split("/").pop();
 
   if(op === "rename"){
-    const next = window.prompt(`New name for "${name}":`, name);
-    if(next === null || next === name) return;
-    await runOp({action: "rename", path, name: next},
-                `Rename "${name}" to "${next}"?`);
+    await renameWithSuggestions(path);
   } else if(op === "move"){
     // A path box rather than a tree picker: the destination is frequently a
     // folder that does not exist yet, and typing it is how a coach fixes a
@@ -391,14 +463,14 @@ document.addEventListener("click", async e => {
   }
 });
 
-document.getElementById("newfolder").addEventListener("click", async () => {
+on("newfolder", "click", async () => {
   const name = window.prompt(`New folder inside "${CURRENT || ARCHIVE_NAME}":`);
   if(!name) return;
   await runOp({action: "create", path: CURRENT, name},
               `Create "${name}"?`, {confirmLabel: "Create"});
 });
 
-document.getElementById("prune").addEventListener("click", async () => {
+on("prune", "click", async () => {
   const where = CURRENT || ARCHIVE_NAME;
   if(!await confirmModal(
       `Remove every empty folder under "${where}"?\n\n`
@@ -419,6 +491,202 @@ document.getElementById("prune").addEventListener("click", async () => {
   await refreshStatus();
   go(CURRENT);
 });
+
+// --- Renaming with type-ahead ---------------------------------------------
+// Suggestions come from the tournament names already in the archive, ranked
+// by how many folders use them. Standardisation is the goal: seeing that
+// "UF Invitational" is already used 40 times steers a coach to it instead of
+// inventing "UF Invit." as a forty-first spelling.
+
+async function renameWithSuggestions(rel){
+  const name = rel.split("/").pop();
+  const box = document.getElementById("rn");
+  box.style.display = "flex";
+  document.getElementById("rn_where").textContent = rel;
+  const input = document.getElementById("rn_name");
+  input.value = name;
+  document.getElementById("rn_list").innerHTML = "";
+  box.dataset.rel = rel;
+  input.focus();
+  input.select();
+  loadNameSuggestions(name);
+}
+
+let RN_TIMER = null;
+function loadNameSuggestions(q){
+  clearTimeout(RN_TIMER);
+  RN_TIMER = setTimeout(async () => {
+    const r = await fetch(`${APP_ROOT}/api/archive/tournament-names`
+                          + `?q=${encodeURIComponent(q || "")}`);
+    const j = await r.json();
+    const list = document.getElementById("rn_list");
+    const exact = (j.names || []).find(n => n.name === q);
+    const rows = (j.names || []).filter(n => n.name !== q);
+    // Confirming a match is the useful half of this: standardising means
+    // telling the coach they have landed on the spelling already in use,
+    // not just offering alternatives.
+    const head = exact
+      ? `<div class="row"><span class="ico">✓</span><span class="nm">`
+        + `Matches an existing name</span><span class="num">${exact.count} folder`
+        + `${exact.count === 1 ? "" : "s"}</span></div>`
+      : "";
+    list.innerHTML = head + (rows.length
+      ? rows.map(n => `<div class="row"><span class="ico"></span>`
+          + `<span class="nm" data-usename="${esc(n.name)}">${esc(n.name)}</span>`
+          + `<span class="num">${n.count} folder`
+          + `${n.count === 1 ? "" : "s"}</span></div>`).join("")
+      : (head ? "" : '<div class="empty">No existing name matches — '
+                     + 'this will be a new one.</div>'));
+  }, 180);
+}
+
+document.addEventListener("input", e => {
+  if(e.target.id === "rn_name") loadNameSuggestions(e.target.value.trim());
+});
+
+document.addEventListener("click", async e => {
+  const use = e.target.closest("[data-usename]");
+  if(use){
+    document.getElementById("rn_name").value = use.dataset.usename;
+    loadNameSuggestions(use.dataset.usename);
+    return;
+  }
+  if(e.target.id === "rn_cancel" || e.target.id === "rn"){
+    document.getElementById("rn").style.display = "none";
+    return;
+  }
+  if(e.target.id !== "rn_save") return;
+  const box = document.getElementById("rn");
+  const rel = box.dataset.rel;
+  const next = document.getElementById("rn_name").value.trim();
+  if(!next || next === rel.split("/").pop()){ box.style.display = "none"; return; }
+  box.style.display = "none";
+  await runOp({action: "rename", path: rel, name: next},
+              `Rename "${rel.split("/").pop()}" to "${next}"?`);
+});
+
+// --- Bulk duplicate removal -----------------------------------------------
+// Gmail's model: tick individually, select all on the page, clear the
+// selection, then act on what is ticked. Never on what is merely visible.
+
+const DUPSEL = new Set();
+let DUPSHOWN = [];
+
+function dupRows(groups, scopeLabel){
+  DUPSHOWN = groups;
+  if(!groups.length) return '<div class="empty">No duplicates found here.</div>';
+  return groups.map(g => `
+    <div class="rowlist" style="margin-bottom:8px">
+      <div class="row">
+        <input type="checkbox" class="pick" data-dup="${esc(g.id)}"
+               ${DUPSEL.has(g.id) ? "checked" : ""}>
+        <span class="ico">⧉</span>
+        <span class="nm">${g.paths.length} copies · ${fmtBytes(g.size)} each</span>
+        <span class="num">${fmtBytes(g.wasted)} reclaimable</span></div>
+      ${g.paths.map(p => `<div class="row"><span class="ico"></span>
+        <span class="nm muted" title="${esc(p)}">${esc(p)}</span>
+        <button class="ghost" data-preview="${esc(p)}">Preview</button>
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+function updateDupBar(){
+  const btn = document.getElementById("dupremove");
+  if(!btn) return;                 // volunteer: no duplicates panel at all
+  const n = DUPSEL.size;
+  document.getElementById("dupselcount").textContent =
+    n ? `${n} set${n === 1 ? "" : "s"} selected` : "none selected";
+  btn.disabled = !n;
+}
+
+document.addEventListener("change", e => {
+  const box = e.target.closest("input[data-dup]");
+  if(!box) return;
+  if(box.checked) DUPSEL.add(box.dataset.dup); else DUPSEL.delete(box.dataset.dup);
+  updateDupBar();
+});
+
+document.addEventListener("click", e => {
+  if(e.target.id === "dupall"){
+    DUPSHOWN.forEach(g => DUPSEL.add(g.id));
+  } else if(e.target.id === "dupnone"){
+    DUPSHOWN.forEach(g => DUPSEL.delete(g.id));
+  } else return;
+  document.querySelectorAll("input[data-dup]").forEach(b => {
+    b.checked = DUPSEL.has(b.dataset.dup); });
+  updateDupBar();
+});
+
+async function removeSelectedDuplicates(scope){
+  const ids = [...DUPSEL];
+  if(!ids.length) return;
+  const pr = await fetch(`${APP_ROOT}/api/archive/duplicates/preview`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ids, path: scope || ""})});
+  const pj = await pr.json();
+  if(pj.error){ await confirmModal(pj.error, {confirmLabel: "OK"}); return; }
+  const plan = pj.plan;
+  // Show which copy survives, not just how many go. The bytes are identical,
+  // so the path is the only thing that distinguishes them and the coach is
+  // really choosing which path to keep.
+  const sample = plan.groups.slice(0, 8)
+    .map(g => `  keep  ${g.keep}\n  drop  ${g.remove.join("\n  drop  ")}`)
+    .join("\n\n");
+  const more = plan.groups.length > 8
+    ? `\n\n…and ${plan.groups.length - 8} more set(s).` : "";
+  if(!await confirmModal(
+      `Remove ${plan.files} duplicate file(s), reclaiming `
+      + `${fmtBytes(plan.reclaimed_bytes)}?\n\n`
+      + `One copy of each is kept — the best-identified one:\n\n${sample}${more}`
+      + "\n\nRemoved copies go to the trash.",
+      {wide: true, danger: true, confirmLabel: "Remove duplicates"})) return;
+  const r = await fetch(`${APP_ROOT}/api/archive/duplicates/remove`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ids, path: scope || ""})});
+  const j = await r.json();
+  if(j.error){ await confirmModal(j.error, {confirmLabel: "OK"}); return; }
+  DUPSEL.clear();
+  updateDupBar();
+  const failed = (j.result.failed || []).length;
+  document.getElementById("dupmsg").textContent =
+    `Removed ${j.result.count} file(s)`
+    + (failed ? `; ${failed} could not be removed.` : ".");
+  await refreshStatus();
+  await loadDuplicates(true);
+  go(CURRENT);
+}
+
+on("dupremove", "click", () => removeSelectedDuplicates(""));
+
+on("foldedupe", "click", async () => {
+  const r = await fetch(`${APP_ROOT}/api/archive/duplicates/in-folder`
+                        + `?path=${encodeURIComponent(CURRENT)}&limit=500`);
+  const j = await r.json();
+  if(!j.groups || !j.groups.length){
+    document.getElementById("opsmsg").textContent =
+      "No duplicated files inside this folder.";
+    setTimeout(() => { document.getElementById("opsmsg").textContent = ""; }, 6000);
+    return;
+  }
+  DUPSEL.clear();
+  j.groups.forEach(g => DUPSEL.add(g.id));
+  DUPSHOWN = j.groups;
+  await removeSelectedDuplicates(CURRENT);
+});
+
+async function loadDuplicates(force){
+  const box = document.getElementById("duplist");
+  if(!force && box.style.display === "none") return;
+  box.innerHTML = '<div class="empty">loading…</div>';
+  const r = await fetch(`${APP_ROOT}/api/archive/duplicates?limit=50`);
+  const j = await r.json();
+  const groups = Array.isArray(j.groups) ? j.groups : [];
+  box.innerHTML = dupRows(groups);
+  if(j.total > groups.length){
+    box.innerHTML += `<div class="empty">Showing ${groups.length} of `
+      + `${j.total.toLocaleString()} sets. Select all applies to this page.</div>`;
+  }
+  updateDupBar();
 }
 
 // --- Phase 4: import into an event ----------------------------------------
@@ -445,11 +713,11 @@ document.addEventListener("change", e => {
   updateImportBar();
 });
 
-document.getElementById("clearpick").addEventListener("click", () => {
+on("clearpick", "click", () => {
   PICKED.clear(); updateImportBar(); go(CURRENT);
 });
 
-document.getElementById("importbtn").addEventListener("click", async () => {
+on("importbtn", "click", async () => {
   const panel = document.getElementById("importpanel");
   if(panel.style.display !== "none"){ panel.style.display = "none"; return; }
   const r = await fetch(`${APP_ROOT}/api/archive/import/targets`
@@ -542,6 +810,76 @@ document.addEventListener("click", async e => {
   updateImportBar();
   await refreshStatus();
   go(CURRENT);
+});
+
+// --- PDF preview ----------------------------------------------------------
+// Tournament folders are often a stripped Drive URL, so the only way to know
+// what a file is is to look inside it. That makes the viewer a prerequisite
+// for renaming a folder and for judging which copy of a duplicate to keep,
+// not a convenience.
+
+let PV = {path: "", page: 1, pages: 0};
+
+function pvClose(){ document.getElementById("pv").style.display = "none"; }
+
+async function pvOpen(path){
+  PV = {path, page: 1, pages: 0};
+  const box = document.getElementById("pv");
+  box.style.display = "flex";
+  document.getElementById("pv_name").textContent = path.split("/").pop();
+  document.getElementById("pv_path").textContent = path;
+  document.getElementById("pv_img").removeAttribute("src");
+  document.getElementById("pv_status").textContent = "opening…";
+  const r = await fetch(`${APP_ROOT}/api/archive/pdf/info`
+                        + `?path=${encodeURIComponent(path)}`);
+  const j = await r.json();
+  if(!j.pages){
+    document.getElementById("pv_status").textContent =
+      j.error ? `Cannot open this file: ${j.error}` : "Not a readable PDF.";
+    document.getElementById("pv_nav").style.display = "none";
+    return;
+  }
+  PV.pages = j.pages;
+  document.getElementById("pv_nav").style.display = "";
+  pvShow();
+}
+
+function pvShow(){
+  document.getElementById("pv_status").textContent = "";
+  document.getElementById("pv_pageno").textContent = `${PV.page} / ${PV.pages}`;
+  document.getElementById("pv_img").src =
+    `${APP_ROOT}/api/archive/pdf/page/${PV.page}.png`
+    + `?path=${encodeURIComponent(PV.path)}&dpi=110`;
+  document.getElementById("pv_prev").disabled = PV.page <= 1;
+  document.getElementById("pv_next").disabled = PV.page >= PV.pages;
+}
+
+document.addEventListener("click", e => {
+  if(e.target.closest("[data-preview]")){
+    pvOpen(e.target.closest("[data-preview]").dataset.preview);
+    return;
+  }
+  if(e.target.id === "pv_close" || e.target.id === "pv"){ pvClose(); return; }
+  if(e.target.id === "pv_prev" && PV.page > 1){ PV.page--; pvShow(); }
+  if(e.target.id === "pv_next" && PV.page < PV.pages){ PV.page++; pvShow(); }
+});
+
+document.addEventListener("keydown", e => {
+  if(document.getElementById("pv").style.display === "none") return;
+  if(e.key === "Escape") pvClose();
+  else if(e.key === "ArrowLeft" && PV.page > 1){ PV.page--; pvShow(); }
+  else if(e.key === "ArrowRight" && PV.page < PV.pages){ PV.page++; pvShow(); }
+});
+
+// Renaming a tournament straight from the preview is the point of item 1:
+// read the cover page, then name the folder after what it actually says.
+document.addEventListener("click", async e => {
+  if(e.target.id !== "pv_rename" || !IS_COACH) return;
+  // Reading the cover page and then naming the folder after what it says is
+  // the point of the viewer, so the rename starts from here.
+  const folder = PV.path.split("/").slice(0, -1).join("/");
+  pvClose();
+  await renameWithSuggestions(folder);
 });
 
 (async () => {

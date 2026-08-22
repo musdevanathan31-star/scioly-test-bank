@@ -235,3 +235,80 @@ def test_coach_supplied_metadata_overrides_the_path(imp):
         [{"path": f"{base}/test.pdf", "role": "test"}], slug,
         {"year": "2021", "division": "c", "submitter": "states"})
     assert plan["files"][0]["dest_name"].endswith("_2021_c_states_test.pdf")
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+def _write_image(path: Path) -> None:
+    """A real image, not a stub — the import converts it, so bytes matter."""
+    import fitz
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 30))
+    pix.clear_with(200)
+    path.write_bytes(pix.tobytes("png"))
+
+
+def test_an_image_imports_as_supplementary_and_inherits_the_test_stem(imp):
+    archive_import, slug, ta = imp
+    base = "Division B/Circuit Lab/2019/UF Invitational"
+    _write_image(ta.archive_root() / base / "figure 3.png")
+    plan = archive_import.plan_import(
+        [{"path": f"{base}/test.pdf", "role": "test"},
+         {"path": f"{base}/figure 3.png", "role": "supplementary"}], slug)
+    names = {f["role"]: f["dest_name"] for f in plan["files"]}
+    stem = names["test"][: -len("_test.pdf")]
+    # _supplementary_docs() finds attachments by shared stem prefix, so an
+    # image that does not carry it is orphaned from the test it belongs to.
+    assert names["supplementary"].startswith(stem)
+    assert names["supplementary"].endswith(".png")
+
+
+def test_an_image_cannot_be_a_test_or_key(imp):
+    archive_import, slug, ta = imp
+    base = "Division B/Circuit Lab/2019/UF Invitational"
+    _write_image(ta.archive_root() / base / "scan.jpg")
+    for role in ("test", "key"):
+        with pytest.raises(archive_import.ImportError_):
+            archive_import.plan_import(
+                [{"path": f"{base}/scan.jpg", "role": role}], slug)
+
+
+def test_an_image_defaults_to_supplementary_in_the_picker(imp):
+    archive_import, _slug, _ta = imp
+    assert archive_import.guess_role("figure 3.png") == "supplementary"
+    assert archive_import.guess_role("diagram.JPEG") == "supplementary"
+
+
+def test_an_imported_pair_is_found_by_the_events_own_discovery(imp):
+    archive_import, slug, ta = imp
+    import review_app, build_question_bank as bqb
+    base = "Division B/Circuit Lab/2019/UF Invitational"
+    archive_import.run_import(
+        [{"path": f"{base}/test.pdf", "role": "test"},
+         {"path": f"{base}/answer key.pdf", "role": "key"}], slug)
+    bqb.set_event(slug)
+    # The whole point of importing under the naming convention is that no
+    # further code is involved: the existing discovery paths just find it.
+    tests = review_app._list_test_pdfs()
+    assert len(tests) == 1
+    assert review_app._key_path(tests[0]) is not None
+
+
+def test_an_imported_image_is_found_as_supplementary(imp):
+    archive_import, slug, ta = imp
+    import review_app, build_question_bank as bqb
+    base = "Division B/Circuit Lab/2019/UF Invitational"
+    _write_image(ta.archive_root() / base / "figure 3.png")
+    archive_import.run_import(
+        [{"path": f"{base}/test.pdf", "role": "test"},
+         {"path": f"{base}/figure 3.png", "role": "supplementary"}], slug)
+    bqb.set_event(slug)
+    test_pdf = review_app._list_test_pdfs()[0]
+    extras = [p.name for p in review_app._supplementary_docs(test_pdf)]
+    # _supplementary_docs globs *.pdf and the viewer opens results with fitz,
+    # so the image arrives wrapped in a single-page PDF rather than every
+    # viewer having to learn about image attachments.
+    assert any("figure3" in n and n.endswith(".pdf") for n in extras), extras
+    # The original is kept beside it — nothing in this feature destroys a file.
+    assert any(p.suffix == ".png" for p in test_pdf.parent.iterdir())
