@@ -19,6 +19,8 @@ Run with: `python -m pytest tests/test_season_testing.py -q`
 from __future__ import annotations
 
 import sys
+
+import pytest
 from dataclasses import replace
 from pathlib import Path
 
@@ -172,3 +174,71 @@ def test_student_sees_nothing_for_still_preparing_event(tmp_path, monkeypatch):
         c.post("/login", data={"username": "student1", "password": "password123"})
         r = c.get("/api/my-assessments")
         assert r.get_json()["assessments"] == []
+
+
+# ---------------------------------------------------------------------------
+# Makeup windows for several students at once
+# ---------------------------------------------------------------------------
+
+def test_bulk_makeup_window_grants_every_student_in_one_go(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path))
+    import events as events_mod, seasons as seasons_mod, assessments as a
+    for mod in (events_mod, seasons_mod, a):
+        importlib.reload(mod)
+    slug = sorted(events_mod.EVENTS)[0]
+    seasons_mod.create_season("2027", event_slugs=[slug])
+    w = a.create_window("2027", "2027-01-01T09:00", "2027-01-01T11:00", [slug])
+    assessment = a.get_assessment_for(w.window_id, slug)
+
+    a.set_assessment_overrides_bulk(
+        assessment.assessment_id, ["stu1", "stu2", "stu3"],
+        "2027-02-01T09:00", "2027-02-01T11:00",
+        granted_by="coach1", reason="absent")
+
+    overrides = a.get_assessment(assessment.assessment_id).overrides
+    assert sorted(overrides) == ["stu1", "stu2", "stu3"]
+    # Granted together, so they share a timestamp — one action, not three.
+    assert len({o["granted_at"] for o in overrides.values()}) == 1
+    assert all(o["reason"] == "absent" for o in overrides.values())
+
+
+def test_a_bad_time_range_grants_nobody(tmp_path, monkeypatch):
+    # Validation happens before the transaction, so a rejected batch must
+    # leave no partial grant behind.
+    import importlib
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path))
+    import events as events_mod, seasons as seasons_mod, assessments as a
+    for mod in (events_mod, seasons_mod, a):
+        importlib.reload(mod)
+    slug = sorted(events_mod.EVENTS)[0]
+    seasons_mod.create_season("2027", event_slugs=[slug])
+    w = a.create_window("2027", "2027-01-01T09:00", "2027-01-01T11:00", [slug])
+    assessment = a.get_assessment_for(w.window_id, slug)
+
+    with pytest.raises(ValueError):
+        a.set_assessment_overrides_bulk(
+            assessment.assessment_id, ["stu1", "stu2"],
+            "2027-02-01T11:00", "2027-02-01T09:00")
+    assert a.get_assessment(assessment.assessment_id).overrides == {}
+
+    with pytest.raises(ValueError, match="no students"):
+        a.set_assessment_overrides_bulk(
+            assessment.assessment_id, [], "2027-02-01T09:00", "2027-02-01T11:00")
+
+
+def test_revoking_one_student_leaves_the_others(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path))
+    import events as events_mod, seasons as seasons_mod, assessments as a
+    for mod in (events_mod, seasons_mod, a):
+        importlib.reload(mod)
+    slug = sorted(events_mod.EVENTS)[0]
+    seasons_mod.create_season("2027", event_slugs=[slug])
+    w = a.create_window("2027", "2027-01-01T09:00", "2027-01-01T11:00", [slug])
+    assessment = a.get_assessment_for(w.window_id, slug)
+    a.set_assessment_overrides_bulk(assessment.assessment_id, ["stu1", "stu2"],
+                                    "2027-02-01T09:00", "2027-02-01T11:00")
+
+    a.set_assessment_overrides(assessment.assessment_id, "stu1", None, None)
+    assert sorted(a.get_assessment(assessment.assessment_id).overrides) == ["stu2"]

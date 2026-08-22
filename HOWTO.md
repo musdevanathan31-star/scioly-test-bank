@@ -209,6 +209,10 @@ Once a test is live and its window opens, rostered students see it as "Current" 
 
 ### Grant a student a makeup window
 
+On the **Assessments** dashboard, a live assessment has **+ Makeup window**. Type any part of a name to filter the list — it searches both the display name and the username the CSV import generated, which are often different — then tick **as many students as you need** and set one window for all of them. Only students rostered onto that event for this season are offered, since a makeup window means nothing for anyone else.
+
+Every granted window is listed under its assessment on the same page, with the times, the reason, who granted it, and a **Revoke** button. A personal window is an independent clock, not an extension of the class window, which is why the actual times are shown rather than just a count.
+
 If a student missed the class-wide window (absence, tech issue, etc.), you can give them an independent open/close window instead of touching the test for everyone else:
 1. On the Assessments dashboard, find the live assessment's row and click **+ Makeup window**.
 2. Enter the student's username, an opens/closes datetime, and a short reason. Click **Grant**.

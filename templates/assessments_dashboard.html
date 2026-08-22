@@ -28,6 +28,19 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 .msg{font-size:12px;margin-top:8px}
 .msg.ok{color:var(--ok)}
 .msg.err{color:var(--bad)}
+/* Makeup-window picker: a bounded scroll list rather than a dropdown, so a
+   coach can tick several students without the list closing between picks. */
+.mk-list{max-height:190px;overflow-y:auto;border:1px solid var(--line);
+  border-radius:4px;margin-top:4px}
+.mk-row{display:flex;align-items:center;gap:8px;padding:5px 8px;font-size:13px;
+  cursor:pointer}
+.mk-row:hover{background:var(--hover)}
+.mk-row .muted{font-size:11px}
+.makeup-list{margin:2px 0 10px 14px;padding-left:10px;border-left:2px solid var(--line)}
+.mk-hd{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;
+  margin-bottom:3px}
+.mk-granted{display:flex;align-items:center;gap:10px;font-size:12px;padding:2px 0;
+  flex-wrap:wrap}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -145,10 +158,33 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
         <button class="unpublish-btn" data-test="{{ et.assessment.assessment_id }}">Un-publish</button>
         {% endif %}
         {% if et.assessment.status == "live" %}
-        <button class="ghost makeup-btn" data-test="{{ et.assessment.assessment_id }}">+ Makeup window</button>
+        <button class="ghost makeup-btn" data-assessment="{{ et.assessment.assessment_id }}"
+                data-event="{{ et.event_slug }}">+ Makeup window</button>
         {% endif %}
       {% endif %}
     </div>
+    {% if et.assessment.overrides %}
+    {# Granted makeup windows, listed where they were granted. A personal
+       window is an independent clock rather than an extension of the class
+       one, so the actual times are worth showing, not just a count. #}
+    <div class="makeup-list">
+      <span class="mk-hd muted">Makeup windows ({{ et.assessment.overrides|length }})</span>
+      {% for username, ov in et.assessment.overrides|dictsort %}
+      <div class="mk-granted">
+        <b>{{ username }}</b>
+        <span>{{ ov.opens_at|replace("T", " ") }} &rarr; {{ ov.closes_at|replace("T", " ") }}</span>
+        {% if ov.reason %}<span class="muted">{{ ov.reason }}</span>{% endif %}
+        <span class="muted">by {{ ov.granted_by or "?" }}</span>
+        {% if current_user.role == "coach" %}
+        <button class="ghost" style="color:var(--bad)"
+                data-revoke-user="{{ username }}"
+                data-assessment="{{ et.assessment.assessment_id }}"
+                title="Revoke this student's makeup window">Revoke</button>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% endfor %}
   </div>
   {% endfor %}
@@ -157,9 +193,18 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
   <div id="makeup_modal" class="modal-backdrop">
     <div class="modal-box">
       <div class="hdr"><h3>Grant a personal makeup window</h3></div>
+      <div style="margin-bottom:10px">
+        <label for="mk_search" style="display:block;font-size:12px;color:var(--fg-soft);margin-bottom:3px">
+          Students <span class="muted" id="mk_scope"></span>
+        </label>
+        <input id="mk_search" type="text" placeholder="Type a name to filter…"
+               autocomplete="off" style="width:100%">
+        <div id="mk_students" class="mk-list"></div>
+        <div id="mk_selected" class="muted" style="font-size:12px;margin-top:4px">
+          No students selected
+        </div>
+      </div>
       <div class="form-grid">
-        <label for="mk_username">Student username</label>
-        <input id="mk_username" type="text">
         <label for="mk_opens">Opens</label>
         <input id="mk_opens" type="datetime-local">
         <label for="mk_closes">Closes</label>
@@ -192,6 +237,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 </div>
 <script>
 const CANDIDATES_BY_EVENT = {{ candidates_by_event|tojson }};
+const STUDENTS_BY_EVENT = {{ students_by_event|tojson }};
 document.getElementById("season_picker").addEventListener("change", (e) => {
   location.href = `${APP_ROOT}/assessments?season=${encodeURIComponent(e.target.value)}`;
 });
@@ -295,33 +341,110 @@ document.querySelectorAll(".unpublish-btn").forEach(btn => {
   });
 });
 
-// Grant makeup window modal
+// Grant makeup window modal — multi-student, filtered as the coach types.
 const makeupModal = document.getElementById("makeup_modal");
 let makeupTestId = null;
+let mkStudents = [];              // candidates for the assessment's event
+const mkPicked = new Set();       // usernames, survives filtering
+
+function mkRenderList(){
+  const q = document.getElementById("mk_search").value.trim().toLowerCase();
+  const root = document.getElementById("mk_students");
+  // Match on either field: a coach may know the display name or the
+  // username the CSV import generated, and they are often different.
+  const shown = mkStudents.filter(s =>
+    !q || s.display_name.toLowerCase().includes(q) || s.username.toLowerCase().includes(q));
+  if(!mkStudents.length){
+    root.innerHTML = '<div class="muted" style="padding:6px">Nobody is rostered onto this event for this season.</div>';
+  } else if(!shown.length){
+    root.innerHTML = `<div class="muted" style="padding:6px">No student matches "${esc(q)}".</div>`;
+  } else {
+    root.innerHTML = shown.map(s => `
+      <label class="mk-row">
+        <input type="checkbox" data-u="${esc(s.username)}" ${mkPicked.has(s.username) ? "checked" : ""}>
+        <span>${esc(s.display_name)}</span>
+        ${s.display_name !== s.username ? `<span class="muted">${esc(s.username)}</span>` : ""}
+      </label>`).join("");
+  }
+  mkRenderSelected();
+}
+
+function mkRenderSelected(){
+  const el = document.getElementById("mk_selected");
+  const n = mkPicked.size;
+  if(!n){ el.textContent = "No students selected"; return; }
+  // Names rather than a bare count: this grants a window that lets someone
+  // sit a test outside the class time, so it should be obvious who.
+  const names = [...mkPicked].map(u => {
+    const s = mkStudents.find(x => x.username === u);
+    return s ? s.display_name : u;
+  });
+  el.textContent = `${n} selected: ${names.join(", ")}`;
+}
+
+document.getElementById("mk_students").addEventListener("change", e => {
+  const cb = e.target.closest("input[type=checkbox]");
+  if(!cb) return;
+  // Tracked in a Set, not read off the DOM, so a student filtered out of
+  // view by a later search term stays selected.
+  if(cb.checked) mkPicked.add(cb.dataset.u); else mkPicked.delete(cb.dataset.u);
+  mkRenderSelected();
+});
+document.getElementById("mk_search").addEventListener("input", mkRenderList);
+
 document.querySelectorAll(".makeup-btn").forEach(btn => {
   btn.addEventListener("click", () => {
-    makeupTestId = btn.dataset.test;
-    document.getElementById("mk_username").value = "";
-    document.getElementById("mk_reason").value = "";
+    makeupTestId = btn.dataset.assessment;
+    mkStudents = STUDENTS_BY_EVENT[btn.dataset.event] || [];
+    mkPicked.clear();
+    document.getElementById("mk_search").value = "";
+    document.getElementById("mk_scope").textContent =
+      `rostered onto ${btn.dataset.event} (${mkStudents.length})`;
+    document.getElementById("mk_err").style.display = "none";
+    ["mk_opens","mk_closes","mk_reason"].forEach(id => document.getElementById(id).value = "");
+    mkRenderList();
     makeupModal.classList.add("on");
+    document.getElementById("mk_search").focus();
   });
 });
 document.getElementById("mk_cancel").addEventListener("click", () => makeupModal.classList.remove("on"));
+
 document.getElementById("mk_save").addEventListener("click", async () => {
-  const student_username = document.getElementById("mk_username").value.trim();
-  const opens_at = document.getElementById("mk_opens").value;
-  const closes_at = document.getElementById("mk_closes").value;
-  const reason = document.getElementById("mk_reason").value.trim();
+  const err = document.getElementById("mk_err");
+  const fail = m => { err.textContent = m; err.style.display = ""; };
+  if(!mkPicked.size) return fail("Pick at least one student.");
+  const opens = document.getElementById("mk_opens").value;
+  const closes = document.getElementById("mk_closes").value;
+  if(!opens || !closes) return fail("Both an opening and a closing time are required.");
+  if(opens >= closes) return fail("The window must open before it closes.");
+  err.style.display = "none";
+
   const r = await fetch(`${APP_ROOT}/api/assessments/${makeupTestId}/overrides`, {
-    method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({student_username, opens_at, closes_at, reason}),
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({student_usernames: [...mkPicked], opens_at: opens,
+                          closes_at: closes,
+                          reason: document.getElementById("mk_reason").value}),
   });
   const j = await r.json();
-  if(j.ok){ makeupModal.classList.remove("on"); toast("Makeup window granted.", "ok"); }
-  else {
-    const el = document.getElementById("mk_err");
-    el.style.display = ""; el.textContent = j.error || "Failed";
-  }
+  if(!j.ok) return fail(j.error || `Failed (HTTP ${r.status})`);
+  makeupModal.classList.remove("on");
+  toast(`Makeup window granted to ${j.granted} student${j.granted === 1 ? "" : "s"}.`, "ok");
+  location.reload();
+});
+
+// Revoke one student's makeup window from the list on the row.
+document.addEventListener("click", async e => {
+  const btn = e.target.closest("[data-revoke-user]");
+  if(!btn) return;
+  const who = btn.dataset.revokeUser;
+  if(!await confirmModal(`Revoke ${who}'s makeup window? They lose access outside the class window.`))
+    return;
+  const r = await fetch(
+    `${APP_ROOT}/api/assessments/${btn.dataset.assessment}/overrides/${encodeURIComponent(who)}`,
+    {method: "DELETE"});
+  const j = await r.json();
+  if(j.ok){ toast("Makeup window revoked.", "ok"); location.reload(); }
+  else toast(j.error || "Revoke failed.", "err");
 });
 </script>
 <script>

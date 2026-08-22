@@ -1375,8 +1375,29 @@ def assessments_dashboard_page():
             if not u.disabled and (u.role == "coach" or (u.role == "volunteer" and slug in u.events))
         )
 
+    def _students_for(slug):
+        """Rostered students for one event, for the makeup-window picker.
+
+        Scoped to the season roster rather than every student account: a
+        personal makeup window only means anything for someone actually
+        sitting this event, and a coach searching a whole school's student
+        list would be picking from mostly-wrong names. Disabled or deleted
+        accounts on a stale roster entry are dropped rather than offered.
+        """
+        if not selected:
+            return []
+        out = []
+        for username in seasons.get_roster(selected.season_id, slug):
+            u = all_users.get(username)
+            if u is None or u.disabled:
+                continue
+            out.append({"username": u.username,
+                        "display_name": u.display_name or u.username})
+        return sorted(out, key=lambda d: d["display_name"].lower())
+
     windows = []
     candidates_by_event = {}
+    students_by_event = {}
     if selected:
         for w in sorted(assessments.load_windows().values(), key=lambda w: w.opens_at):
             if w.season_id != selected.season_id or w.archived:
@@ -1393,12 +1414,14 @@ def assessments_dashboard_page():
                 window_tests.append({"event_slug": slug, "assessment": t,
                                      "assigned": w.assignments.get(slug) or []})
                 candidates_by_event.setdefault(slug, _candidates_for(slug))
+                students_by_event.setdefault(slug, _students_for(slug))
             windows.append({"window": w, "assessments": window_tests})
 
     return render_template(
         "assessments_dashboard.html",
         all_seasons=all_seasons, current=current, selected=selected, windows=windows,
         candidates_by_event=candidates_by_event,
+        students_by_event=students_by_event,
     )
 
 
@@ -1546,15 +1569,22 @@ def api_unpublish_assessment(assessment_id):
 @coach_required
 def api_set_assessment_override(assessment_id):
     data = request.get_json() or {}
+    # Accepts a list; the singular key is still honoured so an older client
+    # (or a hand-rolled call) keeps working.
+    usernames = data.get("student_usernames")
+    if not usernames:
+        single = (data.get("student_username") or "").strip()
+        usernames = [single] if single else []
     try:
-        assessments.set_assessment_overrides(
-            assessment_id, data.get("student_username", ""),
+        updated = assessments.set_assessment_overrides_bulk(
+            assessment_id, usernames,
             data.get("opens_at"), data.get("closes_at"),
             granted_by=g.user.username, reason=data.get("reason", ""),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "granted": len(usernames),
+                    "overrides": updated.overrides})
 
 
 @app.route("/api/assessments/<assessment_id>/overrides/<student_username>", methods=["DELETE"])

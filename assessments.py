@@ -739,6 +739,48 @@ def set_assessment_overrides(assessment_id: str, student_username: str, opens_at
     return updated
 
 
+def set_assessment_overrides_bulk(assessment_id: str, student_usernames: list[str],
+                                  opens_at: str | None, closes_at: str | None,
+                                  granted_by: str = "", reason: str = "") -> Assessment:
+    """Grant (or revoke) the same personal makeup window for several
+    students at once.
+
+    One transaction for the whole batch, not one per student: granting a
+    class-wide makeup one student at a time would take the file lock N
+    times, and a failure partway would leave some students granted and
+    others not, with nothing to tell the coach which. Validating up front
+    means the batch either applies completely or not at all.
+
+    Like the single-student version, a personal override is an INDEPENDENT
+    clock rather than an extension of the class window (see
+    effective_window()).
+    """
+    usernames = [u.strip() for u in student_usernames if u and u.strip()]
+    if not usernames:
+        raise ValueError("no students selected")
+    revoking = opens_at is None and closes_at is None
+    if not revoking and (not opens_at or not closes_at or opens_at >= closes_at):
+        raise ValueError("opens_at must be before closes_at")
+
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
+        if existing is None:
+            raise ValueError(f"unknown assessment {assessment_id!r}")
+        overrides = dict(existing.overrides)
+        stamp = _now_iso()
+        for username in usernames:
+            if revoking:
+                overrides.pop(username, None)
+            else:
+                overrides[username] = {
+                    "opens_at": opens_at, "closes_at": closes_at,
+                    "granted_by": granted_by, "granted_at": stamp, "reason": reason,
+                }
+        updated = replace(existing, overrides=overrides)
+        assessments[assessment_id] = updated
+    return updated
+
+
 def effective_window(test: Assessment, window: AssessmentWindow, username: str) -> tuple[str, str]:
     """A personal override, if one exists for this student on this test,
     wins outright over the class-wide window — independent clock, not an
