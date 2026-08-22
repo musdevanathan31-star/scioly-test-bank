@@ -48,12 +48,26 @@ Four more the implementation needs regardless:
 
 ## Phases
 
-**Phase 1 — index and read-only browse.** `tournament_archive.py` builds an
+**Phase 1 — index, duplicate detection, and read-only browse.** `tournament_archive.py` builds an
 index at `<DATA_ROOT>/.archive_index.json` (dot-prefixed: derived data, stays
 out of backups), refreshed incrementally by directory mtime and rebuilt as a
 job. Coach-only `/archive` page browsing one level at a time. Read-only —
 nothing can move or delete a file yet, which is the point: it proves the
 index survives 65GB before anything risky is built on it.
+
+Duplicate detection runs as part of the same build, identifying copies by
+**content** since filenames in this corpus are meaningless — the same test
+appears as `test.pdf`, `CircuitLab2019.pdf` and `scan_0001.pdf`. Hashing
+65GB outright would be punishing, so it narrows in three stages: group by
+size (free, already statted); hash the first 64KB of anything sharing a
+size; hash in full only within a group that still agrees. Measured on a
+synthetic 172MB corpus with a realistic duplicate rate, this read **8.5%**
+of the bytes.
+
+It finds *byte-identical* files only. The same test scanned twice, or
+downloaded from two sources with different PDF metadata, will not be paired
+— that needs text or perceptual comparison, a different job with a
+different error rate, and is not planned.
 
 **Phase 2 — mapping and volunteer scoping.** `archive_event_map.json` maps
 `<Division>/<Event folder>` to an app slug, assigned by a coach with

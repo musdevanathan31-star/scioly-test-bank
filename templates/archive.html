@@ -41,6 +41,12 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     </div>
   </section>
 
+  <section id="dupsec" style="display:none">
+    <div class="statline"><b id="dupline"></b>
+      <button class="ghost" id="duptoggle">show</button></div>
+    <div id="duplist" style="display:none"></div>
+  </section>
+
   <section>
     <div class="crumbs" id="crumbs"></div>
     <div class="rowlist" id="listing"><div class="empty">loading…</div></div>
@@ -62,6 +68,16 @@ async function refreshStatus(){
   const r = await fetch(`${APP_ROOT}/api/archive/status`);
   const s = await r.json();
   const el = document.getElementById("stat");
+  const d = s.duplicates || {};
+  const dupsec = document.getElementById("dupsec");
+  if(d.groups){
+    dupsec.style.display = "";
+    document.getElementById("dupline").textContent =
+      `${d.groups.toLocaleString()} sets of identical files — `
+      + `${d.files.toLocaleString()} copies, ${fmtBytes(d.reclaimable_bytes)} reclaimable`;
+  } else {
+    dupsec.style.display = "none";
+  }
   if(!s.root_exists){
     el.innerHTML = `<span>No archive directory yet. Upload into </span>`
                  + `<span class="pathhint">${esc(s.archive_dir)}</span>`;
@@ -112,9 +128,16 @@ async function go(rel){
       <span class="num">${counts}</span></div>`;
   });
   d.files.forEach(f => {
+    // Only THAT it has a copy, not where — the duplicates view answers
+    // that, and putting every sibling path in every listing row would
+    // bloat the common case for the rare one.
+    const dup = f.dup
+      ? `<span class="badge badge-warn" title="An identical file exists elsewhere in the archive">copy</span>`
+      : "";
     html += `<div class="row">
       <span class="ico">${f.ext === ".pdf" ? "📄" : "•"}</span>
       <span class="nm">${esc(f.name)}</span>
+      ${dup}
       <span class="num">${fmtBytes(f.size)}</span></div>`;
   });
   if(!html){
@@ -128,6 +151,30 @@ document.addEventListener("click", e => {
   if(t) go(t.dataset.go);
 });
 
+document.getElementById("duptoggle").addEventListener("click", async e => {
+  const box = document.getElementById("duplist");
+  if(box.style.display !== "none"){
+    box.style.display = "none"; e.target.textContent = "show"; return;
+  }
+  box.style.display = ""; e.target.textContent = "hide";
+  box.innerHTML = '<div class="empty">loading…</div>';
+  const r = await fetch(`${APP_ROOT}/api/archive/duplicates?limit=50`);
+  const j = await r.json();
+  box.innerHTML = (j.groups || []).map(g => `
+    <div class="rowlist" style="margin-bottom:8px">
+      <div class="row"><span class="ico">⧉</span>
+        <span class="nm">${g.paths.length} copies · ${fmtBytes(g.size)} each</span>
+        <span class="num">${fmtBytes(g.wasted)} reclaimable</span></div>
+      ${g.paths.map(p => `<div class="row"><span class="ico"></span>
+        <span class="nm muted">${esc(p)}</span></div>`).join("")}
+    </div>`).join("")
+    || '<div class="empty">No duplicates found.</div>';
+  if(j.total > (j.groups || []).length){
+    box.innerHTML += `<div class="empty">Showing ${j.groups.length} of `
+      + `${j.total.toLocaleString()} sets.</div>`;
+  }
+});
+
 document.getElementById("reindex").addEventListener("click", async () => {
   const msg = document.getElementById("buildmsg");
   const r = await fetch(`${APP_ROOT}/api/archive/reindex`, {method: "POST"});
@@ -139,7 +186,8 @@ document.getElementById("reindex").addEventListener("click", async () => {
     const s = await refreshStatus();
     const b = s.build || {};
     if(b.running){
-      msg.textContent = `indexing… ${(b.dirs_seen || 0).toLocaleString()} folders`;
+      msg.textContent = `${b.phase || "indexing"}… `
+        + `${(b.dirs_seen || 0).toLocaleString()}`;
       setTimeout(tick, 1000);
     } else {
       msg.textContent = b.error ? `failed: ${b.error}` : "index rebuilt";

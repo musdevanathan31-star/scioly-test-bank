@@ -253,6 +253,12 @@ Two things to know:
   folders marked *not indexed* instead of totals.
 - Folders you add after the last rebuild still show up immediately — only
   their totals wait for the next one.
+- **Duplicates** are found during the same rebuild, by content rather than
+  by name — the same test saved as `test.pdf` in one folder and
+  `CircuitLab2019.pdf` in another is still recognised as one file. A banner
+  shows how many sets exist and how much space keeping one copy each would
+  reclaim; individual files carry a **copy** badge in the listing. Nothing
+  is deleted for you.
 
 ### What only a coach can do, at a glance
 

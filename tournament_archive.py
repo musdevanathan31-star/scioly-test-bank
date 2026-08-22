@@ -29,6 +29,7 @@ importing a file MOVES it into `<DATA_ROOT>/<event>/`, which *is* backed up
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -48,7 +49,7 @@ ARCHIVE_DIRNAME = "tournament_archive"
 RESERVED_SLUGS = frozenset({ARCHIVE_DIRNAME})
 
 INDEX_FILE = DATA_ROOT / ".archive_index.json"
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2   # bumped when duplicate detection was added
 
 #: What each level of nesting means, for labelling only. Anything deeper is
 #: "file" territory; anything shallower than its name suggests is still
@@ -129,7 +130,7 @@ class DirEntry:
     subdirs: list = field(default_factory=list)   # names only
 
 
-def build_index(progress=None, should_cancel=None) -> dict:
+def build_index(progress=None, should_cancel=None, find_dupes: bool = True) -> dict:
     """Walk the archive once and summarise every directory.
 
     Bottom-up, so a directory's totals can be assembled from children
@@ -142,9 +143,10 @@ def build_index(progress=None, should_cancel=None) -> dict:
     root = archive_root()
     if not root.is_dir():
         return {"schema": INDEX_SCHEMA_VERSION, "built_at": time.time(),
-                "root_exists": False, "dirs": {}}
+                "root_exists": False, "dirs": {}, "duplicates": []}
 
     dirs: dict[str, DirEntry] = {}
+    by_size: dict[int, list] = {}
     seen = 0
     for dirpath, dirnames, filenames in os.walk(root, topdown=False):
         if should_cancel is not None and should_cancel():
@@ -159,11 +161,16 @@ def build_index(progress=None, should_cancel=None) -> dict:
         n_bytes = 0
         for name in filenames:
             try:
-                n_bytes += (here / name).stat().st_size
+                size = (here / name).stat().st_size
             except OSError:
                 # A file that vanished mid-walk, or one we cannot stat, is
                 # worth skipping rather than aborting the whole build.
-                pass
+                continue
+            n_bytes += size
+            # Sizes are free here and are stage 1 of duplicate detection —
+            # collecting them now avoids a second full walk later.
+            by_size.setdefault(size, []).append(
+                f"{rel}/{name}" if rel else name)
 
         entry = DirEntry(rel=rel, depth=depth, n_files=len(filenames),
                          n_subdirs=len(dirnames), total_files=len(filenames),
@@ -184,14 +191,177 @@ def build_index(progress=None, should_cancel=None) -> dict:
 
         seen += 1
         if progress is not None and seen % 250 == 0:
-            progress(seen)
+            progress(seen, phase="scanning folders")
+
+    duplicates = []
+    if find_dupes:
+        if progress is not None:
+            progress(seen, phase="looking for duplicates")
+        duplicates = find_duplicates(by_size, progress=(
+            (lambda n: progress(n, phase="hashing candidates"))
+            if progress is not None else None), should_cancel=should_cancel)
 
     return {
         "schema": INDEX_SCHEMA_VERSION,
         "built_at": time.time(),
         "root_exists": True,
         "dirs": {rel: vars(e) for rel, e in dirs.items()},
+        "duplicates": duplicates,
     }
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+#
+# Filenames are meaningless here — the same test turns up as "test.pdf",
+# "CircuitLab2019.pdf" and "scan_0001.pdf" — so duplicates are identified by
+# CONTENT.
+#
+# Hashing 65GB outright would take a very long time, and almost none of it
+# needs reading: a file whose size is unique in the corpus cannot have a
+# byte-identical twin. So this narrows in three stages, each cheaper than
+# the one it feeds:
+#
+#   1. Group by exact size. Free — already statted during the walk. Any
+#      group of one is finished, and that is the overwhelming majority.
+#   2. Hash the first 64KB of each remaining candidate. Two files sharing a
+#      size but differing at all usually differ early, so this eliminates
+#      most survivors for one short read each.
+#   3. Hash in full, but only within a group that still agrees. This is the
+#      only stage that reads whole files, and by now it is reading almost
+#      exclusively actual duplicates.
+#
+# Net effect: bytes read is roughly "the duplicated content plus 64KB per
+# size collision", not "the whole archive".
+#
+# **What this does NOT find**: the same test scanned twice, or downloaded
+# from two sources with different PDF metadata. Those are not byte-identical
+# and no amount of hashing will pair them. Catching those needs text or
+# perceptual comparison, which is a different job with a different error
+# rate — see TODO_archive.md.
+# ---------------------------------------------------------------------------
+
+#: Enough to separate files that share a size but differ, without paying for
+#: a full read. PDFs differ in their header/xref area far more often than not.
+_PARTIAL_BYTES = 64 * 1024
+_HASH_CHUNK = 1024 * 1024
+
+
+def _hash_file(path: Path, limit: int | None = None) -> str | None:
+    """SHA-256 of a file, or of its first `limit` bytes. None if unreadable —
+    an unreadable file is skipped rather than aborting the whole scan."""
+    h = hashlib.sha256()
+    remaining = limit
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                want = _HASH_CHUNK if remaining is None else min(_HASH_CHUNK, remaining)
+                if want <= 0:
+                    break
+                chunk = fh.read(want)
+                if not chunk:
+                    break
+                h.update(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def find_duplicates(by_size: dict, progress=None, should_cancel=None) -> list:
+    """Groups of byte-identical files, largest wasted space first.
+
+    `by_size` maps size -> [relative paths]. Returns a list of
+    {"size", "hash", "paths", "wasted"} where `wasted` is the space that
+    would be reclaimed by keeping exactly one copy.
+    """
+    groups: list = []
+    hashed = 0
+
+    # Zero-byte files all share a size and would otherwise form one enormous
+    # bogus "duplicate" group. They are junk to be deleted on their own
+    # merits (requirement 4), not duplicates of each other.
+    candidates = [(size, paths) for size, paths in by_size.items()
+                  if size > 0 and len(paths) > 1]
+    # Biggest first: if a scan is interrupted, the groups worth the most
+    # space are the ones already found.
+    candidates.sort(key=lambda kv: kv[0] * len(kv[1]), reverse=True)
+
+    for size, paths in candidates:
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("duplicate scan cancelled")
+
+        # Stage 2: cheap prefix hash.
+        by_prefix: dict = {}
+        for rel in paths:
+            digest = _hash_file(archive_root() / rel, limit=_PARTIAL_BYTES)
+            hashed += 1
+            if progress is not None and hashed % 200 == 0:
+                progress(hashed)
+            if digest is not None:
+                by_prefix.setdefault(digest, []).append(rel)
+
+        for prefix_paths in by_prefix.values():
+            if len(prefix_paths) < 2:
+                continue
+            # A file smaller than the prefix window was already read whole,
+            # so its prefix hash IS its full hash — no second pass needed.
+            if size <= _PARTIAL_BYTES:
+                full_groups = {"": prefix_paths}
+            else:
+                full_groups = {}
+                for rel in prefix_paths:
+                    digest = _hash_file(archive_root() / rel)
+                    hashed += 1
+                    if progress is not None and hashed % 50 == 0:
+                        progress(hashed)
+                    if digest is not None:
+                        full_groups.setdefault(digest, []).append(rel)
+            for digest, same in full_groups.items():
+                if len(same) < 2:
+                    continue
+                groups.append({
+                    "size": size,
+                    "hash": digest[:16],
+                    "paths": sorted(same),
+                    "wasted": size * (len(same) - 1),
+                })
+
+    groups.sort(key=lambda g: g["wasted"], reverse=True)
+    return groups
+
+
+def duplicate_summary(index: dict | None = None) -> dict:
+    idx = index if index is not None else load_index()
+    groups = (idx or {}).get("duplicates") or []
+    return {
+        "groups": len(groups),
+        "files": sum(len(g["paths"]) for g in groups),
+        "reclaimable_bytes": sum(g["wasted"] for g in groups),
+    }
+
+
+def duplicate_groups(limit: int = 100, offset: int = 0) -> dict:
+    idx = load_index() or {}
+    groups = idx.get("duplicates") or []
+    return {
+        "total": len(groups),
+        "offset": offset,
+        "groups": groups[offset:offset + limit],
+        **duplicate_summary(idx),
+    }
+
+
+def _duplicate_lookup(index: dict | None = None) -> dict:
+    """rel path -> group hash, so a listing can mark which files are copies
+    without carrying the whole duplicate table into every browse call."""
+    idx = index if index is not None else load_index()
+    out = {}
+    for g in (idx or {}).get("duplicates") or []:
+        for rel in g["paths"]:
+            out[rel] = g["hash"]
+    return out
 
 
 def save_index(index: dict) -> None:
@@ -239,6 +409,7 @@ def summary() -> dict:
         "n_dirs": len(idx["dirs"]),
         "total_files": root.get("total_files", 0),
         "total_bytes": root.get("total_bytes", 0),
+        "duplicates": duplicate_summary(idx),
     }
 
 
@@ -261,6 +432,7 @@ def list_dir(rel: str) -> dict:
         raise FileNotFoundError(rel)
 
     idx = load_index() or {"dirs": {}}
+    dup_lookup = _duplicate_lookup(idx)
     entry = idx["dirs"].get(rel_of(path))
     depth = 0 if not rel_of(path) else len(rel_of(path).split("/"))
 
@@ -298,8 +470,13 @@ def list_dir(rel: str) -> dict:
                 size, mtime = st.st_size, st.st_mtime
             except OSError:
                 size, mtime = None, None
-            files.append({"name": p.name, "rel": rel_of(p), "size": size,
-                          "mtime": mtime, "ext": p.suffix.lower()})
+            frel = rel_of(p)
+            files.append({"name": p.name, "rel": frel, "size": size,
+                          "mtime": mtime, "ext": p.suffix.lower(),
+                          # Which copies exist is answered by the duplicates
+                          # view; here it is only worth knowing THAT a file
+                          # has one, so the listing stays small.
+                          "dup": dup_lookup.get(frel)})
     except OSError as e:
         raise FileNotFoundError(str(e))
 
@@ -336,7 +513,7 @@ def breadcrumbs(rel: str) -> list:
 # ---------------------------------------------------------------------------
 
 _build_state: dict = {"running": False, "dirs_seen": 0, "started_at": None,
-                      "finished_at": None, "error": None}
+                      "finished_at": None, "error": None, "phase": ""}
 _build_lock = threading.Lock()
 
 
@@ -356,12 +533,13 @@ def start_build() -> dict:
         if _build_state["running"]:
             return dict(_build_state)
         _build_state.update(running=True, dirs_seen=0, started_at=time.time(),
-                            finished_at=None, error=None)
+                            finished_at=None, error=None, phase="starting")
 
     def _run():
-        def progress(n):
+        def progress(n, phase="scanning folders"):
             with _build_lock:
                 _build_state["dirs_seen"] = n
+                _build_state["phase"] = phase
         try:
             index = build_index(progress=progress)
             save_index(index)

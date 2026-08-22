@@ -2661,6 +2661,21 @@ def api_archive_list():
     return jsonify(listing)
 
 
+@app.route("/api/archive/duplicates")
+@coach_required
+def api_archive_duplicates():
+    """Byte-identical files, biggest wasted space first.
+
+    Paginated: a corpus this size can produce a lot of groups, and the page
+    only ever shows a screenful."""
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 100))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        limit, offset = 100, 0
+    return jsonify(tournament_archive.duplicate_groups(limit=limit, offset=offset))
+
+
 @app.route("/api/archive/status")
 @coach_required
 def api_archive_status():

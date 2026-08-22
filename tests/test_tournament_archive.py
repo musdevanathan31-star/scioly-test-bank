@@ -158,3 +158,116 @@ def test_the_archive_directory_name_cannot_be_taken_by_an_event(archive):
     import events
     with pytest.raises(ValueError, match="reserved"):
         events.add_custom_event(archive.ARCHIVE_DIRNAME, "Not An Event")
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+#
+# Filenames are meaningless in this corpus, so duplicates are identified by
+# content. These pin the three properties that matter: differently-named
+# copies are found, files that merely share a size are not, and the cheap
+# stages don't produce false negatives.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def dupes(monkeypatch):
+    monkeypatch.setenv("DATA_ROOT", tempfile.mkdtemp(prefix="dup-"))
+    import events
+    importlib.reload(events)
+    import tournament_archive as ta
+    importlib.reload(ta)
+
+    def write(rel, data):
+        p = ta.archive_root() / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    big = b"PDF-CONTENT-A" * 20000        # ~260KB: exceeds the 64KB prefix window
+    same_size_other = b"PDF-CONTENT-B" * 20000
+    write("Division B/Circuit Lab/2019/UF/test.pdf", big)
+    write("Division B/Circuit Lab/2019/Regionals/CircuitLab2019.pdf", big)
+    write("_UnknownDivision/_UnknownEvent/2019/xy##/scan_0001.pdf", big)
+    write("Division C/Anatomy/2019/States/decoy.pdf", same_size_other)
+    write("Division C/Anatomy/2020/A/notes.pdf", b"tiny-same")
+    write("Division C/Anatomy/2020/B/renamed_notes.pdf", b"tiny-same")
+    write("Division C/Anatomy/2021/C/unique.pdf", b"one-of-a-kind")
+    write("Division C/empty1.pdf", b"")
+    write("Division C/empty2.pdf", b"")
+    return ta
+
+
+def test_identical_files_are_found_whatever_they_are_called(dupes):
+    index = dupes.build_index()
+    groups = index["duplicates"]
+    biggest = groups[0]
+    # Compared as a set: paths are sorted by full path (which is what a
+    # reader wants), so basename order is not meaningful.
+    assert {p.rsplit("/", 1)[-1] for p in biggest["paths"]} == {
+        "test.pdf", "CircuitLab2019.pdf", "scan_0001.pdf"}
+    # Three copies of a 260KB file: two copies' worth is reclaimable.
+    assert biggest["wasted"] == biggest["size"] * 2
+
+
+def test_files_sharing_a_size_but_not_content_are_not_grouped(dupes):
+    # Stage 1 groups by size, so this is the case the hashing stages exist
+    # to reject. Getting it wrong would mean proposing to delete a file that
+    # is not a copy of anything.
+    index = dupes.build_index()
+    named = {p.rsplit("/", 1)[-1] for g in index["duplicates"] for p in g["paths"]}
+    assert "decoy.pdf" not in named
+
+
+def test_small_files_are_matched_by_their_prefix_hash_alone(dupes):
+    # A file shorter than the prefix window was already read whole, so its
+    # prefix hash IS its full hash and no second pass is needed.
+    index = dupes.build_index()
+    small = [g for g in index["duplicates"] if g["size"] == len(b"tiny-same")]
+    assert len(small) == 1
+    assert {p.rsplit("/", 1)[-1] for p in small[0]["paths"]} == {
+        "notes.pdf", "renamed_notes.pdf"}
+
+
+def test_empty_files_are_not_treated_as_copies_of_each_other(dupes):
+    # They all share size 0 and would otherwise form one enormous bogus
+    # group. They are junk to delete on their own merits, not duplicates.
+    index = dupes.build_index()
+    named = {p.rsplit("/", 1)[-1] for g in index["duplicates"] for p in g["paths"]}
+    assert not any(n.startswith("empty") for n in named)
+
+
+def test_a_unique_file_is_never_listed(dupes):
+    index = dupes.build_index()
+    named = {p.rsplit("/", 1)[-1] for g in index["duplicates"] for p in g["paths"]}
+    assert "unique.pdf" not in named
+
+
+def test_the_summary_totals_what_could_be_reclaimed(dupes):
+    index = dupes.build_index()
+    summary = dupes.duplicate_summary(index)
+    assert summary["groups"] == 2
+    assert summary["files"] == 5           # 3 + 2
+    assert summary["reclaimable_bytes"] == sum(g["wasted"] for g in index["duplicates"])
+
+
+def test_a_listing_marks_files_that_have_a_copy(dupes):
+    dupes.save_index(dupes.build_index())
+    listing = dupes.list_dir("Division B/Circuit Lab/2019/UF")
+    assert listing["files"][0]["dup"]
+    clean = dupes.list_dir("Division C/Anatomy/2021/C")
+    assert clean["files"][0]["dup"] is None
+
+
+def test_groups_are_ordered_by_space_reclaimable(dupes):
+    # If a scan is interrupted, or the page shows only the first screenful,
+    # the sets worth the most space should be the ones seen.
+    index = dupes.build_index()
+    wasted = [g["wasted"] for g in index["duplicates"]]
+    assert wasted == sorted(wasted, reverse=True)
+
+
+def test_duplicate_scanning_can_be_skipped(dupes):
+    # The walk itself is fast; hashing is the part that costs. Callers that
+    # only need the tree shouldn't have to pay for it.
+    index = dupes.build_index(find_dupes=False)
+    assert index["duplicates"] == []
+    assert index["dirs"], "the directory walk should still have happened"
