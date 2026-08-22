@@ -50,7 +50,6 @@
 <script>{{ common_js|safe }}</script>
 <script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/" title="Back to event review" style="font-size:18px">←</a>
   <h1><span class="muted" style="font-weight:400">{{ event_name }} ·</span> Sources &amp; Generation</h1>
   <span id="status" class="muted"></span>
   {% include "_user_badge.html" %}

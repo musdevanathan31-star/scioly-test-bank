@@ -37,7 +37,6 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
 <script>{{ common_js|safe }}</script>
 <script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
-  <a href="{{ request.script_root }}/" title="Back to event list" style="font-size:18px">←</a>
   <h1>{{ event_name }} — Review</h1>
   <span id="status" class="muted"></span>
   {%- if n_active %}

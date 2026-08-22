@@ -16,7 +16,6 @@ section h2{margin:0 0 10px 0;font-size:14px}
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="{{ request.script_root }}/" style="margin-right:10px">←</a>
   <h1>My Assessments{{ " — " + season.display_label if season }}</h1>
   {% include "_user_badge.html" %}
 </header>

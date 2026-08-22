@@ -43,7 +43,6 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 <script>{{ common_js|safe }}</script>
 <script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
-  <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
   <h1>Grade · {{ event_name }}</h1>
   {% include "_user_badge.html" %}
 </header>

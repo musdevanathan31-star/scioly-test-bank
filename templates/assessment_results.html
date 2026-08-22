@@ -17,7 +17,6 @@
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="{{ request.script_root }}/my-tests" style="margin-right:10px">←</a>
   <h1>{{ event_name }} — Results{{ " for " + student_username if not viewer_is_self }}</h1>
   {% include "_user_badge.html" %}
 </header>

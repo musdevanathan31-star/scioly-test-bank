@@ -28,7 +28,6 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 <body>
 <script>{{ common_js|safe }}</script>
 <header>
-  <a href="{{ request.script_root }}/tests" style="margin-right:10px">←</a>
   <h1>Prepare assessment <span class="muted" style="font-weight:400">— {{ event_name }}{{ " · " + window_label if window_label }}</span></h1>
   <span id="save_status" class="save-status" style="margin-left:auto"></span>
   {% include "_user_badge.html" %}
