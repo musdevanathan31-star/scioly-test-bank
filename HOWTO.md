@@ -259,6 +259,17 @@ Two things to know:
   shows how many sets exist and how much space keeping one copy each would
   reclaim; individual files carry a **copy** badge in the listing. Nothing
   is deleted for you.
+- **Organising** (coaches): hover a row for Rename, Move and Delete, or use
+  New folder / Remove empty folders. Every action shows what it would affect
+  — "412 files, 3.1 GB" — before it happens. Deletes go to the trash, so a
+  mis-click is recoverable; empty folders are removed outright because there
+  is nothing in them to recover. Everything is recorded, and a coach can
+  review it at `/api/archive/ops`.
+- **Importing** into an event: tick the PDFs, press **Import into an
+  event…**, confirm the event and each file's role. The year, division and
+  tournament are filled in from the folder path. Files **move** — they leave
+  the archive, which is how the backlog shrinks. Volunteers can import into
+  the events they already hold.
 - **Rebuilding** shows each step — scan folders, compare by size, hash
   candidates, save — so you can see what is finished, what is running and
   what has not started. The button stays disabled until it ends, and

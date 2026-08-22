@@ -67,6 +67,7 @@ import deletion  # noqa: E402
 import tournament_archive  # noqa: E402
 import archive_map  # noqa: E402
 import archive_ops  # noqa: E402
+import archive_import  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -2745,7 +2746,7 @@ def api_archive_map():
         "rows": archive_map.event_folders(),
         "by_name": archive_map.folders_by_name(),
         "events": [{"slug": slug, "name": ev.name}
-                   for slug, ev in sorted(events.EVENTS.items(),
+                   for slug, ev in sorted(EVENTS.items(),
                                           key=lambda kv: kv[1].name)
                    if not ev.archived],
         "indexed": tournament_archive.load_index() is not None,
@@ -2845,6 +2846,89 @@ def api_archive_ops():
     except ValueError:
         limit = 50
     return jsonify({"ops": archive_ops.read_ops(limit)})
+
+
+# --- Phase 4: import into an event -----------------------------------------
+#
+# Open to volunteers, unlike the Phase 3 mutations: importing is the same
+# power they already have through the web upload, just sourced from the
+# archive instead of their laptop, and it is the main way 65GB actually gets
+# triaged. Both ends are checked — they must be able to see the archive path
+# *and* hold the destination event.
+
+def _import_allowed(items, slug):
+    """Raise unless this user may read every source and write that event."""
+    if g.user.role != "coach":
+        if slug not in (g.user.events or ()):
+            raise archive_import.ImportError_(
+                "you do not have access to that event")
+        for item in items:
+            if not archive_map.can_access(g.user, (item.get("path") or "")):
+                raise archive_import.ImportError_(
+                    "that file is not in an event you have access to")
+
+
+@app.route("/api/archive/import/preview", methods=["POST"])
+@coach_or_volunteer_required
+def api_archive_import_preview():
+    """Every destination name, worked out before anything moves."""
+    data = request.get_json() or {}
+    items = data.get("items") or []
+    try:
+        _import_allowed(items, data.get("slug") or "")
+        plan = archive_import.plan_import(items, data.get("slug") or "",
+                                          data.get("meta") or {})
+        return jsonify({"ok": True, "plan": plan})
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/archive/import", methods=["POST"])
+@coach_or_volunteer_required
+def api_archive_import():
+    data = request.get_json() or {}
+    items = data.get("items") or []
+    try:
+        _import_allowed(items, data.get("slug") or "")
+        plan = archive_import.run_import(items, data.get("slug") or "",
+                                         data.get("meta") or {},
+                                         by=g.user.username)
+        return jsonify({"ok": True, "plan": plan})
+    except archive_ops.ArchiveOpError as e:
+        return jsonify({"error": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except OSError as e:
+        return jsonify({"error": f"filesystem refused: {e}"}), 500
+
+
+@app.route("/api/archive/import/targets")
+@coach_or_volunteer_required
+def api_archive_import_targets():
+    """Events this user can import into, plus what the path already implies.
+
+    The metadata comes from the server because the folder-name parsing rules
+    live there; the client should not re-derive them.
+    """
+    rel = request.args.get("path", "") or ""
+    if not archive_map.can_traverse(g.user, rel):
+        return jsonify({"error": f"no such folder: {rel}"}), 404
+    if g.user.role == "coach":
+        slugs = [s for s, ev in EVENTS.items() if not ev.archived]
+    else:
+        slugs = [s for s in (g.user.events or ())
+                 if s in EVENTS and not EVENTS[s].archived]
+    suggested = archive_map.slug_for_path(rel)
+    return jsonify({
+        "events": sorted(({"slug": s, "name": EVENTS[s].name}
+                          for s in slugs), key=lambda e: e["name"]),
+        # The mapping already records which event this subtree belongs to,
+        # so the destination is usually a confirmation rather than a choice.
+        "suggested": suggested if suggested in slugs else None,
+        "meta": archive_import.path_metadata(rel),
+    })
 
 
 @app.route("/api/purge/<kind>/<path:ident>", methods=["GET"])

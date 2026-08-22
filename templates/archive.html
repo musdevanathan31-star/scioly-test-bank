@@ -25,7 +25,11 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .pathhint{font-family:ui-monospace,Consolas,monospace;font-size:12px;
   background:var(--bg-alt);border:1px solid var(--line);border-radius:4px;
   padding:2px 6px}
-.opsbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.opsbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.impgrid{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+.impgrid label{display:flex;flex-direction:column;gap:3px;font-size:12px;
+  color:var(--muted)}
+.row .pick{margin:0}
 .rowops{display:none;gap:4px;white-space:nowrap}
 .row:hover .rowops{display:flex}
 .rowops button{font-size:11px;padding:1px 6px}
@@ -79,6 +83,13 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
     </div>
     {% endif %}
     <div class="rowlist" id="listing"><div class="empty">loading…</div></div>
+    <div class="opsbar" id="importbar" style="display:none">
+      <b id="importcount"></b>
+      <button id="importbtn" class="primary">Import into an event…</button>
+      <button id="clearpick" class="ghost">Clear</button>
+    </div>
+    <span class="muted" id="importmsg"></span>
+    <div id="importpanel" style="display:none;margin-top:10px"></div>
   </section>
 </div>
 <script>
@@ -188,6 +199,8 @@ async function go(rel){
       : "";
     const frel = (CURRENT ? CURRENT + "/" : "") + f.name;
     html += `<div class="row">
+      <input type="checkbox" class="pick" data-pick="${esc(frel)}"
+             ${PICKED.has(frel) ? "checked" : ""}>
       <span class="ico">${f.ext === ".pdf" ? "📄" : "•"}</span>
       <span class="nm">${esc(f.name)}</span>
       ${dup}
@@ -408,6 +421,129 @@ document.getElementById("prune").addEventListener("click", async () => {
 });
 }
 
+// --- Phase 4: import into an event ----------------------------------------
+// The archive path already encodes year, division and tournament, so this
+// prefills them and the user corrects rather than composes. That is the
+// whole advantage over the web upload it replaces.
+
+const PICKED = new Set();       // archive-relative file paths
+let TARGETS = null;
+
+function updateImportBar(){
+  const bar = document.getElementById("importbar");
+  const n = PICKED.size;
+  bar.style.display = n ? "" : "none";
+  if(n) document.getElementById("importcount").textContent =
+    `${n} file${n === 1 ? "" : "s"} selected`;
+  if(!n) document.getElementById("importpanel").style.display = "none";
+}
+
+document.addEventListener("change", e => {
+  const box = e.target.closest("input[data-pick]");
+  if(!box) return;
+  if(box.checked) PICKED.add(box.dataset.pick); else PICKED.delete(box.dataset.pick);
+  updateImportBar();
+});
+
+document.getElementById("clearpick").addEventListener("click", () => {
+  PICKED.clear(); updateImportBar(); go(CURRENT);
+});
+
+document.getElementById("importbtn").addEventListener("click", async () => {
+  const panel = document.getElementById("importpanel");
+  if(panel.style.display !== "none"){ panel.style.display = "none"; return; }
+  const r = await fetch(`${APP_ROOT}/api/archive/import/targets`
+                        + `?path=${encodeURIComponent(CURRENT)}`);
+  TARGETS = await r.json();
+  if(TARGETS.error){
+    document.getElementById("importmsg").textContent = TARGETS.error;
+    return;
+  }
+  const m = TARGETS.meta || {};
+  panel.style.display = "";
+  panel.innerHTML = `
+    <div class="impgrid">
+      <label>Event<select id="imp_slug">
+        ${(TARGETS.events || []).map(e =>
+          `<option value="${esc(e.slug)}"${e.slug === TARGETS.suggested ? " selected" : ""}>${esc(e.name)}</option>`
+        ).join("")}
+      </select></label>
+      <label>Year<input id="imp_year" value="${esc(m.year || "")}" size="6"></label>
+      <label>Division<input id="imp_div" value="${esc(m.division || "")}" size="3"></label>
+      <label>Tournament<input id="imp_sub" value="${esc(m.submitter || "")}"></label>
+    </div>
+    <div class="rowlist" style="margin:8px 0">
+      ${[...PICKED].sort().map(p => {
+        const name = p.split("/").pop();
+        return `<div class="row"><span class="ico">📄</span>
+          <span class="nm" title="${esc(p)}">${esc(name)}</span>
+          <select data-role="${esc(p)}">
+            ${["test","key","supplementary","notes"].map(role =>
+              `<option value="${role}"${role === guessRole(name) ? " selected" : ""}>${role}</option>`
+            ).join("")}
+          </select></div>`;
+      }).join("")}
+    </div>
+    <button id="imp_go" class="primary">Preview import…</button>
+    <span class="muted" id="imp_msg"></span>`;
+});
+
+// Mirrors archive_import.guess_role well enough to preselect the dropdown.
+// The server decides; getting an answer key filed as a test is the mistake
+// worth defaulting against, because it puts answers into the bank as
+// questions.
+function guessRole(name){
+  const stem = name.replace(/\.[^.]+$/, "").toLowerCase();
+  if(/\b(key|answers?|solutions?|soln)\b/.test(stem) || /(key|answers|solutions)$/.test(stem))
+    return "key";
+  if(/\b(rules?|notes?|reference|cheat|sheet)\b/.test(stem)) return "notes";
+  return "test";
+}
+
+document.addEventListener("click", async e => {
+  if(e.target.id !== "imp_go") return;
+  const msg = document.getElementById("imp_msg");
+  const body = {
+    slug: document.getElementById("imp_slug").value,
+    meta: {year: document.getElementById("imp_year").value.trim(),
+           division: document.getElementById("imp_div").value.trim(),
+           submitter: document.getElementById("imp_sub").value.trim()},
+    items: [...document.querySelectorAll("select[data-role]")].map(sel =>
+      ({path: sel.dataset.role, role: sel.value})),
+  };
+  msg.textContent = "checking…";
+  const pr = await fetch(`${APP_ROOT}/api/archive/import/preview`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  const pj = await pr.json();
+  if(pj.error){ msg.textContent = pj.error; return; }
+  msg.textContent = "";
+  const plan = pj.plan;
+  const lines = plan.files.map(f => `  ${f.name}  →  ${f.dest_name}`).join("\n");
+  const note = plan.renamed_for_collision
+    ? "\n\nAn earlier import already used that tournament name, so this batch "
+      + "is numbered. The test and its key stay a matching pair."
+    : "";
+  if(!await confirmModal(
+      `Move ${plan.files.length} file(s) into ${plan.event}?\n\n${lines}\n\n`
+      + `They leave the archive — this is a move, not a copy.${note}`,
+      {wide: true, confirmLabel: "Import"})) return;
+  const r = await fetch(`${APP_ROOT}/api/archive/import`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  const j = await r.json();
+  if(j.error){ msg.textContent = j.error; return; }
+  PICKED.clear();
+  document.getElementById("importpanel").style.display = "none";
+  document.getElementById("importmsg").textContent =
+    `Imported ${j.plan.files.length} file(s) into ${j.plan.event}.`;
+  setTimeout(() => {
+    document.getElementById("importmsg").textContent = ""; }, 8000);
+  updateImportBar();
+  await refreshStatus();
+  go(CURRENT);
+});
+
 (async () => {
   const s = await refreshStatus();
   // Someone else may have started a rebuild, or the coach may have
@@ -416,6 +552,7 @@ document.getElementById("prune").addEventListener("click", async () => {
     renderSteps(s.build); setBuilding(true); pollBuild();
   }
   go("");
+  updateImportBar();
 })();
 </script>
 </body>

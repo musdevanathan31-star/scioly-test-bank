@@ -35,6 +35,10 @@ def app_ctx(monkeypatch):
     importlib.reload(ta)
     import archive_map
     importlib.reload(archive_map)
+    # Before review_app, and as a pair: see the note in test_archive_ops.py.
+    import archive_ops, archive_import
+    importlib.reload(archive_ops)
+    importlib.reload(archive_import)
     import review_app
     importlib.reload(review_app)
 
@@ -235,3 +239,90 @@ def test_the_ops_log_is_readable_after_a_change(app_ctx):
     assert ops[0]["action"] == "create"
     assert ops[0]["dest"] == "Division B/Fresh"
     assert ops[0]["by"] == "coach1"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 import
+# ---------------------------------------------------------------------------
+
+def test_a_coach_can_read_the_mapping_payload(app_ctx):
+    client, _am, _slug = app_ctx
+    # Not just the 403 path: the volunteer tests above never executed this
+    # handler's body, which is how a NameError in it survived.
+    body = client("coach1").get("/api/archive/map").get_json()
+    assert body["indexed"] is True
+    assert any(r["key"] == "Division B/Circuit Lab" for r in body["rows"])
+    assert body["events"], "the event list drives the dropdown"
+
+
+def test_import_targets_are_scoped_to_the_user(app_ctx):
+    client, am, slug = app_ctx
+    am.set_many({"Division B/Circuit Lab": slug})
+    path = "Division B/Circuit Lab/2019/UF"
+    coach = client("coach1").get(
+        "/api/archive/import/targets", query_string={"path": path}).get_json()
+    vol = client("vol1").get(
+        "/api/archive/import/targets", query_string={"path": path}).get_json()
+    assert [e["slug"] for e in vol["events"]] == [slug]
+    assert len(coach["events"]) >= len(vol["events"])
+    # The mapping already says which event this subtree is, so the
+    # destination is a confirmation rather than a choice.
+    assert vol["suggested"] == slug
+    assert vol["meta"]["year"] == "2019"
+
+
+def test_a_volunteer_cannot_import_into_an_event_they_lack(app_ctx):
+    client, am, slug = app_ctx
+    import review_app
+    other = next(s for s in sorted(review_app.EVENTS) if s != slug)
+    am.set_many({"Division B/Circuit Lab": slug})
+    body = {"slug": other,
+            "items": [{"path": "Division B/Circuit Lab/2019/UF/test.pdf",
+                       "role": "test"}]}
+    r = client("vol1").post("/api/archive/import", json=body)
+    assert r.status_code == 400
+    assert "access to that event" in r.get_json()["error"]
+
+
+def test_a_volunteer_cannot_import_a_file_they_cannot_see(app_ctx):
+    client, am, slug = app_ctx
+    am.set_many({"Division B/Circuit Lab": slug})
+    # Holds the destination event, but the source is outside their scope --
+    # both ends have to be checked, not just one.
+    body = {"slug": slug,
+            "items": [{"path": "Division C/_UnknownEvent/2021/States/b.pdf",
+                       "role": "test"}]}
+    r = client("vol1").post("/api/archive/import", json=body)
+    assert r.status_code == 400
+    assert "access to" in r.get_json()["error"]
+
+
+def test_a_volunteer_can_import_within_their_own_event(app_ctx):
+    import tournament_archive as ta
+    client, am, slug = app_ctx
+    am.set_many({"Division B/Circuit Lab": slug})
+    body = {"slug": slug,
+            "items": [{"path": "Division B/Circuit Lab/2019/UF/test.pdf",
+                       "role": "test"}]}
+    r = client("vol1").post("/api/archive/import", json=body)
+    assert r.status_code == 200, r.get_json()
+    assert not (ta.archive_root() /
+                "Division B/Circuit Lab/2019/UF/test.pdf").exists()
+
+
+def test_import_preview_moves_nothing(app_ctx):
+    import tournament_archive as ta
+    client, _am, slug = app_ctx
+    body = {"slug": slug,
+            "items": [{"path": "Division B/Circuit Lab/2019/UF/test.pdf",
+                       "role": "test"}]}
+    r = client("coach1").post("/api/archive/import/preview", json=body)
+    assert r.get_json()["plan"]["files"][0]["dest_name"].endswith("_test.pdf")
+    assert (ta.archive_root() /
+            "Division B/Circuit Lab/2019/UF/test.pdf").is_file()
+
+
+def test_a_student_cannot_import(app_ctx):
+    client, _am, slug = app_ctx
+    r = client("stu1").post("/api/archive/import", json={"slug": slug, "items": []})
+    assert r.status_code == 403

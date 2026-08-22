@@ -126,14 +126,38 @@ every page wrong from then on. Duplicate groups are deliberately *not*
 maintained — a half-updated group would propose deleting a file that is not
 a copy of anything — so `stale_duplicates` marks them for the next rebuild.
 
-**Phase 4 — import into an event.** From a `<Tournament>` node, pick PDFs,
-choose a role, and they move into the event directory under the naming
-convention, reusing `api_scan_rename`'s logic. The archive path already
-encodes year, division and tournament, so that metadata prefills instead of
-being typed — the main advantage over the web upload it replaces.
+**Phase 4 — import into an event.** *Done.* From any folder, tick PDFs,
+confirm the event and role, and they **move** into the event directory under
+the naming convention. The archive path already encodes year, division and
+tournament, so that metadata prefills instead of being typed — the main
+advantage over the web upload it replaces — and the Phase 2 mapping usually
+supplies the destination event too, making it a confirmation rather than a
+choice.
+
+Open to volunteers for their own events, unlike the Phase 3 mutations:
+importing is the same power they already have through the web upload, just
+sourced differently, and it is the main way 65GB actually gets triaged.
+**Both ends are checked** — they must be able to see the source path *and*
+hold the destination event.
+
+Collision handling is load-bearing. A test and its key are tied together
+only by sharing an exact filename stem, so renaming one without the other
+silently breaks the pair, invisibly, until someone opens the event and finds
+a test with no key. Names are therefore resolved for a whole batch against a
+single suffix that clears every role in it. Two selected files that would
+land on the same name are refused with a reason rather than silently
+overwritten.
+
+An answer key is guessed from its filename because getting that wrong puts
+the answers into the question bank *as questions*; everything else defaults
+to `test` and the user chooses.
 
 ## Known risks
 
+- **Duplicate groups go stale after any mutation.** `stale_duplicates` marks
+  them; a rebuild clears it. They are deliberately not patched in place,
+  because a half-updated group would propose deleting a file that is not a
+  copy of anything.
 - **Non-ASCII filenames are already present.** One existing PDF is
   `circuitlab_2019_c_ssss-utf-8u+6211u+662f_test.pdf` — mojibake from an
   earlier import. A corpus this size will have more, and

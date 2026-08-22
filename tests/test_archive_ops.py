@@ -32,6 +32,12 @@ def ops(monkeypatch):
     importlib.reload(ta)
     import archive_ops
     importlib.reload(archive_ops)
+    # Reloaded together, always. ImportError_ subclasses ArchiveOpError, so
+    # reloading one without the other leaves a subclass pointing at a base
+    # that no longer exists by identity -- and `except ArchiveOpError` in the
+    # routes then stops catching it.
+    import archive_import
+    importlib.reload(archive_import)
 
     root = ta.archive_root()
 
@@ -47,7 +53,6 @@ def ops(monkeypatch):
     write("_UnknownDivision/Anatomy/2020/Regionals/b.pdf", 100)
     (root / "Division B/Circuit Lab/2018").mkdir(parents=True, exist_ok=True)
     ta.save_index(ta.build_index())
-    archive_ops._ta = ta
     return archive_ops
 
 
