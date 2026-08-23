@@ -595,28 +595,6 @@ See ["Production deployment (current state)"](#production-deployment-current-sta
 - **How big does the S3 bucket actually get?** Not `(live data size) × (number of retained snapshots)` — restic dedupes at the content-chunk level, so a snapshot is just pointers into a shared pool of unique chunks; unchanged files cost nothing to "back up again." Bucket size ≈ the total amount of *unique* data referenced by any currently-retained snapshot, not a full copy per snapshot. For this app's actual usage pattern (PDFs uploaded/downloaded once, accumulating over time, occasionally deleted, rarely edited) that means a library that starts at, say, 5GB and mostly just grows will keep the bucket close to that live size plus modest overhead — not 5GB times the ~34 snapshot slots the `--keep-daily/weekly/monthly` policy can hold over a year. A deleted PDF isn't reclaimed immediately either: it keeps costing storage until every snapshot referencing it ages out via `restic forget --prune`, which under the current policy can take up to ~12 months (the last monthly snapshot that still has it). Heavy upload/delete churn pushes the bound up toward the total unique content seen across the trailing year, but never multiplies by snapshot count the way a naive "full backup per run" tool would.
 - `auth_users.json` and each instance's `.env` are deliberately excluded from both of the above — back those up separately (e.g. an `age`-encrypted snapshot to a key only you hold), and only by hand, since they change rarely and are too sensitive for an unattended pipeline.
 
-## Production deployment (current state)
-
-Everything above this point describes the *general* deployment patterns. This section is the concrete answer to "what is actually running, where" — useful when picking this project back up after time away, or onboarding someone else to administer it.
-
-**Host**: RHEL 10.2, hostname `testbank`, LAN IP `192.168.1.201` (DHCP-reserved on the router so it can never drift), sitting behind a Ubiquiti Cloud Gateway. Public domain `scioly-02864.com`, DNS hosted on Namecheap; the UCG's built-in Dynamic DNS client keeps the A record pointed at the current public IP (the ISP connection doesn't have a static IP).
-
-**Reverse proxy**: Caddy, installed as a static binary at `/usr/local/bin/caddy` with the `cap_net_bind_service` capability set (so it can bind 80/443 without running as root). One Caddyfile (`/etc/caddy/Caddyfile`) serves both schools under a single Let's Encrypt certificate for the bare domain — see ["Subpath mounting"](#subpath-mounting-eg-testbankncms-instead-of-the-domain-root) above for why one cert covers multiple `/testbank/<school>` paths.
-
-**Current instances**:
-
-| School | URL | Directory | System user | Port | systemd unit |
-|---|---|---|---|---|---|
-| NCMS | `https://scioly-02864.com/testbank/ncms/` | `/opt/qbank/app` | `qbank` | `127.0.0.1:5000` | `qbank.service` |
-| CHS | `https://scioly-02864.com/testbank/chs/` | `/opt/qbank-chs/app` | `qbank-chs` | `127.0.0.1:5001` | `qbank-chs.service` |
-| Admin app | `https://scioly-02864.com/testbank/admin/` | `/opt/qbank-admin/app` | `qbank-admin` | `127.0.0.1:5002` | `admin-app.service` |
-
-Both qbank/qbank-chs units' `ExecStart` point at the same shared venv, `/opt/qbank/venv` — see ["Running multiple independent instances"](#running-multiple-independent-instances-on-one-server-eg-two-schools) above for why the venv can be shared even though the code+data trees can't. The admin app reuses the same venv too (Flask/Werkzeug/gunicorn are already there — no extra dependencies).
-
-**Data location**: both schools' event data has been migrated off the 70GB root disk onto the 932GB `/data` mount via [`DATA_ROOT`](#separating-app-code-from-data-data_root) — NCMS at `/data/qbank/ncms` (`DATA_ROOT` set in `/opt/qbank/.env`), CHS at `/data/qbank/chs` (`/opt/qbank-chs/.env`). Each instance's app directory now holds only code.
-
-**Code-update account**: `qbank-deploy` owns `/opt/qbank-src` (the canonical `git clone` of the public repo that [`deploy/update-from-github.sh`](deploy/update-from-github.sh) fetches into). The one step that needs root — [`deploy/_apply-update.sh`](deploy/_apply-update.sh), installed on the server as `/usr/local/sbin/qbank-apply-update.sh` — is reachable via a `NOPASSWD` sudoers rule scoped to that *exact* path (`/etc/sudoers.d/qbank-deploy`), nothing broader. Both `qbank.service`/`qbank-chs.service` and `instances.conf` (the registry both the apply script and the admin app read) live alongside this in [`deploy/`](deploy/).
-
 ### Admin app
 
 [`admin_app.py`](admin_app.py) is a small, separate Flask app (its own process, system user, and sudoers grants — a deliberately different privilege boundary from the review apps it manages) at `/testbank/admin` for doing routine server operations from a browser instead of SSH:
