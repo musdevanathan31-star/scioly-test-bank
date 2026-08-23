@@ -93,9 +93,50 @@ Legend: ✅ shipped · 🛠 still open (mid) · 🏗 still open (large)
 
 ---
 
+## ✅ Shipped (sprint 3 — navigation, exports, and the assessment/archive features)
+
+This sprint landed alongside the season-long testing workflow and the tournament archive (both substantial enough to have their own design notes — see `spec.md` §17/§20 and `TODO_archive.md` — this section covers only the UI polish around them).
+
+### Navigation
+- ✅ Menu moved to the header's right edge; the per-page back arrow it replaced is gone
+- ✅ "Management" dropped from hamburger menu labels (shorter, less redundant)
+- ✅ Menu items reordered and iconed
+- ✅ Coaches and volunteers land on the Assessments dashboard after sign-in instead of the event list — during a season, assessment work is the recurring job; the event list is one click away
+- ✅ Students no longer see the per-event menu groups (Question bank / Test bank / Primary sources) they have no access to anyway
+- ✅ Jobs moved to the last menu group
+
+### Branding
+- ✅ An instance can show a school logo (see README's "Branding an instance with a school logo")
+- ✅ Root-path favicon request no longer 404s
+
+### Grade page
+- ✅ Expected answer shown in a boxed panel above student responses, so grading doesn't need the question bank open in another tab
+- ✅ ✓ Full button per free-response answer — one click awards max points instead of typing the number; greys out once already at full marks
+
+### Export
+- ✅ PDF export gets the same three answer-layout options markdown export already had
+- ✅ PDF export can target the filtered or selected question set, not just the whole bank
+- ✅ Assessments (tests/keys) export as markdown, with reused questions hidden from the export
+- ✅ Browse export menu no longer stretches the full page width
+- ✅ A missing optional export dependency (`reportlab`, `genanki`) now names the interpreter it looked in, instead of a bare import error
+
+### Presence
+- ✅ Header badge shows how many people are active server-wide, and per event — see README's "Who's active right now"
+- ✅ Per-event count excludes yourself, so the number shown is always *other* people
+
+### Deletion (opt-in, `ALLOW_HARD_DELETE`)
+- ✅ Permanent deletion for users, seasons, events, assessment windows, individual assessments, and one student's response — see README's "Hard delete" and HOWTO's "Permanently deleting things"
+- ✅ Every delete previews exactly what it would remove before it happens
+- ✅ PDFs, sources, and textbooks can be deleted the same way
+
+### Tournament archive
+- ✅ Full browse/preview/organize/dedup/map/import UI — see `TODO_archive.md` for the complete design history; UX-specific fixes folded in during this sprint: bulk duplicate removal made fast and reliable, "select all N sets in the archive" (not just the visible page), rename with type-ahead against existing archive names, a clear message when the archive tree is read-only to the server
+
+---
+
 ## 🛠 / 🏗 Open items
 
-Nothing in the original tracked set remains. Open the door for follow-ups (e.g. spaced-repetition scheduler, side-by-side bucket compare, server-side PDF preview) when the user has a specific need.
+Nothing in the currently tracked set remains. Open the door for follow-ups (e.g. spaced-repetition scheduler, side-by-side bucket compare, server-side PDF preview) when the user has a specific need.
 
 ---
 

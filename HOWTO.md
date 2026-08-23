@@ -470,12 +470,12 @@ Load each school's landing page and compare the question counts against the old 
 
 ### Measuring server capacity (load testing)
 
-Not a role in the app; this is for whoever needs to know "how many students can log in and take an assessment at once" before a real tournament. `spec.md`'s `--workers`/lock discussion has the reasoning: `gunicorn --workers` is hard-locked to 1, and `--threads` is the only adjustable knob, so the ceiling depends on how much load one process's thread pool can actually absorb — not computable from CPU/RAM specs. (Response storage itself used to be a second, worse bottleneck — one global file/lock shared by every student on every test — but that's fixed as of the per-`(test_id, username)`-file redesign; see README.md's "Measuring server capacity" for both halves of the story.) The only reliable way to know the remaining ceiling is to measure it.
+Not a role in the app; this is for whoever needs to know "how many students can log in and take an assessment at once" before a real tournament. `spec.md`'s `--workers`/lock discussion has the reasoning: `gunicorn --workers` is hard-locked to 1, and `--threads` is the only adjustable knob, so the ceiling depends on how much load one process's thread pool can actually absorb — not computable from CPU/RAM specs. (Response storage itself used to be a second, worse bottleneck — one global file/lock shared by every student on every assessment — but that's fixed as of the per-`(assessment_id, username)`-file redesign; see README.md's "Measuring server capacity" for both halves of the story.) The only reliable way to know the remaining ceiling is to measure it.
 
-**1. Create a throwaway test, by hand, via the normal coach UI:**
+**1. Create a throwaway assessment, by hand, via the normal coach UI:**
 - Club Management → New season (note its `season_id`).
-- Tests → New window, for any one real event with a handful of MCQ/matching questions kept (those autosave on every click with no debounce — the realistic worst case).
-- Publish the test, then go live. Note its `test_id` (visible in the Assessments dashboard / its URL).
+- Assessments → New window, for any one real event with a handful of MCQ/matching questions kept (those autosave on every click with no debounce — the realistic worst case).
+- Publish the assessment, then go live. Note its id (visible in the Assessments dashboard / its URL — passed to the script below as `--test-id`, the flag's actual name).
 
 **2. Run the script** from a machine that can reach the server:
 
@@ -485,9 +485,9 @@ python loadtest_students.py --url https://your-server --test-id <id> --season-id
 
 You'll be prompted for a coach username/password (or set `QBANK_LOADTEST_COACH_USER`/`QBANK_LOADTEST_COACH_PASS` first — never pass them as a plain `--flag`, that lands in shell history). It prints the target and ramp plan and asks for typed confirmation before sending any load — **run this off-hours**, since it generates real concurrent traffic against a shared server.
 
-It ramps through increasing numbers of concurrent synthetic students (`--steps`, default `5,10,20,40,80,160`), each one logging in, loading the test, and answer-saving every question — and prints one row per step: save count, error count, and p50/p95/max latency. It stops automatically at the first step whose error rate or p95 latency crosses a threshold (`--max-error-rate`, `--max-p95-seconds`) — that step is your practical ceiling. It only ever creates/uses synthetic `loadtest_*` accounts and cleans them up (disables them) automatically when it exits, even on Ctrl-C.
+It ramps through increasing numbers of concurrent synthetic students (`--steps`, default `5,10,20,40,80,160`), each one logging in, loading the assessment, and answer-saving every question — and prints one row per step: save count, error count, and p50/p95/max latency. It stops automatically at the first step whose error rate or p95 latency crosses a threshold (`--max-error-rate`, `--max-p95-seconds`) — that step is your practical ceiling. It only ever creates/uses synthetic `loadtest_*` accounts and cleans them up (disables them) automatically when it exits, even on Ctrl-C.
 
-**3. Clean up afterward.** The script never touches the throwaway season/window/test itself (no delete route exists for those) — remove it by hand via the coach UI once you're done experimenting with step sizes.
+**3. Clean up afterward.** The script never touches the throwaway season/window/assessment itself (no delete route exists for those) — remove it by hand via the coach UI once you're done experimenting with step sizes.
 
 ## Quick task index
 

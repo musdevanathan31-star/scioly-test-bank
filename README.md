@@ -17,6 +17,7 @@ Adding another event is a single entry in `events.py` (see [Adding a new event](
 - [Quick start](#quick-start)
 - [Files](#files)
 - [Workflow](#workflow)
+- [Tournament archive](#tournament-archive)
 - [The cache & annotations](#the-cache--annotations)
 - [Who's active right now](#whos-active-right-now)
 - [Branding an instance with a school logo](#branding-an-instance-with-a-school-logo)
@@ -353,6 +354,24 @@ so the next `scp` happens before a download run starts failing mid-batch.
 
 6. **Markdown** — `build_question_bank.py` writes `question_bank.md` grouped by topic, with figures, choice lists, answers, and validation/derivation verdicts as blockquotes. (Generated only when you run the CLI; the web UI works directly from the JSON state and no longer exposes a regenerate-markdown button — JSON is canonical.)
 
+## Tournament archive
+
+Coaches often inherit a large, disorganized backlog of past-tournament PDFs collected over years — mismatched filenames, duplicates, files at the wrong folder depth. The tournament archive gives you a place to put that backlog and triage it over time, instead of sorting it before any of it becomes usable.
+
+**Location.** Files live at `<DATA_ROOT>/tournament_archive/`, uploaded by `scp`, nominally organized as `<Division>/<Event>/<Year>/<Tournament>/<files…>`. That structure is a labeling hint, not a requirement — every part of this feature is built to render a folder in the wrong shape rather than fail on one, since an untidy backlog is the reason the tool exists.
+
+**What you can do**, reachable at `☰ → Tournament archive` (coach-only to browse; volunteers can import into events they already hold):
+
+- **Browse and preview** — walk the tree, and render any PDF's pages on demand without leaving the browser.
+- **Find duplicates** — an index build hashes file content, not filenames, so the same test saved under two different names is still recognized as one file. A dedup panel shows how much space keeping a single copy of each set would reclaim.
+- **Organize** — rename, move, delete, and create folders. Every action previews exactly what it will affect (file count and total size) before you confirm it. Deletes and duplicate removal move files to a trash folder rather than erasing them.
+- **Map folders to events** — a deliberate, stored association between an archive folder and an event slug, so a volunteer's access to the archive follows the same per-event scoping as everything else in the app rather than being inferred from an unreliable folder name.
+- **Import into an event's question bank** — the archive path (`Division/Event/Year/Tournament`) prefills the year, division, and tournament fields the normal upload form asks you to type; you confirm or correct them. Files **move** out of the archive into the event on import, so the backlog visibly shrinks as it's triaged.
+
+Every organizing and importing action is logged and reviewable at `/api/archive/ops`.
+
+See [`HOWTO.md`'s "Browsing the tournament archive"](HOWTO.md#browsing-the-tournament-archive) for the full walkthrough, and [`TODO_archive.md`](TODO_archive.md) for the design decisions and phase order behind this feature.
+
 ## The cache & annotations
 
 Everything writes back to a single file per event: `<event>/.qbank_state.json`. It contains:
@@ -492,8 +511,8 @@ What stays with the code regardless of `DATA_ROOT` (none of it grows unboundedly
 The app supports three roles, stored in `auth_users.json` (`auth.py` — same flat-JSON-file pattern as `events_custom.json`, gitignored, never committed):
 
 - **Coach** — full admin. Every event, plus user management (Manage Users, inside **Club Management**), shared-textbook uploads, and the Assessments dashboard.
-- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to prepare/grade tests for the [season assessmenting workflow](#season-long-testing-workflow) below — the test-assignment picker only offers volunteers with bank-edit access to that event (plus any coach), though the underlying access check itself remains a separate grant unrelated to event access.
-- **Student** — no question-bank access at all (not even read-only — see the [season assessmenting workflow](#season-long-testing-workflow)). Scoped entirely to the tests they're rostered on for the current season: `/my-assessments` (take a live assessment, view released results) and `/scores` (everyone, including students, sees every student's named score — response-level detail is restricted to coaches and whoever actually graded that test).
+- **Volunteer** — edit access only to the specific events a coach assigns them. Unassigned events are hidden from their landing page and 403 on direct URL. Can also be assigned to prepare/grade assessments for the season-long assessment workflow (see `spec.md` §17) — the assignment picker only offers volunteers with bank-edit access to that event (plus any coach), though the underlying access check itself remains a separate grant unrelated to event access.
+- **Student** — no question-bank access at all (not even read-only — see `spec.md` §17). Scoped entirely to the assessments they're rostered on for the current season: `/my-assessments` (take a live assessment, view released results) and `/scores` (everyone, including students, sees every student's named score — response-level detail is restricted to coaches and whoever actually graded that assessment).
 
 **First-time setup** — a fresh `auth_users.json` has no accounts, so there's no one who could use the in-app admin UI yet. Bootstrap the first coach from the CLI:
 
@@ -677,7 +696,7 @@ Repeat per-instance — `DATA_ROOT` is set in each instance's own `.env`, so e.g
 
 "How many students can be logged in and taking a test at once" isn't computable from CPU/RAM specs — the ceiling depends on write-contention behavior under load, not raw compute — so the only reliable way to know it on a given box is to measure it directly against the real answer-save endpoint.
 
-Response storage in `assessments.py` used to be a single bottleneck here: every answer autosave (fired on every MCQ click/matching pick, no debounce — see `templates/assessment_take.html`) round-tripped **one** global file holding every response for every test ever, inside **one** global lock shared by every student on every test. A [`loadtest_students.py`](loadtest_students.py) run against production confirmed it directly — latency grew super-linearly with concurrent students (40 → 0.14s p50, 160 → 2.36s). That's fixed now: responses live one file per `(test_id, username)` pair (`DATA_ROOT/assessment_responses/<test_id>/<username>.json`, see `assessments.py`'s module docstring), so concurrent saves from different students — or the same student on different tests — no longer share a lock or a file at all.
+Response storage in `assessments.py` used to be a single bottleneck here: every answer autosave (fired on every MCQ click/matching pick, no debounce — see `templates/assessment_take.html`) round-tripped **one** global file holding every response for every assessment ever, inside **one** global lock shared by every student on every assessment. A [`loadtest_students.py`](loadtest_students.py) run against production confirmed it directly — latency grew super-linearly with concurrent students (40 → 0.14s p50, 160 → 2.36s). That's fixed now: responses live one file per `(assessment_id, username)` pair (`DATA_ROOT/assessment_responses/<assessment_id>/<username>.json`, see `assessments.py`'s module docstring), so concurrent saves from different students — or the same student on different assessments — no longer share a lock or a file at all.
 
 The remaining ceiling is `--workers` being hard-locked to 1 (see [`deploy/qbank.service`](deploy/qbank.service)'s header and "Why `--threads` is admin-app-configurable but `--workers` never is" above) — you can only add `--threads`, never worker processes, without redesigning `build_question_bank.py`'s and `jobs.py`'s own in-process locks, which is unrelated to and unaffected by the responses-storage fix above. That's still not computable from specs alone, so [`loadtest_students.py`](loadtest_students.py) remains the right tool: given a throwaway published+live test (created by hand first — see [HOWTO.md's "Measuring server capacity"](HOWTO.md#measuring-server-capacity-load-testing) for the full walkthrough), it logs in increasing numbers of synthetic `loadtest_*` students concurrently and has them answer-save every question, printing p50/p95/max latency and error rate per step until one crosses a threshold — that step is the practical ceiling, now bounded by thread-pool depth rather than file contention. It talks real HTTP to a real running instance rather than importing `review_app.py` in-process, since the whole point is exercising gunicorn's actual concurrency; run it against the real deployed box, off-hours, not just a local stand-in, if the number needs to reflect real hardware.
 
