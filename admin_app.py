@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlsplit
 
 try:
     from flask import (
@@ -188,6 +189,18 @@ def _clear_login_failures(ip: str) -> None:
         _login_attempts.pop(ip, None)
 
 
+def _safe_next_url(raw_next: str | None, fallback: str) -> str:
+    if not raw_next:
+        return fallback
+    next_url = raw_next.strip()
+    parsed = urlsplit(next_url)
+    if parsed.scheme or parsed.netloc:
+        return fallback
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        return fallback
+    return next_url
+
+
 # ---------------------------------------------------------------------------
 # Step-up password confirmation for redeploy/restart/rollback/threads.
 #
@@ -268,7 +281,7 @@ def login():
         _clear_login_failures(ip)
         session.clear()
         session["admin"] = True
-        next_url = request.args.get("next") or url_for("dashboard")
+        next_url = _safe_next_url(request.args.get("next"), url_for("dashboard"))
         resp = redirect(next_url)
         resp.set_cookie("csrf_token", secrets.token_hex(32),
                          httponly=False, secure=app.config["SESSION_COOKIE_SECURE"],
