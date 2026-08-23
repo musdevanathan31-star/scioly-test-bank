@@ -35,6 +35,7 @@ import time
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlsplit
 
 try:
     from flask import (
@@ -394,6 +395,18 @@ def _clear_login_failures(ip: str) -> None:
         _login_attempts.pop(ip, None)
 
 
+def _safe_next_url(raw_next: str | None, fallback: str) -> str:
+    if not raw_next:
+        return fallback
+    next_url = raw_next.strip()
+    parsed = urlsplit(next_url)
+    if parsed.scheme or parsed.netloc:
+        return fallback
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        return fallback
+    return next_url
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -411,7 +424,7 @@ def login():
         _clear_login_failures(ip)
         session.clear()
         session["username"] = user.username
-        next_url = request.args.get("next") or _home_url_for(user)
+        next_url = _safe_next_url(request.args.get("next"), _home_url_for(user))
         resp = redirect(next_url)
         # Non-HttpOnly by design — the frontend's fetch patch needs to read
         # this to attach X-CSRF-Token. It's a CSRF defense, not a secret.
