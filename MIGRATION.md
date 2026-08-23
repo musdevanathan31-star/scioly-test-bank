@@ -333,15 +333,15 @@ root**.
 
 ### 6.2 Check the Caddyfile
 
-The domain in `deploy/Caddyfile` is **hardcoded** (currently
-`scioly-02864.com`). Each school is mounted under its own path, matching the
+The domain in `deploy/Caddyfile` is **hardcoded**. Set it to your own public
+domain. Each school is mounted under its own path, matching the
 `APPLICATION_ROOT` set in that instance's `.env`:
 
 | Path | Backend |
 |---|---|
-| `/testbank/ncms*` | `127.0.0.1:5000` |
-| `/testbank/chs*` | `127.0.0.1:5001` |
-| `/testbank/admin*` | `127.0.0.1:5002` |
+| `/testbank/<school-a>*` | `127.0.0.1:<port-a>` |
+| `/testbank/<school-b>*` | `127.0.0.1:<port-b>` |
+| `/testbank/admin*` | `127.0.0.1:<admin-port>` |
 
 > Do **not** change these `handle` blocks to `handle_path`. The blocks forward
 > the path *without* stripping the prefix, because the application's
@@ -382,7 +382,7 @@ this comparison — work through it by hand.
 | Units active | `systemctl status qbank qbank-chs admin-app caddy` | All `active (running)` |
 | Ports listening | `ss -lntp \| grep -E '5000\|5001\|5002'` | One gunicorn per instance |
 | Secrets intact | `sudo deploy/migrate-secrets.sh --check` | Exits zero |
-| App responds | `curl -sI localhost:5000/testbank/ncms/login` | `200` or `302` |
+| App responds | `curl -sI localhost:<port-a>/testbank/<school-a>/login` | `200` or `302` |
 | **Event count** | Open each school's landing page | Matches your Section 2.3 baseline |
 | **Question count per event** | Same page | Matches the baseline, event by event |
 | Login works | Sign in as a coach | Succeeds with the existing password |
@@ -509,24 +509,23 @@ not exist on the old one. Export it before rolling back if it matters.
 
 ## 14. Reference
 
-### Current production values
+### Deployment values template
 
-Replace these with your own where they differ. They describe the machine as
-deployed today, not a requirement.
+Fill these in for your own environment.
 
 | Item | Value |
 |---|---|
-| OS | RHEL 10.2 |
-| Hostname | `testbank` |
-| LAN address | `192.168.1.201` (DHCP-reserved) |
-| Gateway | Ubiquiti Cloud Gateway, with its built-in Dynamic DNS client |
-| Public domain | `scioly-02864.com` (DNS at Namecheap) |
+| OS | `<distribution/version>` |
+| Hostname | `<server-hostname>` |
+| LAN address | `<lan-ip>` (DHCP-reserved) |
+| Gateway | `<router/gateway model>` |
+| Public domain | `<public-domain>` (DNS provider of your choice) |
 | Reverse proxy | Caddy, static binary at `/usr/local/bin/caddy` |
-| NCMS | `https://…/testbank/ncms/` · `/opt/qbank/app` · user `qbank` · `127.0.0.1:5000` · `qbank.service` |
-| CHS | `https://…/testbank/chs/` · `/opt/qbank-chs/app` · user `qbank-chs` · `127.0.0.1:5001` · `qbank-chs.service` |
-| Admin app | `https://…/testbank/admin/` · `/opt/qbank-admin/app` · user `qbank-admin` · `127.0.0.1:5002` · `admin-app.service` |
-| Shared venv | `/opt/qbank/venv` (root-owned) |
-| Data locations | `/data/qbank/ncms`, `/data/qbank/chs` on a 932 GB mount |
+| Primary instance | `https://<domain>/testbank/<school-a>/` · `<app-dir-a>` · user `<user-a>` · `127.0.0.1:<port-a>` · `<service-a>.service` |
+| Secondary instance | `https://<domain>/testbank/<school-b>/` · `<app-dir-b>` · user `<user-b>` · `127.0.0.1:<port-b>` · `<service-b>.service` |
+| Admin app | `https://<domain>/testbank/admin/` · `<admin-app-dir>` · user `<admin-user>` · `127.0.0.1:<admin-port>` · `<admin-service>.service` |
+| Shared venv | `<shared-venv-path>` |
+| Data locations | `<data-root-a>`, `<data-root-b>` |
 
 ### Scripts used in this runbook
 

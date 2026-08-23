@@ -613,16 +613,16 @@ python -c "from werkzeug.security import generate_password_hash; print(generate_
 
 Every action is appended to `/var/log/qbank-admin-actions.log` (who/when/what/outcome, including password-rejected attempts) — see `spec.md` for why the rollback/service-ctl scripts validate their own arguments against `instances.conf` rather than following `_apply-update.sh`'s fixed-path-no-arguments rule.
 
-**Backup destinations** (NCMS only as of this writing — CHS doesn't have its own yet):
+**Backup destinations** (fill in per instance):
 - Credentials for both backup scripts live in `/opt/qbank/backup/.env` (mode 600, `qbank`-owned, never read by the app itself).
-- Extracted data (JSON/markdown/images) → private GitHub repo [`scioly-ncms-test-bank-data`](https://github.com/musdevanathan31-star/scioly-ncms-test-bank-data).
-- Bulk data (PDFs/texts/textbooks, and — by choice — images too) → S3 bucket `ncms-files-texts-and-practice-tests` (region `us-east-2`), via `restic`.
+- Extracted data (JSON/markdown/images) → a private GitHub repository you control.
+- Bulk data (PDFs/texts/textbooks, and — by choice — images too) → an S3 bucket you control (any region), via `restic`.
 - Cron, running as `qbank`: extracted-data backup every 2 hours, bulk backup nightly at 02:00, both logging to `/var/log/qbank-backup.log` — both lines now pass `/opt/qbank/.env` as the trailing argument so they resolve `DATA_ROOT` (see above) instead of looking in the now-empty app directory.
 
 **Known loose ends, kept visible on purpose so they don't get lost**:
-- `/etc/sudoers.d/ncms-deploy` (`ncms ALL=(ALL) NOPASSWD: ALL`) — set up for initial interactive bring-up, broader than anything routine needs now that `qbank-deploy` exists. Candidate for removal or narrowing.
-- CHS has no backup destination yet (no GitHub repo or S3 bucket created for it), and is still running with a placeholder `ANTHROPIC_API_KEY` in its `.env`.
-- The GitHub PAT and AWS access key used to set up NCMS's backups, and the RHEL admin password used during initial bring-up, were all typed in plaintext during setup conversations — worth rotating once things are confirmed stable. The admin app's password is the *same* RHEL admin password, by deliberate choice when it was set up — rotating one should mean rotating the other.
+- Review any temporary broad sudoers grants created during initial bring-up, and narrow or remove them.
+- Ensure every instance has its own backup destination configured and real API keys in place.
+- Rotate any bootstrap credentials that were ever handled in plaintext during setup, and avoid password reuse across roles.
 - No IP allowlist in front of `/testbank/admin` — the login is the only gate, also a deliberate choice (so it stays reachable while traveling), revisit if that tradeoff stops making sense.
 
 ## Maintaining the server
@@ -645,7 +645,7 @@ This is the *only* routine action that needs `qbank-deploy`'s narrow sudo grant 
 **Monthly-ish**:
 - `sudo dnf update -y` on the box for security patches.
 - `df -h` for disk headroom — event data only grows.
-- Sanity-check the Let's Encrypt cert hasn't drifted (Caddy renews automatically; this just confirms it's working): `openssl s_client -connect scioly-02864.com:443 -servername scioly-02864.com 2>/dev/null | openssl x509 -noout -dates`.
+- Sanity-check the Let's Encrypt cert hasn't drifted (Caddy renews automatically; this just confirms it's working): `openssl s_client -connect <your-domain>:443 -servername <your-domain> 2>/dev/null | openssl x509 -noout -dates`.
 - Confirm the UCG's Dynamic DNS is still pointing the domain at the actual current public IP — this *did* silently drift once during initial setup (see "Home-network deployment" above); worth not assuming it stays correct forever.
 
 **Quarterly-ish**:
