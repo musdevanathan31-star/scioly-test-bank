@@ -187,9 +187,9 @@ A season groups events, students, and tests under one label (e.g. "2027"). Open 
 4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Assessments" and the Scores page for each student — it has no effect on who can edit that event's question bank.
 5. Running a new season off an old one's roster? Pick the prior season from **Copy roster from…** and click Copy — only events present in both seasons' lineups copy over, and any since-disabled student is silently skipped.
 
-Note: a season's event lineup only scopes the roster grid and which events a assessment window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.
+Note: a season's event lineup only scopes the roster grid and which events an assessment window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.
 
-### Prepare and publish a test
+### Prepare and publish an assessment
 
 The Assessments dashboard's **⬇ Test** and **⬇ Key** buttons download the paper version. You get a PDF with any question figures embedded; if the server doesn't have `reportlab` installed you get markdown instead, which is the same content without the images. Add `.md` to the URL if you specifically want the text to edit.
 
@@ -200,7 +200,7 @@ On the **Tests** dashboard, pick the season, then:
 4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already been prepared.
 5. Back on the Assessments dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "preparing" — only works before the window opens and before any student has saved an answer.
 
-### Run a assessment window and grade results
+### Run an assessment window and grade results
 
 The **Grade** page shows each question's **expected answer** in a boxed panel above the student responses, so you can mark without opening the bank in another tab. If no answer was ever recorded for that question it says so explicitly rather than showing a blank. Each free-response answer has a **✓ Full** button next to its score box — one click awards the maximum points for that question and saves immediately, instead of typing the number in. It greys out once that answer is already at full marks, so you can see at a glance which ones you've already given full credit. Type in the box instead for partial credit.
 
@@ -242,11 +242,14 @@ tournament tests, laid out as `<Division>/<Event>/<Year>/<Tournament>`. Click
 through one level at a time; each folder shows how many files and how much
 data sit beneath it.
 
-Right now this is **read-only** — you can look, but nothing here moves,
-renames or deletes yet. That is deliberate: browsing has to prove itself
-against the full collection before anything is built that can change it.
+You can browse, organize (rename, move, delete, create folders), find and
+remove duplicates, preview any file, and import files into an event's
+question bank directly from here. Destructive actions — delete and remove
+duplicates — send files to a trash folder rather than erasing them, so a
+mis-click is recoverable; every action is logged and reviewable at
+`/api/archive/ops`.
 
-Two things to know:
+What to know before you use it:
 
 - **Rebuild index** is what makes the file counts appear, and it needs
   running once after you upload. Browsing works without it; you just see
@@ -284,6 +287,11 @@ Two things to know:
   tournament are filled in from the folder path. Files **move** — they leave
   the archive, which is how the backlog shrinks. Volunteers can import into
   the events they already hold.
+- Both archive pages live in their own **☰** group, just under the question
+  bank: **Tournament archive** (browse and import) and, for coaches,
+  **Archive mapping**. They sit together because one is not much use without
+  the other, and next to the bank because the archive is where tests come
+  from.
 - If a **"The archive is read-only to this server"** banner appears, the app
   cannot write to the archive tree. Browsing, indexing, preview and duplicate
   detection all still work — they only read — but organising, importing and
@@ -367,7 +375,7 @@ Same as the coach workflow — **Quiz** from any of your assigned events.
 
 ### Preparing or grading a season assessment you've been assigned to
 
-A coach can assign you to prepare or grade a test for an event — the assignment picker only offers you for an event if you already have bank-edit access to it (or you're a coach), so this normally lines up with your assigned-events list above. Click **Tests** in the header to see what you've been assigned, then **Prepare** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Prepare and publish a test" / "Run a assessment window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
+A coach can assign you to prepare or grade an assessment for an event — the assignment picker only offers you for an event if you already have bank-edit access to it (or you're a coach), so this normally lines up with your assigned-events list above. Click **Assessments** in the header to see what you've been assigned, then **Prepare** (pick/randomly-suggest/publish questions) or **Grade** (score free-response answers) on that row — see the coach's "Prepare and publish an assessment" / "Run an assessment window and grade results" walkthroughs above; the steps are identical for a volunteer, just scoped to your specific assignment.
 
 ### Checking whether the server is busy before you start something big
 
@@ -375,7 +383,7 @@ The box runs **one worker process per school** and **one background job at a tim
 
 Two things in the UI tell you what's happening without asking anyone:
 
-- **`👥 3 active`** in the page header — people who did something on this server in the last 5 minutes, across all schools' events, not just yours. During a assessment window it also breaks out how many are students taking a test, which is the heaviest thing this server ever does. No badge means it's just you.
+- **`👥 3 active`** in the page header — people who did something on this server in the last 5 minutes, across all schools' events, not just yours. During an assessment window it also breaks out how many are students taking a test, which is the heaviest thing this server ever does. No badge means it's just you.
 - **`👥 2 others here`** next to an event on the landing page, and on the event's own page — other people are working in that event right now. You're never counted in this one, so any number you see is someone else. Worth a message before you reprocess the PDF they may be mid-review on.
 
 Alongside them, **`⏳ 1 job running`** tells you the queue is already occupied. Seeing that plus a couple of active people is the moment to hold off on a bulk reprocess for a few minutes — nothing will break if you don't, it'll just all be slower for everyone, including you.
@@ -495,7 +503,7 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Set your own LLM API key | Coach, Volunteer | ☰ → Settings → LLM API Keys |
 | Create/disable a user | Coach | ☰ → Club → Manage Users |
 | Permanently delete a user / season / event | Coach (needs `ALLOW_HARD_DELETE`) | 🗑 Delete on the relevant page |
-| Permanently delete a assessment window or test | Coach (needs `ALLOW_HARD_DELETE`) | Assessments dashboard → 🗑 |
+| Permanently delete an assessment window or test | Coach (needs `ALLOW_HARD_DELETE`) | Assessments dashboard → 🗑 |
 | Let a student retake an assessment they submitted | Coach (needs `ALLOW_HARD_DELETE`) | Grade page → 🗑 next to their name |
 | Register a new event | Coach | Landing page → + Register a new event |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
@@ -525,7 +533,7 @@ While a long action runs (upload/extract, reprocess, a scrape, LLM generation) a
 | Create/mark current a season | Coach | Club Management |
 | Bulk-create students + roster via CSV | Coach | Club Management → + Bulk-add students from CSV |
 | Roster a student onto an event | Coach | Club Management → roster grid |
-| Create a assessment window, assign coaches/volunteers | Coach | Assessments dashboard → Assign… |
+| Create an assessment window, assign coaches/volunteers | Coach | Assessments dashboard → Assign… |
 | Prepare a test (pick questions, publish) | Coach, assigned Volunteer | Assessments dashboard → Prepare |
 | Go live / un-publish a test | Coach | Assessments dashboard |
 | Grant a student a personal makeup window | Coach | Assessments dashboard → + Makeup window |

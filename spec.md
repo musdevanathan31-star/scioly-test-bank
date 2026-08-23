@@ -943,8 +943,8 @@ Two new modules, both following `auth.py`'s exact persistence idiom (frozen data
                   "closes_at": "2027-07-20T14:30:00", "event_slugs": ["anatomy"],
                   "assignments": {"anatomy": ["vol1"]}, "archived": false, ...}}
 
-// assessments.json — Test.snapshot entry shapes (mcq/frq share one shape, matching its own)
-{"<test_id>": {"window_id": "...", "event_slug": "anatomy", "status": "live",
+// assessments.json — Assessment.snapshot entry shapes (mcq/frq share one shape, matching its own)
+{"<assessment_id>": {"window_id": "...", "event_slug": "anatomy", "status": "live",
   "kept": [{"bucket":"...", "number":"7", "max_points":1}],
   "snapshot": [
     {"bucket":"...", "number":"7", "qtype":"mcq", "text":"...",
@@ -958,14 +958,17 @@ Two new modules, both following `auth.py`'s exact persistence idiom (frozen data
   "overrides": {"asmith": {"opens_at":"...","closes_at":"...","granted_by":"coach1","granted_at":"...","reason":"absent"}},
   ...}}
 
-// test_responses.json — keyed {test_id: {username: Response}}
-{"<test_id>": {"asmith": {
+// assessment_responses/<assessment_id>/<username>.json — one file per (assessment, student)
+// pair, not one combined file (see §16's `loadtest_students.py`/`RESPONSES_DIR` discussion):
+// the earlier single-file design serialized every student's autosave behind one lock and
+// measurably degraded under concurrent load; this layout gives each pair its own file and lock.
+{
   "question_order": [2,0,1],
   "answers": {"7": {"qtype":"mcq","picked":"B"}, "12": {"qtype":"frq","text":"..."}},
   "auto_grade": {"7": {"correct":true,"points_earned":1,"points_possible":1}},
   "manual_grade": {"12": {"points_earned":2.5,"points_possible":3,"graded_by":"vol1","graded_at":"...","comment":""}},
   "status": "submitted", "released": true, "released_at": "...", "released_by": "coach1", ...
-}}}
+}
 ```
 
 ### Security notes (see also §14)
@@ -1013,7 +1016,7 @@ README.md's "Hard delete" covers what can be deleted and how it's gated. This co
 
 **Why cascade policy lives in `deletion.py` and not in each module**: `assessments.py` already imports `seasons.py`, so `seasons.py` cannot cascade downward into windows/assessments without an import cycle. Each module keeps primitives that touch only its own storage (`delete_test_record` explicitly does *not* remove responses), and this module composes them. That also puts the entire answer to "what does deleting X actually destroy" in one file, rather than distributed across four modules where it would have to be reassembled by reading all of them.
 
-**Why deleting an event moves its directory instead of removing it**: the asymmetry of consequences. Every other entity here is cheap to recreate — a season is one form, a assessment window is three fields. An event directory is a PDF library plus extracted images plus a state file representing potentially a season of curation, and the app has never had a route that deletes an uploaded file for exactly that reason. Moving to `<DATA_ROOT>/.deleted/` keeps the click cheap to undo while still getting the event out of the UI; actually reclaiming the space stays a deliberate operator action taken with a shell prompt in front of them. The move happens *before* deregistering, so a failed move leaves the event fully usable rather than invisible in the UI with its data stranded on disk.
+**Why deleting an event moves its directory instead of removing it**: the asymmetry of consequences. Every other entity here is cheap to recreate — a season is one form, an assessment window is three fields. An event directory is a PDF library plus extracted images plus a state file representing potentially a season of curation, and the app has never had a route that deletes an uploaded file for exactly that reason. Moving to `<DATA_ROOT>/.deleted/` keeps the click cheap to undo while still getting the event out of the UI; actually reclaiming the space stays a deliberate operator action taken with a shell prompt in front of them. The move happens *before* deregistering, so a failed move leaves the event fully usable rather than invisible in the UI with its data stranded on disk.
 
 **Why the response delete exists as its own entity**: it was the one case where the alternative was worse than deletion — a student who submits by accident otherwise needs a coach to hand-edit storage or delete the entire test. Scoping it to one `(test_id, username)` file, which the storage layout already isolates, makes "let them retake" a single safe action rather than a reason to reach for a bigger hammer.
 

@@ -79,17 +79,27 @@
       {{ nav_event_group("📄 Primary sources", "sources_page") }}
     {% endif %}
 
+    {# --- The tournament archive ------------------------------------------
+         Its own group, next to the question bank rather than in with club
+         administration: the archive is where tests come from, so it belongs
+         with the bank it feeds. Browsing is scoped to a volunteer's own
+         events; mapping folders to events stays a coach job, but the two
+         belong together — one is unusable without the other. #}
+    {% if current_user.role in ("coach", "volunteer") %}
+    <div class="nav-sep"></div>
+      <a class="nav-link" href="{{ url_for('archive_page') }}">🗃 Tournament archive</a>
+      {% if current_user.role == "coach" %}
+      <a class="nav-link" href="{{ url_for('archive_map_page') }}">🔗 Archive mapping</a>
+      {% endif %}
+    {% endif %}
+
     {# --- Running the club ----------------------------------------------- #}
     {% if current_user.role in ("coach", "volunteer") %}
     <div class="nav-sep"></div>
       <a class="nav-link" href="{{ url_for('assessments_dashboard_page') }}">🗓 Assessments</a>
       <a class="nav-link" href="{{ url_for('index') }}">🧪 Events</a>
-      {# The archive is browsable by volunteers, scoped to the events they
-         already hold; mapping folders to events stays a coach job. #}
-      <a class="nav-link" href="{{ url_for('archive_page') }}">🗃 Tournament archive</a>
       {% if current_user.role == "coach" %}
       <a class="nav-link" href="{{ url_for('club_management_page') }}">👥 Club</a>
-      <a class="nav-link" href="{{ url_for('archive_map_page') }}">🔗 Archive mapping</a>
       {% endif %}
       {# Settings closes this group for the roles that have one. It's
          available to every role, though, so a student gets it in the last

@@ -142,3 +142,79 @@ def test_coaches_and_volunteers_still_get_their_event_groups(app_with_users):
         groups = _menu_groups(c)
         assert any("Question bank" in g for g in groups), (who, groups)
         assert any("Test bank" in g for g in groups), (who, groups)
+
+
+# ---------------------------------------------------------------------------
+# Menu grouping — which separator each destination sits under
+#
+# The archive was scattered: Tournament archive sat in the club group and
+# Archive mapping was two entries below it, with Club in between. They are
+# one workflow — mapping is what makes browsing useful — so they share a
+# group, placed with the question bank rather than with club administration
+# because the archive is where tests come from.
+# ---------------------------------------------------------------------------
+
+_MENU_ITEM = re.compile(
+    r'<a class="nav-link"[^>]*>([^<]+)</a>'
+    r'|(<div class="nav-sep">)'
+    r'|class="nav-group-toggle"[^>]*>([^<]+)<')
+
+
+def _menu_sections(client):
+    """The menu as a list of groups, each a list of visible labels."""
+    html = client.get("/settings").get_data(as_text=True)
+    panel = html[html.index('id="navIconPanel"'):html.index("</form>")]
+    sections, current = [], []
+    for m in _MENU_ITEM.finditer(panel):
+        if m.group(2):
+            sections.append(current)
+            current = []
+        else:
+            current.append((m.group(1) or m.group(3)).strip())
+    sections.append(current)
+    return [s for s in sections if s]
+
+
+def _section_with(sections, needle):
+    return next((s for s in sections if any(needle in i for i in s)), None)
+
+
+def test_the_archive_pages_share_a_group_for_a_coach(app_with_users):
+    review_app, _slug = app_with_users
+    c, _r = _login(review_app.app, "coach1")
+    sections = _menu_sections(c)
+    group = _section_with(sections, "Tournament archive")
+    assert group is not None
+    assert any("Archive mapping" in i for i in group), sections
+    # Nothing unrelated shares it — Club in particular used to sit between.
+    assert len(group) == 2, group
+
+
+def test_a_volunteer_gets_the_archive_without_the_mapping_page(app_with_users):
+    review_app, _slug = app_with_users
+    c, _r = _login(review_app.app, "vol1")
+    sections = _menu_sections(c)
+    group = _section_with(sections, "Tournament archive")
+    assert group == ["🗃 Tournament archive"], sections
+    # Mapping is coach-only, and the menu hides rather than 403s.
+    assert not any("Archive mapping" in i for s in sections for i in s)
+
+
+def test_the_archive_group_sits_with_the_question_bank_not_the_club(app_with_users):
+    review_app, _slug = app_with_users
+    c, _r = _login(review_app.app, "coach1")
+    sections = _menu_sections(c)
+    idx = {name: n for n, s in enumerate(sections) for name in s}
+    archive = next(n for name, n in idx.items() if "Tournament archive" in name)
+    bank = next(n for name, n in idx.items() if "Question bank" in name)
+    club = next(n for name, n in idx.items() if "Club" in name)
+    # The archive feeds the bank, so it follows it and precedes club admin.
+    assert bank < archive < club, sections
+
+
+def test_students_see_no_archive_entry_at_all(app_with_users):
+    review_app, _slug = app_with_users
+    c, _r = _login(review_app.app, "stu1")
+    sections = _menu_sections(c)
+    flat = [i for s in sections for i in s]
+    assert not any("archive" in i.lower() for i in flat), flat
