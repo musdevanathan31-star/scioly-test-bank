@@ -153,6 +153,39 @@
 .validate-bar .rationale{flex-basis:100%;font-style:italic;color:#444}
 .validate-bar .src{flex-basis:100%;font-size:11px;color:#666}
 .btn-tiny{padding:2px 8px;font-size:11px}
+/* Question-type segmented control (P-01) — always visible, first thing in
+   the Content zone, so "type" reads as a settable property instead of
+   something inferred/hidden in a corner button. */
+.qtype-seg{display:flex;gap:0;margin:2px 0 8px;border:1px solid var(--line);
+  border-radius:6px;overflow:hidden;width:fit-content}
+.qtype-seg .seg-lbl{padding:5px 9px;font-size:11px;font-weight:600;
+  color:var(--muted);background:var(--bg-alt);
+  border-right:1px solid var(--line);display:flex;align-items:center}
+.qtype-seg button{border:none;border-right:1px solid var(--line);
+  border-radius:0;background:var(--bg-card);color:var(--fg-soft);
+  font-size:12px;padding:5px 11px}
+.qtype-seg button:last-child{border-right:none}
+.qtype-seg button.on{background:var(--accent);color:#fff;font-weight:600}
+/* Card zoning (P-02) — Identity/Content stay always-visible; Attachments/
+   Grouping/Review collapse behind a native <details>, matching the
+   .cases-panel pattern already on this page, but themed with CSS vars
+   instead of hardcoded colors. */
+.q-zone-title{font-size:11px;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+details.q-zone{border:1px solid var(--line);border-radius:6px;
+  background:var(--bg-alt);margin-top:8px}
+details.q-zone summary{cursor:pointer;padding:6px 10px;font-size:12px;
+  font-weight:600;color:var(--fg-soft);list-style:none;
+  display:flex;align-items:center;gap:6px}
+details.q-zone summary::-webkit-details-marker{display:none}
+details.q-zone summary::before{content:"▸";font-size:11px;color:var(--muted)}
+details.q-zone[open] summary::before{content:"▾"}
+details.q-zone .zone-body{padding:2px 10px 10px}
+/* Inline field-capture buttons, moved next to the field they populate
+   instead of a single detached six-button bar. */
+.field-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;
+  flex-wrap:wrap}
+.field-capture-btn{white-space:nowrap}
 .help{font-size:12px;color:var(--muted);margin:4px 0 10px 0;line-height:1.5}
 .help kbd{background:#eee;border:1px solid #ccc;padding:1px 5px;
   border-radius:4px;font-size:11px}
@@ -658,19 +691,39 @@ function annOverrideMatching(q){
   annOverride(q.number, "qtype", "matching");
   annUpdateAdded(q.number, q);
 }
-// T/F toggle — mirrors annOverrideMatching()'s "always override both
-// fields together" pattern: qtype and the now-empty choices list.
-function annOverrideTf(q, on){
-  if(on){
+// Question type is a settable property with exactly four values (must match
+// _VALID_QTYPES in review_app.py: mcq/frq/tf/matching). Switching type mirrors
+// annOverrideMatching()'s "always override every field the transition
+// touches together" pattern, so a saved edit survives even if a later
+// reprocess's auto-detection doesn't re-infer the same type. Mcq/frq have no
+// explicit qtype on most existing questions — questionType() infers those —
+// but once the user picks a segment here we write it explicitly.
+function questionType(q){
+  return q.qtype || (q.choices && q.choices.length ? "mcq" : "frq");
+}
+function annOverrideQtype(q, newType){
+  if(newType === "tf"){
     q.qtype = "tf";
     q.choices = [];
     if(q.answer !== "True" && q.answer !== "False") q.answer = "True";
+  } else if(newType === "frq"){
+    q.qtype = "frq";
+    q.choices = [];
+  } else if(newType === "mcq"){
+    q.qtype = "mcq";
+    if(!Array.isArray(q.choices)) q.choices = [];
+  } else if(newType === "matching"){
+    q.qtype = "matching";
+    // Empty structure the in-card editor's "+" (addMatchItem) can fill in —
+    // matchingHTML() already supports building a matching question by hand,
+    // it isn't only reachable via the toolbar's two-drag capture flow.
+    q.matching = q.matching || {left: [], right: [], pairs: {}};
   } else {
-    delete q.qtype;
+    return;
   }
-  annOverride(q.number, "qtype", q.qtype || "");
+  annOverride(q.number, "qtype", q.qtype);
   annOverride(q.number, "choices", q.choices);
-  annOverride(q.number, "answer", q.answer);
+  if(newType === "matching") annOverride(q.number, "matching", q.matching);
   annUpdateAdded(q.number, q);
 }
 function annAddQuestion(q){
@@ -1246,6 +1299,14 @@ function renderImage(){
 
 let casesPanelOpen = false;
 
+// Per-card, per-zone collapse state for the Attachments/Grouping/Review
+// <details> zones (P-02) — keyed by question id + zone name, the same
+// pattern casesPanelOpen uses for the roster panel, so a zone a reviewer
+// opened doesn't snap shut on the next renderCards() (which rebuilds every
+// card's innerHTML from scratch).
+let cardZoneOpen = {};
+function zoneIsOpen(qid, zone){ return !!cardZoneOpen[`${qid}:${zone}`]; }
+
 function renderCards(){
   const list = questionsOnPage(curPage);
   const root = document.getElementById("cards");
@@ -1591,16 +1652,22 @@ function cardHTML(q){
       <span class="summary-line">${esc((q.text||"").slice(0,90))}${choicesPreview}</span>
     </div>`;
   }
-  const captureBar = isFocused ? `
-    <div class="capture-bar">
-      <span class="lbl">Capture from ${target === "key" ? "Key" : "Test"} PDF →</span>
-      <button data-act="capture" data-field="stem" title="Drag a rectangle on the PDF; the text is captured as this question's stem (replaces existing text)">Stem</button>
-      <button data-act="capture" data-field="choices" title="Drag a rectangle that contains A/B/C/D options; they're split and assigned to this question. Falls back to line-splitting if option letters were dropped during PDF extraction.">Choices</button>
-      <button data-act="capture" data-field="answer" title="Drag a rectangle whose text becomes this question's answer">Answer ${target !== "key" && STATE.has_key ? "(switch to Key)" : ""}</button>
-      <button data-act="capture-math" data-into="text" title="Drag over an equation; Haiku vision converts it to LaTeX and inserts into the stem">Math → Stem</button>
-      <button data-act="capture-math" data-into="answer" title="Drag over an equation; Haiku vision converts it to LaTeX and inserts into the answer">Math → Answer</button>
-      <button data-act="compare" title="Compare this question side-by-side with another from the same PDF">⇄ Compare</button>
-    </div>` : "";
+  // Question-type segmented control (P-01) — always visible, first thing
+  // in the Content zone. questionType() infers mcq/frq for the (common)
+  // case of no explicit qtype, so existing questions show the right
+  // segment without a migration.
+  const curQtype = questionType(q);
+  const qtypeSeg = (val, label, hint) => `
+    <button type="button" class="${curQtype === val ? "on" : ""}" data-act="setQtype" data-qtype="${val}"
+            title="${esc(hint)}${curQtype === val ? " (current)" : ""}">${label}</button>`;
+  const qtypeSegHTML = `
+    <div class="qtype-seg" role="group" aria-label="Question type">
+      <span class="seg-lbl">Type</span>
+      ${qtypeSeg("mcq", "MCQ", "Multiple choice — lettered choice list, pick/typed answer")}
+      ${qtypeSeg("tf", "T/F", "True/False — clears choices, swaps the answer field for a True/False dropdown")}
+      ${qtypeSeg("frq", "FRQ", "Free response — clears choices, plain-text answer")}
+      ${qtypeSeg("matching", "Matching", "Two-column matching — add rows here, or drag-capture columns from the PDF")}
+    </div>`;
   const v = q.validation;
   // Lets a human set/override the verdict directly, no LLM call — mirrors
   // Browse page's existing manual Validation dropdown (validated_by:
@@ -1679,8 +1746,25 @@ function cardHTML(q){
   const selCheck = SELECTION_MODE
     ? `<input type="checkbox" class="sel-check" data-act="toggleSelect" ${isSelected ? "checked" : ""}
               title="Select this question for bulk context assignment">` : "";
+  // Zone summaries (P-02) — a reviewer must be able to tell what a
+  // collapsed zone holds without opening it.
+  // Built from raw (unescaped) values — the whole string is escaped exactly
+  // once, at the point it's interpolated into the <summary> tag below.
+  // Escaping here too would double-encode anything already escaped (e.g. an
+  // "&" in a context title becoming "&amp;amp;").
+  const attCount = (q.images || []).length;
+  const attSummary = attCount ? `Attachments — ${attCount} image${attCount === 1 ? "" : "s"}` : "Attachments — none";
+  const grpSummary = linkedCtx ? `Grouping — in "${linkedCtx.title || linkedCtx.id}"` : "Grouping — ungrouped";
+  let revSummary;
+  if(v && v.status){
+    const icon2 = {correct:"✓",incorrect:"⚠",uncertain:"?",unavailable:"·"}[v.status] || "·";
+    revSummary = v.stale ? "Review — stale (re-validate)" : `Review — ${icon2} ${v.status}`;
+  } else {
+    revSummary = "Review — unvalidated";
+  }
   return `
   <div class="q-card ${isFocused ? "focused":""} ${SELECTION_MODE ? "sel-mode":""} ${isSelected ? "sel-picked":""}" data-id="${q._id}">
+    <div class="q-zone-title">Identity</div>
     <div class="row tight">
       ${selCheck}
       <button data-act="toggleCollapse" title="Collapse this card to a single-line summary" class="ghost btn-tiny"
@@ -1691,53 +1775,86 @@ function cardHTML(q){
       ${multiPageBadge}
       ${spanPrevBtn}
       ${spanNextBtn}
-      <button class="ghost btn-tiny" data-act="toggleTf"
-              title="Mark this as a True/False question (clears choices; most Sci-Oly T/F items print no lettered options).${q.qtype === "tf" ? " Click again to unmark." : ""}"
-              style="${q.qtype === "tf" ? "background:var(--accent,#2a6);color:#fff" : ""}">T/F</button>
       <button class="delQ" data-act="delQ" title="Delete question">🗑</button>
     </div>
-    ${captureBar}
-    <div class="row tight" style="margin-top:4px">
-      <span class="lbl">Context</span>
-      <select class="ctx-pick" data-edit="context_id"
-              title="Link this question to a shared context block. Captured via the '+ Add context from region' button in the toolbar.">${ctxOpts}</select>
+
+    <div class="q-zone-title" style="margin-top:8px">Content</div>
+    ${qtypeSegHTML}
+    <div class="field-row">
+      <span class="lbl">Text</span>
+      ${isFocused ? `<button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="stem"
+              title="Drag a rectangle on the PDF; the text is captured as this question's stem (replaces existing text)">📋 Capture stem</button>` : ""}
     </div>
-    ${ctxPreview}
-    <div class="row tight"><span class="lbl">Text</span></div>
     <textarea data-edit="text">${esc(q.text)}</textarea>
     <div class="math-preview" data-preview-for="text"></div>
-    ${q.qtype === "matching" ? matchingHTML(q) : q.qtype === "tf" ? `
-    <div class="row tight" style="margin-top:6px"><span class="lbl">Answer</span></div>
+    ${curQtype === "matching" ? matchingHTML(q) : curQtype === "tf" ? `
+    <div class="field-row" style="margin-top:6px"><span class="lbl">Answer</span></div>
     <select data-edit="answer">
       <option value="True" ${q.answer === "True" ? "selected" : ""}>True</option>
       <option value="False" ${q.answer === "False" ? "selected" : ""}>False</option>
     </select>` : `
-    <div class="row tight" style="margin-top:6px">
+    <div class="field-row" style="margin-top:6px">
       <span class="lbl">Choices</span>
       <button class="ghost" data-act="addChoice" title="Append a new empty choice to this question">+ add choice</button>
+      ${isFocused ? `<button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="choices"
+              title="Drag a rectangle that contains A/B/C/D options; they're split and assigned to this question. Falls back to line-splitting if option letters were dropped during PDF extraction.">📋 Capture choices</button>` : ""}
     </div>
     ${choices}
-    <div class="row tight" style="margin-top:6px"><span class="lbl">Answer</span></div>
-    <input type="text" data-edit="answer" value="${esc(q.answer)}">`}
-    ${imgs ? `<div class="images">${imgs}</div>` : ""}
-    ${pendingNote}
-    <div class="row tight" style="margin-top:6px;justify-content:flex-start">
-      <button class="ghost btn-tiny" data-act="uploadImg"
-              title="Upload an image file (PNG/JPG/SVG/WebP) and attach it to this question.">
-        📁 Upload image
-      </button>
-      <button class="ghost btn-tiny" data-act="genDiagram"
-              title="Open a small chat with Claude Sonnet to generate an SVG diagram for this question, seeded with the stem and topic.">
-        🤖 Generate diagram
-      </button>
-      ${isFocused ? `
-      <button class="ghost btn-tiny" data-act="pickImage"
-              title="Drag a rectangle on the PDF; that region is saved as a PNG and attached to this question. Use when the automatic extraction missed an image.">
-        📌 Pick image
-      </button>` : ""}
-      <input type="file" data-img-upload accept="image/*,.svg" style="display:none">
+    <div class="field-row" style="margin-top:6px">
+      <span class="lbl">Answer</span>
+      ${isFocused ? `<button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="answer"
+              title="Drag a rectangle whose text becomes this question's answer">📋 Capture answer ${target !== "key" && STATE.has_key ? "(switch to Key)" : ""}</button>` : ""}
     </div>
-    ${validateBar}
+    <input type="text" data-edit="answer" value="${esc(q.answer)}">`}
+    ${isFocused ? `
+    <div class="row tight" style="margin-top:6px">
+      <button class="ghost btn-tiny" data-act="capture-math" data-into="text" title="Drag over an equation; Haiku vision converts it to LaTeX and inserts into the stem">Math → Stem</button>
+      <button class="ghost btn-tiny" data-act="capture-math" data-into="answer" title="Drag over an equation; Haiku vision converts it to LaTeX and inserts into the answer">Math → Answer</button>
+      <button class="ghost btn-tiny" data-act="compare" title="Compare this question side-by-side with another from the same PDF">⇄ Compare</button>
+    </div>` : ""}
+    ${pendingNote}
+
+    <details class="q-zone" data-zone="attachments" ${zoneIsOpen(q._id, "attachments") ? "open" : ""}>
+      <summary>${esc(attSummary)}</summary>
+      <div class="zone-body">
+        ${imgs ? `<div class="images">${imgs}</div>` : `<div class="muted" style="font-size:12px">No images attached.</div>`}
+        <div class="row tight" style="margin-top:6px;justify-content:flex-start">
+          <button class="ghost btn-tiny" data-act="uploadImg"
+                  title="Upload an image file (PNG/JPG/SVG/WebP) and attach it to this question.">
+            📁 Upload image
+          </button>
+          <button class="ghost btn-tiny" data-act="genDiagram"
+                  title="Open a small chat with Claude Sonnet to generate an SVG diagram for this question, seeded with the stem and topic.">
+            🤖 Generate diagram
+          </button>
+          ${isFocused ? `
+          <button class="ghost btn-tiny" data-act="pickImage"
+                  title="Drag a rectangle on the PDF; that region is saved as a PNG and attached to this question. Use when the automatic extraction missed an image.">
+            📌 Pick image
+          </button>` : ""}
+          <input type="file" data-img-upload accept="image/*,.svg" style="display:none">
+        </div>
+      </div>
+    </details>
+
+    <details class="q-zone" data-zone="grouping" ${zoneIsOpen(q._id, "grouping") ? "open" : ""}>
+      <summary>${esc(grpSummary)}</summary>
+      <div class="zone-body">
+        <div class="row tight">
+          <span class="lbl">Context</span>
+          <select class="ctx-pick" data-edit="context_id"
+                  title="Link this question to a shared context block. Captured via the '+ Add context from region' button in the toolbar.">${ctxOpts}</select>
+        </div>
+        ${ctxPreview}
+      </div>
+    </details>
+
+    <details class="q-zone" data-zone="review" ${zoneIsOpen(q._id, "review") ? "open" : ""}>
+      <summary>${esc(revSummary)}</summary>
+      <div class="zone-body">
+        ${validateBar}
+      </div>
+    </details>
   </div>`;
 }
 
@@ -1749,11 +1866,18 @@ function findQ(id){ return STATE.questions.find(q => q._id === Number(id)); }
 function bindCardEvents(){
   document.querySelectorAll(".q-card").forEach(card => {
     const id = card.dataset.id;
+    // Persist each Attachments/Grouping/Review zone's open/closed state
+    // across the next renderCards() wholesale-innerHTML rebuild.
+    card.querySelectorAll("details.q-zone").forEach(det => {
+      det.addEventListener("toggle", () => {
+        cardZoneOpen[`${id}:${det.dataset.zone}`] = det.open;
+      });
+    });
     card.addEventListener("click", e => {
       // Selection mode (grouping questions into a context) takes priority
       // over normal focus — clicking anywhere on the card (outside an
       // input/button) toggles its checkbox.
-      if(SELECTION_MODE && !e.target.closest("input,textarea,button,select,.x")){
+      if(SELECTION_MODE && !e.target.closest("input,textarea,button,select,.x,summary")){
         const q = findQ(id);
         if(q) toggleQSelection(q.number);
         return;
@@ -1762,7 +1886,7 @@ function bindCardEvents(){
       // the whole-question assignment below, since a click inside a
       // .match-item row is a more specific target than the card background.
       const matchItemEl = e.target.closest(".match-item");
-      if(selectedImage && matchItemEl && !e.target.closest("input,textarea,button,select,.x")){
+      if(selectedImage && matchItemEl && !e.target.closest("input,textarea,button,select,.x,summary")){
         const q = findQ(id);
         const side = matchItemEl.dataset.side, idx = Number(matchItemEl.dataset.idx);
         const item = q && q.matching && q.matching[side] && q.matching[side][idx];
@@ -1777,7 +1901,7 @@ function bindCardEvents(){
         return;
       }
       // Image assignment next (highest priority among the rest)
-      if(selectedImage && !e.target.closest("input,textarea,button,select,.x")){
+      if(selectedImage && !e.target.closest("input,textarea,button,select,.x,summary")){
         const q = findQ(id);
         if(q && !(q.images||[]).includes(selectedImage)){
           // Shift+click = SHARE: attach to this Q without removing from others.
@@ -1802,7 +1926,7 @@ function bindCardEvents(){
       }
       // Otherwise focus this card (unless click on button/input).
       // If the card is currently collapsed, expand it as part of the focus.
-      if(!e.target.closest("input,textarea,button,select")){
+      if(!e.target.closest("input,textarea,button,select,summary")){
         focusedId = Number(id);
         if(collapsedIds.has(Number(id))) collapsedIds.delete(Number(id));
         renderCards();
@@ -1911,9 +2035,11 @@ function bindCardEvents(){
           STATE.questions = STATE.questions.filter(x => x._id !== q._id);
           if(focusedId === q._id) focusedId = null;
           setDirty(true); renderCards(); renderImageBay();
-        } else if(act === "toggleTf"){
-          _undoSnapshot(`toggle T/F Q#${q.number}`);
-          annOverrideTf(q, q.qtype !== "tf");
+        } else if(act === "setQtype"){
+          const newType = el.dataset.qtype;
+          if(newType === questionType(q)) return;
+          _undoSnapshot(`change Q#${q.number} type to ${newType}`);
+          annOverrideQtype(q, newType);
           setDirty(true); renderCards();
         } else if(act === "toggleCollapse"){
           if(collapsedIds.has(q._id)) collapsedIds.delete(q._id);
