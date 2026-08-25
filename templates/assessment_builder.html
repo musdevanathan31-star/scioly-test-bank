@@ -43,6 +43,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
           <option value="mcq">MCQ</option>
           <option value="frq">FRQ</option>
           <option value="matching">Matching</option>
+          <option value="tf">True/False</option>
         </select>
         <label class="muted" style="font-size:12px"><input type="checkbox" id="f_correct_only" checked> validated correct only</label>
         <label class="muted" style="font-size:12px"
@@ -116,6 +117,7 @@ function findPoolQ(bucket, number){
 
 function questionTypeOf(q){
   if(q._is_matching) return "matching";
+  if(q._is_tf) return "tf";
   if(q._is_mcq) return "mcq";
   return "frq";
 }

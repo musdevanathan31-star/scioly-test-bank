@@ -577,6 +577,14 @@ def _render_question(q: dict, index: int, *, include_answers: bool) -> list[str]
             joined = ", ".join(f"{k}\u2192{v}" for k, v in sorted(pairs.items()))
             lines.append(f"**Answer:** {joined or '(no key recorded)'}")
             lines.append("")
+    elif qtype == "tf":
+        # Without this branch a tf item (choices: []) silently falls through
+        # to the FRQ blank-lines branch below.
+        lines.append("True / False ______")
+        lines.append("")
+        if include_answers:
+            lines.append(f"**Answer:** {q.get('correct_answer') or '(no key recorded)'}")
+            lines.append("")
     elif q.get("choices"):
         for choice in q["choices"]:
             lines.append(f"- **{choice.get('letter', '?')}.** {choice.get('text', '')}")
@@ -959,12 +967,54 @@ def get_responses_for_assessment(assessment_id: str) -> dict[str, Response]:
     return result
 
 
-def start_or_get_response(assessment_id: str, username: str, num_questions: int) -> Response:
+def _grouped_shuffle_order(snapshot: list, rng) -> list[int]:
+    """Shuffle whole shared-context groups, not individual snapshot indices.
+
+    A group is every snapshot item sharing the same (bucket, context_id) —
+    keyed the same shape as build_question_bank._context_key
+    (f"{bucket}::{context_id}"), just read from the snapshot's own "bucket"
+    key rather than "_bucket" (the live-bank question dicts' field name).
+    An item with no context_id is its own singleton group. Group order is
+    shuffled; each group's own internal (snapshot) order is preserved, so
+    a-then-b sub-questions ("same as Q5 but R1/R2 swapped") are never
+    served out of order. `rng` is injectable (anything with a `.shuffle()`
+    method — the `random` module itself, or a seeded `random.Random()`) so
+    this stays unit-testable without touching storage.
+
+    Pulled out of start_or_get_response() as a pure, module-level function
+    for exactly that testability — see tests/test_question_groups.py."""
+    groups: list[list[int]] = []
+    by_key: dict[str, list[int]] = {}
+    for idx, item in enumerate(snapshot):
+        cid = (item or {}).get("context_id")
+        key = f"{(item or {}).get('bucket', '')}::{cid}" if cid else None
+        if key is None:
+            groups.append([idx])
+        else:
+            bucket = by_key.get(key)
+            if bucket is None:
+                bucket = []
+                by_key[key] = bucket
+                groups.append(bucket)
+            bucket.append(idx)
+    rng.shuffle(groups)
+    return [idx for group in groups for idx in group]
+
+
+def start_or_get_response(assessment_id: str, username: str, snapshot: list) -> Response:
     """First call for a given (test, student) creates the Response with a
     freshly shuffled question_order, stored immediately so it never
     changes again for this student on this test — content stays identical
     for everyone, only display order is per-student and stable across
     reloads.
+
+    Takes the test's full `snapshot` (not just a question count) so the
+    shuffle can be group-preserving (see _grouped_shuffle_order) — a
+    grouped sub-question served before its predecessor, or the shared
+    context banner repeated at unrelated points in the test, would be a
+    correctness bug on a graded assessment, not a cosmetic one. Unlike
+    quiz.html's opt-in "keep groups together" checkbox, this is
+    unconditional.
 
     The existence check and the create must happen inside one transaction
     (not get_response() followed by a separate save) — otherwise two
@@ -977,8 +1027,7 @@ def start_or_get_response(assessment_id: str, username: str, num_questions: int)
     with _response_transaction(assessment_id, username) as box:
         if box.value is not None:
             return box.value
-        order = list(range(num_questions))
-        random.shuffle(order)
+        order = _grouped_shuffle_order(snapshot, random)
         r = Response(student_username=username, assessment_id=assessment_id, question_order=order,
                      started_at=_now_iso(), last_saved_at=_now_iso())
         box.value = r
@@ -1138,6 +1187,20 @@ def _grade_mcq(picked: str | None, correct_answer: str) -> dict:
     return {"correct": ok, "points_earned": 1.0 if ok else 0.0, "points_possible": 1.0}
 
 
+def _grade_tf(picked: str | None, correct_answer: str, max_points: float = 1.0) -> dict:
+    """True/False grading. Normalizes BOTH sides through
+    bqb._normalize_tf_answer — the one source of truth for what counts as
+    "True"/"False" — rather than duplicating that parsing here. Deliberately
+    does NOT route through _grade_mcq: that helper's `correct_raw.upper()[:1]`
+    would accidentally half-work for T/F (both "True"/"T" start with "T"),
+    but would mis-grade a bare "F" answer key against a "False" pick, etc."""
+    import build_question_bank as bqb
+    ok = (bool(picked)
+          and bqb._normalize_tf_answer(picked) is not None
+          and bqb._normalize_tf_answer(picked) == bqb._normalize_tf_answer(correct_answer))
+    return {"correct": ok, "points_earned": max_points if ok else 0.0, "points_possible": max_points}
+
+
 def _grade_matching(matching: dict, picks: dict, max_points: float) -> dict:
     """Direct Python port of quiz.html's submitMatchingAnswer() partial-
     credit logic — a real test cannot trust a client-computed score, so
@@ -1179,6 +1242,9 @@ def submit_response(assessment_id: str, username: str, snapshot: list, now: date
                 continue
             if q.get("qtype") == "mcq":
                 auto_grade[number] = _grade_mcq(answer.get("picked"), q.get("correct_answer", ""))
+            elif q.get("qtype") == "tf":
+                auto_grade[number] = _grade_tf(answer.get("picked"), q.get("correct_answer", ""),
+                                               float(q.get("max_points") or 1))
             elif q.get("qtype") == "matching":
                 auto_grade[number] = _grade_matching(q.get("matching") or {}, answer.get("picks") or {},
                                                      float(q.get("max_points") or 1))

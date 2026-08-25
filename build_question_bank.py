@@ -412,6 +412,73 @@ _STEM_QUESTION_HINT = re.compile(
 )
 
 
+# True/False cue in the stem itself ("True or False: ...", "T/F: ...").
+_TF_CUE = re.compile(r"\b(true or false|true/false|t\s*/\s*f)\b", re.I)
+
+# Anchored, case-insensitive match for a bare T/F answer-key value.
+_TF_ANSWER_RE = re.compile(r"^\s*(true|false|t|f)\s*[.,!]?\s*$", re.IGNORECASE)
+
+
+def _normalize_tf_answer(raw) -> str | None:
+    """Normalize a raw True/False answer-key value to the literal string
+    "True" or "False". Accepts "T"/"t"/"TRUE"/"true", "F"/"f"/"FALSE"/"false",
+    and surrounding whitespace/punctuation. Returns None for anything
+    unrecognized — callers must leave the original value untouched in that
+    case rather than blanking it (an unparseable key is a review-UI problem,
+    not a reason to destroy data)."""
+    if not isinstance(raw, str):
+        return None
+    m = _TF_ANSWER_RE.match(raw.strip())
+    if not m:
+        return None
+    return "True" if m.group(1)[0].upper() == "T" else "False"
+
+
+def _looks_like_tf(text: str, choices: list[dict]) -> bool:
+    """True if the stem carries an explicit True/False cue, OR the choices
+    are exactly a two-entry True/False pair (some sources print lettered
+    "A. True  B. False" options even though most Sci-Oly T/F items print no
+    choices at all)."""
+    tf_pair = (len(choices) == 2
+               and {_normalize_tf_answer(c.get("text", "")) for c in choices} == {"True", "False"})
+    if tf_pair:
+        return True
+    # A stem cue alone is only trustworthy when there are no real choices to
+    # contradict it. "Determine whether each statement is true or false, then
+    # choose the best option." with A-D options is an ordinary MCQ that merely
+    # contains the phrase — treating it as T/F would clear those choices in
+    # _finalize_tf_answers() and silently destroy the extracted options.
+    return bool(_TF_CUE.search(text or "")) and not choices
+
+
+def _finalize_tf_answers(questions: list[dict]) -> None:
+    """Mutates every qtype=="tf" question in place: if the source printed
+    lettered True/False choices, resolves the (already-merged) letter
+    answer against those choices to the word FIRST, then clears choices to
+    the uniform tf storage shape; finally normalizes whatever `answer` is
+    left through `_normalize_tf_answer()`. An unparseable answer is left
+    untouched, never blanked — a review-UI problem, not a reason to destroy
+    data. Called from process_pair() after the key-page answer merge and
+    after detect_matching_questions() (so `answer` is already a raw letter
+    or word by the time this runs)."""
+    for q in questions:
+        if q.get("qtype") != "tf":
+            continue
+        if q.get("choices"):
+            letter = (q.get("answer") or "").strip().upper()[:1]
+            picked = next((c for c in q["choices"]
+                           if (c.get("letter") or "").upper() == letter), None)
+            if picked is not None:
+                word = _normalize_tf_answer(picked.get("text", ""))
+                if word:
+                    q["answer"] = word
+            q["choices"] = []
+        normalized = _normalize_tf_answer(q.get("answer"))
+        if normalized is not None:
+            q["answer"] = normalized
+        # else: leave q["answer"] untouched.
+
+
 def split_choices_by_lines(raw: str) -> tuple[str, list[dict]]:
     """
     Fallback splitter that uses newline structure preserved by PyMuPDF.
@@ -814,6 +881,13 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
                     # before associate_images). Stripped before output if
                     # that pass can't confirm/restructure it.
                     q["_matching_candidate"] = True
+                if _looks_like_tf(stem, choices):
+                    # Answer letters (if the source printed lettered True/
+                    # False choices) aren't known yet — that mapping, and
+                    # clearing q["choices"] to the uniform empty-list
+                    # storage shape, happens once process_pair() merges the
+                    # answer key onto this question.
+                    q["qtype"] = "tf"
                 questions.append(q)
         cur_num = None
         cur_lines.clear()
@@ -1431,17 +1505,25 @@ def validate_answer(q: dict, keys: dict | None = None) -> dict:
         lines = [f"  {c.get('letter','?')}. {c.get('text','')}" for c in choices]
         choices_str = "\nChoices:\n" + "\n".join(lines)
 
+    is_tf = q.get("qtype") == "tf"
+    tf_note = (
+        "\nThis is a True/False question — answer only with the word "
+        '"True" or "False".\n' if is_tf else ""
+    )
+
     prompt = (
         f"You are checking a Science Olympiad {_ev().name} answer for correctness.\n"
-        "Be careful: this is a physics test for grades 6-9.\n\n"
+        "Be careful: this is a physics test for grades 6-9.\n"
+        f"{tf_note}\n"
         f"Question: {text}{choices_str}\n"
         f"Recorded answer: {answer or '(blank)'}\n\n"
         "Decide:\n"
         '1. status: "correct", "incorrect", or "uncertain" '
         '(use "uncertain" only if the question is genuinely ambiguous or '
         'lacks information needed to evaluate).\n'
-        "2. correct_answer: the actual correct answer (letter for MC, value "
-        "with units otherwise). Null if status==correct OR genuinely unknown.\n"
+        "2. correct_answer: the actual correct answer (letter for MC, "
+        + ('"True" or "False" for this T/F question, ' if is_tf else "") +
+        "value with units otherwise). Null if status==correct OR genuinely unknown.\n"
         "3. rationale: 1-3 sentences. Include the relevant equation or "
         "physical principle so a student would learn from it.\n"
         "4. source: a primary source — equation name (e.g. \"Ohm's Law: V=IR\"), "
@@ -2172,6 +2254,13 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
                 continue   # pairs already populated by extract_matching_answers; answer stays ""
             q["answer"] = answers.get(q["number"], "")
 
+    # ---- True/False storage normalization ----
+    # Runs after the key-page answer merge above (whichever branch ran) and
+    # after detect_matching_questions(), so a printed lettered answer
+    # ("A") can still be resolved against this question's own choices
+    # before they're cleared to the uniform tf storage shape (choices: []).
+    _finalize_tf_answers(questions)
+
     # Apply any user annotations saved from the review UI
     ann = state.get("annotations", {}).get(cache_key)
     if ann:
@@ -2364,6 +2453,9 @@ def _render_question_block(lines: list[str], q: dict, i: int) -> None:
         lines.append("")
     if q.get("qtype") == "matching":
         _render_matching_block(lines, q.get("matching") or {})
+    elif q.get("qtype") == "tf":
+        lines.append("**True / False** ______")
+        lines.append("")
     for img in q.get("images", []):
         lines.append(f"![Figure](images/{img})")
         lines.append("")
@@ -2425,7 +2517,7 @@ def _render_topic_section(lines: list[str], topic: str, qs: list[dict],
         key = _context_key(cluster[0])
         ctx = (context_lookup or {}).get(key) if key else None
         if ctx:
-            heading = "**Case study"
+            heading = "**Shared context"
             if ctx.get("title"):
                 heading += f": {ctx['title']}"
             heading += "**"

@@ -248,7 +248,7 @@
   padding:7px 12px;color:var(--fg);font-size:12px;background:transparent;border:none}
 .selection-pill #selPillMenu button:hover{background:var(--hover)}
 .selection-pill #selPillMenu .div{border-top:1px solid var(--line);margin:4px 0}
-/* "Case studies in this PDF" always-visible roster panel */
+/* "Question groups in this PDF" always-visible roster panel */
 .cases-panel{margin-bottom:14px;border:1px solid #d8b75c;border-radius:6px;
   background:#fffdf5}
 .cases-panel summary{cursor:pointer;padding:7px 10px;font-size:12px;font-weight:600;
@@ -355,7 +355,7 @@
   </div>
   <div class="toolbar-group">
     <span class="label">Organize</span>
-    <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for case studies — capture the passage, then group its questions.">🔗 Group questions</button>
+    <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for a shared passage or diagram (e.g. a Disease Detectives case study) — capture it, then group its questions.">🔗 Group questions</button>
     <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
     <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
   </div>
@@ -656,6 +656,21 @@ function annOverride(qnum, field, value){
 function annOverrideMatching(q){
   annOverride(q.number, "matching", q.matching);
   annOverride(q.number, "qtype", "matching");
+  annUpdateAdded(q.number, q);
+}
+// T/F toggle — mirrors annOverrideMatching()'s "always override both
+// fields together" pattern: qtype and the now-empty choices list.
+function annOverrideTf(q, on){
+  if(on){
+    q.qtype = "tf";
+    q.choices = [];
+    if(q.answer !== "True" && q.answer !== "False") q.answer = "True";
+  } else {
+    delete q.qtype;
+  }
+  annOverride(q.number, "qtype", q.qtype || "");
+  annOverride(q.number, "choices", q.choices);
+  annOverride(q.number, "answer", q.answer);
   annUpdateAdded(q.number, q);
 }
 function annAddQuestion(q){
@@ -1289,7 +1304,7 @@ function casesPanelHTML(){
   }).join("");
   return `
     <details class="cases-panel" id="casesPanel" ${casesPanelOpen ? "open" : ""}>
-      <summary>📎 Case studies in this PDF (${ctxs.length})</summary>
+      <summary>📎 Question groups in this PDF (${ctxs.length})</summary>
       ${rows}
     </details>`;
 }
@@ -1365,6 +1380,8 @@ function contextCardHTML(c){
         <span style="flex:1"></span>
         ${spanPrev}
         ${spanNext}
+        <button class="ghost btn-tiny" data-ctx-act="addFigure" data-ctx="${c.id}"
+                title="Drag a rectangle on the PDF to capture a diagram/figure for this shared context">📌 Add figure</button>
         <button class="delQ" data-ctx-act="del" data-ctx="${c.id}"
                 title="Delete this context (unlinks from every question that referenced it)">🗑</button>
       </div>
@@ -1433,8 +1450,12 @@ function bindContextEvents(){
           setDirty(true); renderCards();
         } else if(act === "detachImg"){
           const fn = btn.dataset.fn;
+          _undoSnapshot(`remove figure from context ${id}`);
           c.images = (c.images || []).filter(f => f !== fn);
           setDirty(true); renderCards();
+        } else if(act === "addFigure"){
+          toast("Drag a rectangle on the PDF around the figure — it will attach to this context.", "ok");
+          startCapture("contextImage", id);
         }
       });
     });
@@ -1670,6 +1691,9 @@ function cardHTML(q){
       ${multiPageBadge}
       ${spanPrevBtn}
       ${spanNextBtn}
+      <button class="ghost btn-tiny" data-act="toggleTf"
+              title="Mark this as a True/False question (clears choices; most Sci-Oly T/F items print no lettered options).${q.qtype === "tf" ? " Click again to unmark." : ""}"
+              style="${q.qtype === "tf" ? "background:var(--accent,#2a6);color:#fff" : ""}">T/F</button>
       <button class="delQ" data-act="delQ" title="Delete question">🗑</button>
     </div>
     ${captureBar}
@@ -1682,7 +1706,12 @@ function cardHTML(q){
     <div class="row tight"><span class="lbl">Text</span></div>
     <textarea data-edit="text">${esc(q.text)}</textarea>
     <div class="math-preview" data-preview-for="text"></div>
-    ${q.qtype === "matching" ? matchingHTML(q) : `
+    ${q.qtype === "matching" ? matchingHTML(q) : q.qtype === "tf" ? `
+    <div class="row tight" style="margin-top:6px"><span class="lbl">Answer</span></div>
+    <select data-edit="answer">
+      <option value="True" ${q.answer === "True" ? "selected" : ""}>True</option>
+      <option value="False" ${q.answer === "False" ? "selected" : ""}>False</option>
+    </select>` : `
     <div class="row tight" style="margin-top:6px">
       <span class="lbl">Choices</span>
       <button class="ghost" data-act="addChoice" title="Append a new empty choice to this question">+ add choice</button>
@@ -1882,6 +1911,10 @@ function bindCardEvents(){
           STATE.questions = STATE.questions.filter(x => x._id !== q._id);
           if(focusedId === q._id) focusedId = null;
           setDirty(true); renderCards(); renderImageBay();
+        } else if(act === "toggleTf"){
+          _undoSnapshot(`toggle T/F Q#${q.number}`);
+          annOverrideTf(q, q.qtype !== "tf");
+          setDirty(true); renderCards();
         } else if(act === "toggleCollapse"){
           if(collapsedIds.has(q._id)) collapsedIds.delete(q._id);
           else                        collapsedIds.add(q._id);
@@ -2325,6 +2358,7 @@ function startCapture(field, qid){
                   answer:"the answer", newQ:"the new question",
                   newContext:"the shared context (passage, intro, table)",
                   pickImage:"the image you want to attach to this question",
+                  contextImage:"the figure you want to attach to this context",
                   matchingLeft:"the LEFT column (Column A)",
                   matchingRight:"the RIGHT column (Column B)"};
   const pdfLabel = (field === "answer") ? "Key PDF (toggle above if needed)"
@@ -2506,6 +2540,28 @@ async function performCapture(mode, x, y, w, h){
     return;
   }
 
+  // Context-image capture path — saves the region as a PNG and attaches it
+  // to a shared context block, instead of OCR'ing it as text. Mirrors the
+  // pickImage path below (must also run before the generic OCR fetch).
+  if(mode.field === "contextImage"){
+    setStatusHtml(`Saving image... <span class='spinner'></span>`);
+    let r;
+    try{
+      r = await fetch(`${API}/context-image`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({pdfname: PDF, page: curPage, target, x, y, w, h, dpi: 120}),
+      });
+    } catch(err){ setStatus("Save context image failed: " + err.message, "err"); cancelCapture(); return; }
+    const j = await r.json();
+    if(!j.ok){
+      setStatus("Save context image failed: " + (j.error || ""), "err");
+      cancelCapture(); return;
+    }
+    applyCapture(mode, j, "");
+    cancelCapture();
+    return;
+  }
+
   // Pick-image capture path — saves the region as a PNG and attaches it
   // directly, instead of OCR'ing it as text.
   if(mode.field === "pickImage"){
@@ -2658,6 +2714,19 @@ function applyMathCapture(mode, delimitedLatex){
 }
 
 function applyCapture(mode, j, text){
+  if(mode.field === "contextImage"){
+    // mode.id is the context id passed to startCapture("contextImage", ctxId).
+    const c = findContext(mode.id);
+    if(!c || !j.image){ setStatus("Add figure failed: context not found.", "err"); return; }
+    _undoSnapshot(`add figure to context ${mode.id}`);
+    const images = (c.images || []).slice();
+    images.push(j.image);
+    annUpdateContext(mode.id, {images});
+    setDirty(true);
+    setStatus(`Figure attached to context ${mode.id}.`, "ok");
+    renderCards();
+    return;
+  }
   if(!text){ setStatus("No text in that region.", "err"); return; }
   // mode.rect = {x,y,w,h, target, page} — for annotation provenance
   const r = mode.rect || {};

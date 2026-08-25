@@ -228,6 +228,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
         <option value="mcq">Multiple choice</option>
         <option value="frq">Short / free response</option>
         <option value="matching">Matching</option>
+        <option value="tf">True / False</option>
       </select>
     </section>
     <section>
@@ -446,8 +447,9 @@ function rerender(){
     if(fv === "unvalidated" && q._validation_status) return false;
     if(fv && fv !== "unvalidated" && q._validation_status !== fv) return false;
     if(fy === "mcq" && !q._is_mcq) return false;
-    if(fy === "frq" && (q._is_mcq || q._is_matching)) return false;
+    if(fy === "frq" && (q._is_mcq || q._is_matching || q._is_tf)) return false;
     if(fy === "matching" && !q._is_matching) return false;
+    if(fy === "tf" && !q._is_tf) return false;
     if(fi === "yes" && !q._has_image) return false;
     if(fi === "no"  &&  q._has_image) return false;
     if(recent){
@@ -519,7 +521,7 @@ function topicChipStyle(t){
   const hue = topicHue(t);
   return `background:hsl(${hue},70%,93%);color:hsl(${hue},55%,32%)`;
 }
-const TYPE_ICON = {mcq: "🔘", frq: "📝", num: "🧮", matching: "🔗"};
+const TYPE_ICON = {mcq: "🔘", frq: "📝", num: "🧮", matching: "🔗", tf: "☑"};
 const VALIDATION_ICONS = {correct: "✓", incorrect: "⚠", uncertain: "?", unavailable: "·"};
 
 // Browse-page matching editor: label+text per item (images are read-only
@@ -627,7 +629,7 @@ function renderCard(q){
     ${thumb}
     <div class="head">
       <span class="qnum" title="Question number in its source PDF">Q${esc(q.number)}</span>
-      <span class="badge type" title="${q._is_matching ? 'Matching' : q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_matching ? TYPE_ICON.matching + " MATCH" : q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
+      <span class="badge type" title="${q._is_matching ? 'Matching' : q._is_tf ? 'True / False' : q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_matching ? TYPE_ICON.matching + " MATCH" : q._is_tf ? TYPE_ICON.tf + " T/F" : q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
       <span class="badge bucket" title="State-file bucket: ${esc(q._bucket)}">${esc(bucketLabel)}</span>
     </div>
     <div class="inline-editor">

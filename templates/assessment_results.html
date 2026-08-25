@@ -12,6 +12,12 @@
 .result-card .q{font-size:14px;margin-bottom:6px}
 .result-card .ans{font-size:13px}
 .result-card .pts{font-weight:600;font-size:13px;float:right}
+.result-card .fig{max-width:100%;max-height:300px;object-fit:contain;border:1px solid var(--line);
+  border-radius:4px;background:#fff;margin:0 8px 8px 0}
+.result-card .ctx-block{background:#fffbeb;border:1px solid #e8c875;border-radius:4px;
+  padding:6px 10px;margin-bottom:8px;font-size:13px;color:#5a4a1a}
+.result-card .ctx-block summary{cursor:pointer;font-style:italic}
+.result-card .ctx-block .ctx-text{margin:6px 0;line-height:1.5}
 .pair-ok{color:var(--ok)} .pair-bad{color:var(--bad)}
 </style></head>
 <body>
@@ -31,8 +37,25 @@
     <div class="meta">Q{{ q.number }} · {{ q.qtype }}
       <span class="pts">{{ pts }} / {{ possible }}</span>
     </div>
+    {% if row.context %}
+      {# Collapsed by default: on a review page the diagram is reference
+         material, and a grouped set would otherwise repeat it on every card. #}
+      <details class="ctx-block">
+        <summary>Shared context{{ ": " + row.context.title if row.context.title else "" }}</summary>
+        {% if row.context.text %}<div class="ctx-text">{{ row.context.text }}</div>{% endif %}
+        {% for fn in row.context.images or [] %}
+        <img class="fig" src="{{ url_for('serve_assessment_image', assessment_id=assessment_id, fname=fn) }}" alt="figure">
+        {% endfor %}
+      </details>
+    {% endif %}
     <div class="q">{{ q.text }}</div>
+    {% for fn in q.images or [] %}
+    <img class="fig" src="{{ url_for('serve_assessment_image', assessment_id=assessment_id, fname=fn) }}"
+         alt="{{ (q.image_descriptions or {}).get(fn) or 'figure' }}">
+    {% endfor %}
     {% if q.qtype == "mcq" %}
+      <div class="ans">Your answer: <b>{{ row.answer.picked or "(none)" }}</b> — correct answer: <b>{{ q.correct_answer }}</b></div>
+    {% elif q.qtype == "tf" %}
       <div class="ans">Your answer: <b>{{ row.answer.picked or "(none)" }}</b> — correct answer: <b>{{ q.correct_answer }}</b></div>
     {% elif q.qtype == "frq" %}
       <div class="ans">Your answer: {{ row.answer.text or "(none)" }}</div>

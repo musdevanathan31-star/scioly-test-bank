@@ -132,7 +132,7 @@ def test_testing_concurrent_save_answer_no_lost_updates(tmp_path, monkeypatch):
     highest real-world-severity instance of this bug (many students
     autosaving during one timed window, all hitting one shared file)."""
     monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
-    assessments_mod.start_or_get_response("test1", "bob", num_questions=N)
+    assessments_mod.start_or_get_response("test1", "bob", snapshot=[{} for _ in range(N)])
 
     def _make(i):
         return lambda: assessments_mod.save_answer("test1", "bob", str(i), {"qtype": "mcq", "picked": "A"})
@@ -154,7 +154,7 @@ def test_testing_concurrent_start_or_get_response_creates_once(tmp_path, monkeyp
 
     def _make(i):
         def _go():
-            results[i] = assessments_mod.start_or_get_response("test1", "carol", num_questions=10)
+            results[i] = assessments_mod.start_or_get_response("test1", "carol", snapshot=[{} for _ in range(10)])
         return _go
 
     _run_concurrently([_make(i) for i in range(N)])
@@ -167,7 +167,7 @@ def test_testing_concurrent_start_or_get_response_creates_once(tmp_path, monkeyp
 
 def test_testing_concurrent_set_manual_grade_distinct_questions_no_lost_updates(tmp_path, monkeypatch):
     monkeypatch.setattr(assessments_mod, "RESPONSES_DIR", tmp_path / "assessment_responses")
-    assessments_mod.start_or_get_response("test1", "dave", num_questions=N)
+    assessments_mod.start_or_get_response("test1", "dave", snapshot=[{} for _ in range(N)])
 
     def _make(i):
         return lambda: assessments_mod.set_manual_grade("test1", "dave", str(i), 1.0, 1.0, graded_by="coach")

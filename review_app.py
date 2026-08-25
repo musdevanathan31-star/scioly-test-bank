@@ -155,6 +155,12 @@ if APPLICATION_ROOT:
 app.config["APPLICATION_ROOT"] = APPLICATION_ROOT or "/"
 app.config["SESSION_COOKIE_PATH"] = APPLICATION_ROOT or "/"
 
+# Question-type discriminator values a client is allowed to set. Anything
+# outside this set is rejected/ignored rather than persisted, so a stray or
+# malformed value can never silently skip the type-specific auto-grading
+# path (assessments._grade_mcq/_grade_tf/_grade_matching each key off qtype).
+_VALID_QTYPES = {"mcq", "frq", "tf", "matching"}
+
 # Routes reachable without being logged in.
 _PUBLIC_ENDPOINTS = {"login", "favicon", "static"}
 
@@ -1714,6 +1720,74 @@ def assessment_take_page(assessment_id):
                             event_name=ev.name if ev else test.event_slug)
 
 
+def _assessment_image_names(test: "assessments.Assessment") -> set[str]:
+    """Every image filename this assessment's frozen snapshot references.
+
+    Derived from the snapshot, never the live question bank — same rule the
+    rest of the grading path follows (see _snapshot_one_question): editing
+    the bank mid-window must not change what a live test serves. Covers the
+    three places an image can be referenced: a question's own `images`, a
+    matching row's per-cell `image`, and a shared context block's `images`.
+    """
+    names: set[str] = set()
+    for q in (test.snapshot or []):
+        names.update(q.get("images") or [])
+        matching = q.get("matching") or {}
+        for side in ("left", "right"):
+            for item in matching.get(side) or []:
+                if item.get("image"):
+                    names.add(item["image"])
+    for ctx in (test.snapshot_contexts or {}).values():
+        names.update((ctx or {}).get("images") or [])
+    return names
+
+
+@app.route("/my-assessments/<assessment_id>/image/<fname>")
+def serve_assessment_image(assessment_id, fname):
+    """Serve one figure referenced by an assessment the caller is entitled to.
+
+    Students are blocked from `/event/<slug>/images/<fname>` on purpose —
+    _select_event() 403s them so practice-quiz/browse exposure can't leak
+    content bound for a future official test. That rule is right, but it
+    left students with no way to load *any* figure, including the diagram a
+    grouped question set is built around. This route is the narrow opening:
+    it serves only filenames this specific assessment's snapshot actually
+    references, so entitlement to one test never becomes a directory listing
+    of the whole event's images/.
+
+    Coaches and volunteers share the route (rather than a second URL in the
+    templates) since the results page is rendered for both a student viewing
+    their own release and a coach drilling in from Scores.
+    """
+    user = g.user
+    if user.role == "student":
+        test, window = _student_assessment_context(assessment_id)   # 404/403s
+        resp = assessments.get_response(assessment_id, user.username)
+        taking = (test.status == "live"
+                  and assessments.is_window_open(test, window, user.username))
+        reviewing = resp is not None and resp.released
+        if not (taking or reviewing):
+            abort(403, "This test isn't open to you right now")
+    else:
+        test = assessments.get_assessment(assessment_id)
+        if test is None:
+            abort(404, f"Unknown test: {assessment_id}")
+        if not auth.user_can_access_event(user, test.event_slug):
+            abort(403, "You don't have access to this test's event")
+    # Membership check first: this is what makes the route an allowlist
+    # rather than a file server. _safe_join is still applied afterwards as
+    # defense in depth, not as the primary control.
+    if fname not in _assessment_image_names(test):
+        abort(404)
+    ev = EVENTS.get(test.event_slug)
+    if ev is None:
+        abort(404)
+    p = _safe_join(ev.image_dir, fname)
+    if not p.exists():
+        abort(404)
+    return send_file(str(p))
+
+
 @app.route("/api/my-assessments")
 @student_required
 def api_my_assessments():
@@ -1757,8 +1831,8 @@ def api_take_assessment(assessment_id):
     existing = assessments.get_response(assessment_id, g.user.username)
     if existing is not None and existing.status != "in_progress":
         abort(403, "You've already submitted this test")
-    resp = assessments.start_or_get_response(assessment_id, g.user.username, len(test.snapshot or []))
     snapshot = test.snapshot or []
+    resp = assessments.start_or_get_response(assessment_id, g.user.username, snapshot)
     ordered = [snapshot[i] for i in resp.question_order if i < len(snapshot)]
     # Never leak correct_answer/matching.pairs to the student during the test.
     sanitized = []
@@ -1935,7 +2009,7 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
         ctx, ctx_id = q.get("_context"), q.get("context_id")
         if ctx and ctx_id and ctx_id not in seen_contexts:
             seen_contexts.add(ctx_id)
-            heading = "Case study" + (f": {ctx['title']}" if ctx.get("title") else "")
+            heading = "Shared context" + (f": {ctx['title']}" if ctx.get("title") else "")
             story.append(Paragraph(f"<b>{_e(heading)}</b><br/>{_e(ctx.get('text',''))}",
                                    context_style))
 
@@ -2143,18 +2217,26 @@ def _render_assessment_results(test: "assessments.Assessment", resp: "assessment
     results) and score_detail_page (a coach/grading-volunteer drilling into
     a specific student's response from the Scores page)."""
     ev = EVENTS.get(test.event_slug)
+    contexts = test.snapshot_contexts or {}
     rows = []
     for q in (test.snapshot or []):
         number = str(q.get("number"))
         answer = resp.answers.get(number) or {}
         auto = resp.auto_grade.get(number)
         manual = resp.manual_grade.get(number)
-        rows.append({"q": q, "answer": answer, "auto": auto, "manual": manual})
+        # Resolve the shared-context block here rather than in the template:
+        # a question stores a bare context_id while the snapshot map is keyed
+        # "bucket::id", and that suffix match is awkward in Jinja.
+        ctx_id = q.get("context_id")
+        ctx = contexts.get(f"{q.get('bucket')}::{ctx_id}") if ctx_id else None
+        rows.append({"q": q, "answer": answer, "auto": auto, "manual": manual,
+                     "context": ctx})
     total_earned = sum((r["auto"] or r["manual"] or {}).get("points_earned") or 0 for r in rows)
     total_possible = sum(float(q.get("max_points") or 1) for q in (test.snapshot or []))
     return render_template("assessment_results.html", event_name=ev.name if ev else test.event_slug,
                            rows=rows, total_earned=total_earned, total_possible=total_possible,
-                           viewer_is_self=viewer_is_self, student_username=student_username)
+                           viewer_is_self=viewer_is_self, student_username=student_username,
+                           assessment_id=test.assessment_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2527,6 +2609,15 @@ def api_save(event_slug, pdfname):
             "division": q.get("division", ""),
             "page":     int(q.get("page") or 1),
         }
+        # qtype: whitelisted so "tf"/"matching" survive a whole-PDF manual
+        # save the same way every other explicit field does (this endpoint
+        # previously dropped qtype/matching entirely — a pre-existing gap,
+        # not new to tf; fixed here since tf is the type that surfaced it).
+        qtype = (q.get("qtype") or "").strip()
+        if qtype and qtype in _VALID_QTYPES:
+            clean_q["qtype"] = qtype
+        if qtype == "matching" and q.get("matching") is not None:
+            clean_q["matching"] = q.get("matching")
         # Optional multi-page span list
         extra = q.get("extra_pages")
         if extra:
@@ -4109,6 +4200,7 @@ def api_all_questions(event_slug):
             qcopy["_has_image"] = bool(qcopy.get("images"))
             qcopy["_is_mcq"]      = bool(qcopy.get("choices"))
             qcopy["_is_matching"] = qcopy.get("qtype") == "matching"
+            qcopy["_is_tf"]       = qcopy.get("qtype") == "tf"
             qcopy["_edited_at"] = bucket_edited_at
             v = qcopy.get("validation") or {}
             qcopy["_validation_status"] = v.get("status") if v else None
@@ -4211,6 +4303,21 @@ def api_patch_question(event_slug, bucket, num):
                 q["qtype"] = "matching"
             edited_fields.append("matching")
             edited_fields.append("qtype")
+        elif "qtype" in data:
+            new_qtype = (data["qtype"] or "").strip() or None
+            if new_qtype == "tf":
+                q["qtype"] = "tf"
+                q["choices"] = []  # tf storage is always choices: []
+                edited_fields.append("choices")
+                edited_fields.append("qtype")
+            elif new_qtype is None:
+                q.pop("qtype", None)
+                edited_fields.append("qtype")
+            elif new_qtype in _VALID_QTYPES:
+                q["qtype"] = new_qtype
+                edited_fields.append("qtype")
+            # else: not a recognized qtype — ignored, not persisted (see
+            # _VALID_QTYPES).
         if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
             cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
                        if str(d or "").strip()}
@@ -4295,13 +4402,26 @@ def _find_question(state: dict, bucket: str, num: str) -> tuple[dict | None, lis
 def _slug_image_name(bucket: str, num: str, ext: str, kind: str = "img") -> str:
     """Build a stable on-disk filename for a question-attached image.
     `bucket` strips off the trailing `.pdf` plus the leading `_` so the file
-    name reads cleanly: `circuitlab_2019_b_q5_img_a1b2c3d4.png`."""
+    name reads cleanly: `circuitlab_2019_b_q5_img_a1b2c3d4.png`.
+
+    The result is passed through `secure_filename()` here, at the single
+    point of construction, because the *serving* side (`serve_image` ->
+    `_safe_join`) runs `secure_filename()` on whatever the browser asks for.
+    If a caller wrote the raw name to disk, any character `secure_filename()`
+    strips (`+`, non-ASCII, spaces) would make the two sides disagree: the
+    file exists under the raw name, the app looks for the stripped name,
+    `p.exists()` is False, and the request 404s into a permanently broken
+    thumbnail. The PDF's own filename is embedded here, so real-world names
+    like `..._ssss-utf-8u+6211u+662f_test.pdf` hit this. Sanitizing at
+    construction makes every write site correct by construction instead of
+    relying on each one to remember (only upload-image ever did)."""
     import secrets
+    from werkzeug.utils import secure_filename
     base = bucket
     if base.endswith(".pdf"):
         base = base[:-4]
     base = base.lstrip("_")
-    return f"{base}_q{num}_{kind}_{secrets.token_hex(4)}.{ext.lstrip('.')}"
+    return secure_filename(f"{base}_q{num}_{kind}_{secrets.token_hex(4)}.{ext.lstrip('.')}")
 
 
 @app.route("/event/<event_slug>/api/q/<bucket>/<num>/upload-image", methods=["POST"])
@@ -4423,6 +4543,46 @@ def api_q_pick_image(event_slug, bucket, num):
         state.setdefault("manual", {})[bucket] = {
             "edited_at": datetime.now().isoformat(timespec="seconds"),
         }
+    return jsonify({"ok": True, "image": fname, "size": dest.stat().st_size})
+
+
+@app.route("/event/<event_slug>/api/context-image", methods=["POST"])
+def api_context_image(event_slug):
+    """Crop a rectangular region of a PDF page and save it as a PNG for use
+    as a shared-context figure (e.g. a Circuit Lab resistor-network diagram
+    that several sub-questions refer back to). Sibling of api_q_pick_image,
+    minus any question identity — contexts live in annotations, not
+    state["questions"], so this route deliberately does NOT touch `state`;
+    the caller (review.html's applyCapture()) pushes the returned filename
+    into the context's own `images` list via the normal annotations save.
+    Body: {pdfname, page, target, x, y, w, h, dpi}"""
+    _select_event(event_slug)
+    data = request.get_json() or {}
+    pdfname = (data.get("pdfname") or "").strip()
+    if not pdfname:
+        return jsonify({"error": "no pdfname"}), 400
+    try:
+        pno = int(data["page"])
+        x = float(data["x"]); y = float(data["y"])
+        w = float(data["w"]); h = float(data["h"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "bad region"}), 400
+    if w < 8 or h < 8:
+        return jsonify({"error": "region too small"}), 400
+    dpi = float(data.get("dpi", 120))
+    target = data.get("target", "test")
+    doc = _open_target_pdf(pdfname, target)
+    if pno < 1 or pno > doc.page_count:
+        abort(404)
+    page = doc[pno - 1]
+    f = 72.0 / dpi
+    rect = fitz.Rect(x * f, y * f, (x + w) * f, (y + h) * f)
+    b64 = region_image_b64(page, rect, dpi=300)
+
+    bqb.EVENT.image_dir.mkdir(parents=True, exist_ok=True)
+    fname = _slug_image_name(pdfname, "ctx", "png", "ctx")
+    dest = bqb.EVENT.image_dir / fname
+    dest.write_bytes(base64.b64decode(b64))
     return jsonify({"ok": True, "image": fname, "size": dest.stat().st_size})
 
 
@@ -4835,7 +4995,7 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
             key = bqb._context_key(cluster[0])
             ctx = context_lookup.get(key) if key else None
             if ctx:
-                heading = "Case study" + (f": {ctx['title']}" if ctx.get("title") else "")
+                heading = "Shared context" + (f": {ctx['title']}" if ctx.get("title") else "")
                 story.append(Paragraph(f"<b>{_e(heading)}</b><br/>{_e(ctx.get('text', ''))}",
                                        context_style))
             for q in cluster:
@@ -4849,6 +5009,8 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
                         choice_style,
                     ))
                 pairs_str = "—"
+                if q.get("qtype") == "tf":
+                    block.append(Paragraph("True / False ______", choice_style))
                 if q.get("qtype") == "matching":
                     m = q.get("matching") or {}
                     left, right = m.get("left") or [], m.get("right") or []
@@ -5000,6 +5162,21 @@ def _export_apkg(all_qs: list[dict], filename_stem: str = "") -> "Response":
                 fields=[
                     _esc(q.get("text", "")) + ("<br>" + rows_html if rows_html else ""),
                     pairs_str,
+                    _esc(q.get("topic", "")),
+                    _esc(q.get("focus", "")),
+                    _esc(q.get("source", "")),
+                    _esc(note_text),
+                ],
+                tags=tags,
+            )
+        elif q.get("qtype") == "tf":
+            # A T/F card is a Basic card (front/back), not the MCQ template
+            # — there are no lettered choices to render.
+            note = genanki.Note(
+                model=frq_model,
+                fields=[
+                    "True/False: " + _esc(q.get("text", "")),
+                    _esc(q.get("answer", "—")),
                     _esc(q.get("topic", "")),
                     _esc(q.get("focus", "")),
                     _esc(q.get("source", "")),

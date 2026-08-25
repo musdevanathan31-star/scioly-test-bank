@@ -23,6 +23,19 @@
 .test-match-left select{flex:0 0 auto;padding:3px 6px;border:1px solid var(--line);border-radius:4px;font:inherit}
 .test-context{background:#fffbeb;border:1px solid #e8c875;border-radius:6px;padding:10px 12px;
   margin-bottom:12px;font-size:13px;line-height:1.5;color:#5a4a1a}
+.test-context.collapsed{padding:0}
+.test-context .ctx-toggle{display:block;width:100%;text-align:left;padding:8px 12px;
+  background:none;border:none;cursor:pointer;font:inherit;font-size:13px;color:#5a4a1a;
+  font-style:italic}
+.test-context .ctx-toggle:hover{background:#fdf3d0}
+.test-context .ctx-full{padding:0 12px 10px 12px}
+/* Figures. Generous max-height so a circuit diagram stays readable without
+   the student having to zoom, but bounded so it can't push the answer
+   controls off-screen. */
+.ctx-images,.q-images{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.q-images{margin-bottom:12px}
+.ctx-images img,.q-images img{max-width:100%;max-height:340px;object-fit:contain;
+  border:1px solid var(--line);border-radius:4px;background:#fff}
 .save-status{font-size:11px;color:var(--muted);text-align:right;margin-top:6px}
 </style></head>
 <body>
@@ -40,9 +53,11 @@
     </div>
     <div id="q_context" style="display:none"></div>
     <div class="test-q" id="q_text"></div>
+    <div id="q_images" class="q-images" style="display:none"></div>
     <div class="test-choices" id="q_choices" style="display:none"></div>
     <textarea id="q_frq" class="test-frq-input" style="display:none" placeholder="Type your answer…"></textarea>
     <div id="q_matching" style="display:none"></div>
+    <div class="test-choices" id="q_tf" style="display:none"></div>
     <div class="save-status" id="save_status"></div>
     <div style="text-align:right;margin-top:14px">
       <button id="btn_prev">← Previous</button>
@@ -53,6 +68,10 @@
 </div>
 <script>
 const ASSESSMENT_ID = {{ assessment_id|tojson }};
+// Figures come from this assessment's own allowlisted route, not the event's
+// images/ directory — students are blocked from the latter on purpose.
+const IMG_BASE = `${APP_ROOT}/my-assessments/${ASSESSMENT_ID}/image`;
+const imgUrl = (fn) => `${IMG_BASE}/${encodeURIComponent(fn)}`;
 let QUESTIONS = [], ANSWERS = {}, CONTEXTS = {}, CLOSES_AT = null;
 let IDX = 0;
 let SAVE_TIMER = null;
@@ -102,21 +121,65 @@ function startTimer(){
   TIMER_ID = setInterval(render, 1000);
 }
 
-function renderContext(q){
+// Looks up the "bucket::id" key a question's bare context_id resolves to
+// within the snapshotted CONTEXTS map (namespacing lives only in the map's
+// keys, not on the question itself).
+function ctxKeyFor(q){
+  return q && q.context_id ? Object.keys(CONTEXTS).find(k => k.endsWith("::" + q.context_id)) : null;
+}
+
+// Renders the shared-context banner for the question at `idx`. With B3's
+// group-preserving shuffle, group members are always adjacent in the
+// student's order — so when this question shares its context with the
+// PREVIOUS question in that order, the full block is redundant: collapse it
+// to a one-line "Refer to the diagram above" affordance that expands on
+// click, instead of re-consuming the screen on every sub-question. Mirrors
+// review_app.py's seen_contexts-based de-dup on the print/markdown path,
+// just adjacency-based here since there's no single upfront render pass.
+function renderContext(q, idx){
   const el = document.getElementById("q_context");
-  const ctxKey = q.context_id ? Object.keys(CONTEXTS).find(k => k.endsWith("::" + q.context_id)) : null;
+  const ctxKey = ctxKeyFor(q);
   const ctx = ctxKey ? CONTEXTS[ctxKey] : null;
   if(!ctx){ el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "";
-  el.className = "test-context";
-  el.innerHTML = `<div>${esc(ctx.text || "")}</div>`;
+  const prevKey = idx > 0 ? ctxKeyFor(QUESTIONS[idx - 1]) : null;
+  // The figure is often the whole point of a grouped set (a circuit diagram
+  // with sub-questions), so it belongs in the banner alongside the text.
+  const ctxImgs = (ctx.images || []).map(fn =>
+    `<img src="${imgUrl(fn)}" alt="figure" class="ctx-img">`).join("");
+  const body = `<div>${esc(ctx.text || "")}</div>`
+             + (ctxImgs ? `<div class="ctx-images">${ctxImgs}</div>` : "");
+  if(prevKey && prevKey === ctxKey){
+    el.className = "test-context collapsed";
+    el.innerHTML = `<button type="button" class="ctx-toggle" id="ctx_toggle_btn">▸ Refer to the diagram above</button>
+      <div class="ctx-full" id="ctx_full_body" style="display:none">${body}</div>`;
+    document.getElementById("ctx_toggle_btn").addEventListener("click", () => {
+      const full = document.getElementById("ctx_full_body");
+      const btn = document.getElementById("ctx_toggle_btn");
+      const opening = full.style.display === "none";
+      full.style.display = opening ? "" : "none";
+      btn.textContent = (opening ? "▾" : "▸") + " Refer to the diagram above";
+    });
+  } else {
+    el.className = "test-context";
+    el.innerHTML = body;
+  }
 }
 
 function presentQuestion(){
   const q = QUESTIONS[IDX];
   document.getElementById("q_idx").textContent = IDX + 1;
   document.getElementById("q_text").textContent = q.text || "";
-  renderContext(q);
+  // A question's own figures (distinct from a shared context's) — these were
+  // never rendered here at all, so any question carrying a diagram showed
+  // only its stem.
+  const qImgEl = document.getElementById("q_images");
+  const descs = q.image_descriptions || {};
+  const qImgs = (q.images || []);
+  qImgEl.style.display = qImgs.length ? "" : "none";
+  qImgEl.innerHTML = qImgs.map(fn =>
+    `<img src="${imgUrl(fn)}" alt="${esc(descs[fn] || 'figure')}" class="q-img">`).join("");
+  renderContext(q, IDX);
   document.getElementById("btn_prev").disabled = (IDX === 0);
   document.getElementById("btn_next").style.display = (IDX === QUESTIONS.length - 1) ? "none" : "";
 
@@ -124,9 +187,23 @@ function presentQuestion(){
   const choicesEl = document.getElementById("q_choices");
   const frqEl = document.getElementById("q_frq");
   const matchEl = document.getElementById("q_matching");
-  choicesEl.style.display = "none"; frqEl.style.display = "none"; matchEl.style.display = "none";
+  const tfEl = document.getElementById("q_tf");
+  choicesEl.style.display = "none"; frqEl.style.display = "none"; matchEl.style.display = "none"; tfEl.style.display = "none";
 
-  if(q.qtype === "mcq"){
+  if(q.qtype === "tf"){
+    tfEl.style.display = "";
+    const pickedVal = saved && saved.picked;
+    tfEl.innerHTML = ["True", "False"].map(word =>
+      `<button type="button" class="test-choice ${pickedVal === word ? 'picked' : ''}" data-word="${word}" style="font-size:18px;padding:16px">${word}</button>`
+    ).join("");
+    tfEl.querySelectorAll(".test-choice").forEach(b => {
+      b.addEventListener("click", () => {
+        tfEl.querySelectorAll(".test-choice").forEach(x => x.classList.remove("picked"));
+        b.classList.add("picked");
+        saveAnswer(q.number, {qtype: "tf", picked: b.dataset.word});
+      });
+    });
+  } else if(q.qtype === "mcq"){
     choicesEl.style.display = "";
     choicesEl.innerHTML = (q.choices || []).map(c =>
       `<button type="button" class="test-choice ${saved && saved.picked === c.letter ? 'picked' : ''}" data-letter="${esc(c.letter)}">
@@ -143,7 +220,7 @@ function presentQuestion(){
     matchEl.style.display = "";
     const m = q.matching || {left: [], right: []};
     const picks = (saved && saved.picks) || {};
-    const cellHtml = (item) => item.image ? `<img src="${esc(item.image)}" alt="figure" style="max-width:80px">` : `<span>${esc(item.text)}</span>`;
+    const cellHtml = (item) => item.image ? `<img src="${imgUrl(item.image)}" alt="${esc(item.text || 'figure')}" style="max-width:80px">` : `<span>${esc(item.text)}</span>`;
     const rightHtml = (m.right || []).map(r => `<div class="test-match-right"><b>${esc(r.label)}.</b> ${cellHtml(r)}</div>`).join("");
     const leftHtml = (m.left || []).map(l => `
       <div class="test-match-left" data-label="${esc(l.label)}">

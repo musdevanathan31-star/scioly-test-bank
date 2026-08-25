@@ -80,7 +80,8 @@ Click a PDF's name from the event page (or **Review by PDF**) to open the review
 - **Drag a rectangle** on the PDF and use the field buttons (**Stem**, **Choices**, **Math → Stem**, **Math → Answer**) to capture text or convert an equation to LaTeX directly into a field.
 - **+ Add question from region** — drag once over an unextracted question; it gets the next free number automatically, with multiple-choice options auto-split into the choices list if present.
 - **+ Add matching question** — for a "match each term to its definition" table the automatic extraction missed or mis-split: drag the left column, then the right column (it auto-advances, no second click needed). You get an editable two-column card — fix up any row, attach an image to a cell the same way you'd reassign any other figure, and set the correct A→B pairs in the dropdown list at the bottom. The pipeline also detects these tables on its own when processing a PDF now (previously the whole table landed as one unstructured question); this button is for fixing one up or building one from scratch. Wrapped multi-line entries, either-charset labels (numbers or letters, on either column), and leading answer-blank placeholders ("____") are all handled automatically during capture. If a table continues onto another page, each column header on the card has a 📋 **Capture more from PDF** button — navigate to that page and drag the continuation; it appends to the existing column instead of starting a new question.
-- **+ Add context from region** — for a shared passage/table/intro that several questions reference; the captured text becomes a context block other questions can link to.
+- **T/F toggle** (per question card) — see "Capturing a True/False question" below.
+- **+ Add context from region** — for a shared passage/table/diagram/intro that several questions reference; the captured text becomes a context block other questions can link to. See "Grouping questions around a shared diagram" below for the full workflow, including attaching a figure to the context itself.
 - **+ Add blank** — an empty card to fill in by hand.
 - Reassign a figure to a different question by clicking the image, then clicking the target card.
 - **✓ Validate answer** (per question) or **✓ Validate page** (everything on the current page) — sends the question to Haiku and stores a verdict + rationale.
@@ -89,10 +90,31 @@ Click a PDF's name from the event page (or **Review by PDF**) to open the review
 - **Reprocess ▾** — re-runs extraction. The default mode keeps your annotations; "wipe annotations" and "manual mode" discard them but snapshot first (see **🕘 Snapshot history** to restore any prior state — nothing here is ever truly lost).
 - **💾 Save** (or Ctrl+S) persists everything to `.qbank_state.json`. **↶ Undo** (or Ctrl+Z) reverts the last destructive action.
 
+### Capturing a True/False question
+
+Most Sci-Oly True/False items print no lettered options at all (e.g. `14. True or False: Ohm's law applies to all resistors. ____`) — the extraction pipeline recognizes this on its own (a "True or false:"/"T/F:" cue in the stem, or a source that DID print lettered `A. True B. False` options) and tags the question `qtype: "tf"` with an empty choices list and the answer normalized to the word `"True"` or `"False"`.
+
+If the pipeline misses one (or you're capturing one by hand from a region/blank card), click the **T/F** button in that question's card header. This clears any choices and swaps the free-text answer field for a **True**/**False** dropdown — pick the correct one and save as usual. Click **T/F** again to unmark it (back to MCQ/FRQ).
+
+A True/False question behaves like MCQ everywhere else in the app: it auto-grades on a season assessment (no manual grading needed), shows up in Browse under its own **T/F** filter/badge, and exports to markdown/CSV/PDF/Anki like any other type — just with no lettered choices to print.
+
+### Grouping questions around a shared diagram
+
+Not every group of related questions is a reading passage — a Circuit Lab resistor-network diagram with two sub-questions ("equivalent resistance with S1 closed, R1=1Ω/R2=10Ω" then "same but R1=10Ω/R2=1Ω") is a group just as much as a Disease Detectives outbreak case study, just with a figure instead of a paragraph as the shared material. The app calls this general mechanism a **context**, not a "case study" — case studies are one example of it, not the general name.
+
+To set one up:
+1. **Capture the shared material.** Either drag a rectangle around the passage/table and click **+ Add context from region** (captures text), or — for the Circuit Lab diagram case — create a context first (an empty one is fine, or add a short label like "Circuit for Q5–Q6"), then use its **📌 Add figure** button and drag a rectangle around the diagram on the PDF. A context can hold both text and one or more images; add as many figures as the shared material needs, in any order.
+2. **Link the sub-questions to it.** Either pick the context from each question card's Context dropdown one at a time, or select several question cards (or their bounding boxes on the PDF — click **🔗 Group questions** to enter selection mode) and use **Assign to context ▾** in the sticky selection bar to link them all in one step.
+3. **Review the group.** The collapsible **📎 Question groups in this PDF** panel above the page cards lists every context on this PDF regardless of which page you're currently viewing, with jump links to its linked questions — useful for auditing a group that spans pages.
+
+Once linked, the shared context (text and any figures) renders once above the whole group everywhere the app shows questions: the review page, the markdown/PDF/CSV/JSON exports, the practice quiz (behind its "Keep question groups together" checkbox), and a published assessment. **A published assessment's shuffle is group-preserving and unconditional** — group members are always served together and in their original order, never split apart or interleaved with unrelated questions, since that would be a correctness bug on a graded test (see spec.md for why this differs from the quiz page's opt-in checkbox). The student take page also collapses a repeated context banner to a one-line "Refer to the diagram above" affordance instead of re-showing the full figure on every sub-question.
+
+To remove a figure from a context, click the **×** on its thumbnail — this only unlinks it from that context (the underlying PNG stays on disk, since another context or question may still use it).
+
 ### Browsing, searching, and bulk-editing the whole bank
 
 **Browse questions** (from any event's page) is the event-wide view: every question, across every PDF/source, on one filterable/sortable page.
-- Filter by topic, focus, source, bucket, validation status, question type (MCQ / FRQ / Matching), has-image; the search box is hotkeyed to `/`.
+- Filter by topic, focus, source, bucket, validation status, question type (MCQ / FRQ / Matching / True-False), has-image; the search box is hotkeyed to `/`.
 - **Every card is directly editable** — topic, focus, stem, choices, and answer are live fields right on the card; edits autosave about 600ms after you stop typing, no Save button. **↺ Undo** reverts a card's last autosaved batch of edits.
 - **🤖 AI Validate** persists a Haiku verdict immediately; the **Validation** dropdown next to it lets you set or override the status yourself — whichever happens most recently wins, so you can always correct a wrong AI verdict (or a stale human one).
 - **✨ Generate similar** / **🤖 Generate diagram** are available per-card too, seeded from that specific question.
@@ -174,7 +196,7 @@ Fields outside this list (e.g. a difficulty rating) are silently dropped on impo
 
 ### Taking or building a practice quiz
 
-Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only" is one of the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
+Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only" and "True/False only" are among the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
 
 A matching question shows a dropdown next to each left-column item listing every right-column label, with the right column displayed alongside so you can see every option before picking. It's graded with **partial credit** — getting 3 of 5 pairs right adds 0.6 to your running score, not all-or-nothing — and the feedback/mistake-review screens show exactly which pairs you got right or wrong.
 
@@ -196,7 +218,7 @@ The Assessments dashboard's **⬇ Test** and **⬇ Key** buttons download the pa
 On the **Tests** dashboard, pick the season, then:
 1. Expand **+ New assessment window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
 2. For each event row, click the **Assign…** button to open a picker — it lists every coach plus every volunteer who has bank-edit access to that specific event, check off who should prepare it, and **Save**. Only people with bank access to that event (or any coach) are offered here.
-3. That coach or volunteer clicks **Prepare** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching default to 1 pt). Autosaves as you go.
+3. That coach or volunteer clicks **Prepare** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching/True-False default to 1 pt). Autosaves as you go.
 4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already been prepared.
 5. Back on the Assessments dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "preparing" — only works before the window opens and before any student has saved an answer.
 

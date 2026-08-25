@@ -87,11 +87,12 @@
       </select>
 
       <label for="qc_type">Type</label>
-      <select id="qc_type" title="Multiple choice, free response, matching, or any">
+      <select id="qc_type" title="Multiple choice, free response, matching, true/false, or any">
         <option value="">(any)</option>
         <option value="mcq">MCQ only</option>
         <option value="frq">FRQ only</option>
         <option value="matching">Matching only</option>
+        <option value="tf">True/False only</option>
       </select>
 
       <label for="qc_timer">Per-Q timer</label>
@@ -109,11 +110,11 @@
         <option value="0">as-listed</option>
       </select>
 
-      <label for="qc_keep_groups">Case studies</label>
+      <label for="qc_keep_groups">Question groups</label>
       <label style="font-weight:400;display:flex;align-items:center;gap:6px;cursor:pointer">
         <input id="qc_keep_groups" type="checkbox"
-               title="When a case-study question is picked, pull in every other question that shares its passage so the group is never split across included/excluded.">
-        Keep case studies together (may add a few extra questions)
+               title="When a grouped question is picked, pull in every other question that shares its context (e.g. a Disease Detectives case study) so the group is never split across included/excluded.">
+        Keep question groups together (may add a few extra questions)
       </label>
     </div>
     <div id="qc_pool_size" class="muted" style="margin-top:10px;font-size:12px"></div>
@@ -196,9 +197,11 @@ function filteredPool(){
     if(CONFIG.topic && q.topic !== CONFIG.topic) return false;
     const isMcq = q.choices && q.choices.length;
     const isMatching = !!q._is_matching;
+    const isTf = !!q._is_tf;
     if(CONFIG.type === "mcq" && !isMcq) return false;
-    if(CONFIG.type === "frq" && (isMcq || isMatching)) return false;
+    if(CONFIG.type === "frq" && (isMcq || isMatching || isTf)) return false;
     if(CONFIG.type === "matching" && !isMatching) return false;
+    if(CONFIG.type === "tf" && !isTf) return false;
     if(CONFIG.bucket){
       const b = q._bucket || "";
       if(CONFIG.bucket === "pdf"       && b.startsWith("_")) return false;
@@ -326,7 +329,7 @@ function renderContextBanner(q){
   el.style.display = "";
   el.className = "quiz-context-banner";
   el.innerHTML = `
-    <div class="ctx-hdr">Case study${members.length > 1 ? ` · question ${posInGroup} of ${members.length}` : ""}${ctx.title ? " · " + esc(ctx.title) : ""}</div>
+    <div class="ctx-hdr">Shared context${members.length > 1 ? ` · question ${posInGroup} of ${members.length}` : ""}${ctx.title ? " · " + esc(ctx.title) : ""}</div>
     <div>${esc(ctx.text || "")}</div>
     ${imgs ? `<div class="images">${imgs}</div>` : ""}`;
 }
@@ -345,12 +348,24 @@ function presentQuestion(){
   document.getElementById("btn_submit").disabled = false;
   const isMcq = q.choices && q.choices.length;
   const isMatching = !!q._is_matching;
+  const isTf = !!q._is_tf;
   document.getElementById("q_matching").style.display = "none";
   if(isMatching){
     document.getElementById("q_choices").style.display = "none";
     document.getElementById("q_frq").style.display = "none";
     document.getElementById("q_matching").style.display = "";
     renderMatchingQuestion(q);
+  } else if(isTf){
+    document.getElementById("q_choices").style.display = "";
+    document.getElementById("q_frq").style.display = "none";
+    document.getElementById("q_choices").innerHTML = ["True", "False"].map(word =>
+      `<button class="quiz-choice" data-word="${word}">${word}</button>`).join("");
+    document.querySelectorAll(".quiz-choice").forEach(b => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".quiz-choice").forEach(x => x.classList.remove("picked"));
+        b.classList.add("picked");
+      });
+    });
   } else if(isMcq){
     document.getElementById("q_choices").style.display = "";
     document.getElementById("q_frq").style.display = "none";
@@ -431,11 +446,15 @@ function submitAnswer(timedOut){
   const q = QUIZ[IDX];
   const isMcq = q.choices && q.choices.length;
   const isMatching = !!q._is_matching;
+  const isTf = !!q._is_tf;
 
   if(isMatching){ submitMatchingAnswer(q, timedOut); return; }
 
   let picked;
-  if(isMcq){
+  if(isTf){
+    const sel = document.querySelector(".quiz-choice.picked");
+    picked = sel ? sel.dataset.word : null;
+  } else if(isMcq){
     const sel = document.querySelector(".quiz-choice.picked");
     picked = sel ? sel.dataset.letter : null;
   } else {
@@ -447,7 +466,13 @@ function submitAnswer(timedOut){
   }
   const correct_raw = String(q.answer || "").trim();
   let correct;
-  if(isMcq){
+  if(isTf){
+    // Scored on the normalized word, not a first-letter compare — "T"/"True"
+    // and "F"/"False" both start with distinguishing letters so a first-char
+    // MCQ-style compare would happen to work, but grade on the whole word to
+    // match the server's bqb._normalize_tf_answer() convention exactly.
+    correct = (picked || "").toLowerCase() === correct_raw.toLowerCase();
+  } else if(isMcq){
     correct = (picked || "").toUpperCase() === correct_raw.toUpperCase().charAt(0);
   } else {
     correct = (picked || "").toLowerCase() === correct_raw.toLowerCase();
@@ -461,7 +486,13 @@ function submitAnswer(timedOut){
   fb.innerHTML = correct
     ? `✓ Correct — answer was <b>${esc(correct_raw)}</b>`
     : `✗ ${timedOut ? "Out of time" : "Not quite"} — correct answer was <b>${esc(correct_raw)}</b>`;
-  if(isMcq){
+  if(isTf){
+    document.querySelectorAll(".quiz-choice").forEach(b => {
+      if(b.dataset.word.toLowerCase() === correct_raw.toLowerCase()) b.classList.add("correct");
+      else if(b.classList.contains("picked")) b.classList.add("wrong");
+      b.style.pointerEvents = "none";
+    });
+  } else if(isMcq){
     document.querySelectorAll(".quiz-choice").forEach(b => {
       if(b.dataset.letter === correct_raw.charAt(0).toUpperCase()) b.classList.add("correct");
       else if(b.classList.contains("picked")) b.classList.add("wrong");

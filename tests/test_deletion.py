@@ -101,8 +101,8 @@ def test_gate_parses_values(app_modules, monkeypatch, value, expected):
 def test_deleting_a_test_takes_its_responses(app_modules):
     assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, _window, test = _season_with_test(app_modules)
-    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
-    assessments.start_or_get_response(test.assessment_id, "stu2", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", [{}, {}, {}])
+    assessments.start_or_get_response(test.assessment_id, "stu2", [{}, {}, {}])
 
     assert deletion.preview_assessment(test.assessment_id)["responses"] == 2
     result = deletion.delete_assessment(test.assessment_id)
@@ -115,7 +115,7 @@ def test_deleting_a_test_takes_its_responses(app_modules):
 def test_deleting_a_window_cascades_to_tests_and_responses(app_modules):
     assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, window, test = _season_with_test(app_modules)
-    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", [{}, {}, {}])
 
     preview = deletion.preview_assessment_window(window.window_id)
     assert (preview["assessments"], preview["responses"]) == (1, 1)
@@ -131,7 +131,7 @@ def test_deleting_a_season_cascades_all_the_way_down(app_modules):
                                   app_modules["deletion"])
     slug, window, test = _season_with_test(app_modules)
     seasons.set_roster("2027", slug, ["stu1", "stu2"])
-    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", [{}, {}, {}])
 
     preview = deletion.preview_season("2027")
     assert (preview["assessment_windows"], preview["assessments"], preview["responses"]) == (1, 1, 1)
@@ -150,7 +150,7 @@ def test_preview_matches_what_deletion_reports(app_modules):
     assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, window, test = _season_with_test(app_modules)
     for name in ("a", "b", "c"):
-        assessments.start_or_get_response(test.assessment_id, name, 3)
+        assessments.start_or_get_response(test.assessment_id, name, [{}, {}, {}])
     preview = deletion.preview_assessment_window(window.window_id)
     result = deletion.delete_assessment_window(window.window_id)
     for key in ("assessment_windows", "assessments", "responses"):
@@ -169,8 +169,8 @@ def test_deleting_one_test_leaves_another_tests_responses_alone(app_modules):
     w2 = assessments.create_window("2028", "2028-01-01T09:00", "2028-01-01T11:00", [slug])
     test2 = assessments.get_assessment_for(w2.window_id, slug)
 
-    assessments.start_or_get_response(test1.assessment_id, "stu1", 3)
-    assessments.start_or_get_response(test2.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test1.assessment_id, "stu1", [{}, {}, {}])
+    assessments.start_or_get_response(test2.assessment_id, "stu1", [{}, {}, {}])
 
     deletion.delete_assessment(test1.assessment_id)
 
@@ -183,8 +183,8 @@ def test_deleting_a_user_removes_their_responses_everywhere_only(app_modules):
                                app_modules["deletion"])
     _slug, _window, test = _season_with_test(app_modules)
     auth.create_user("stu1", "password123", "student")
-    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
-    assessments.start_or_get_response(test.assessment_id, "stu2", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", [{}, {}, {}])
+    assessments.start_or_get_response(test.assessment_id, "stu2", [{}, {}, {}])
 
     result = deletion.delete_user("stu1")
 
@@ -198,7 +198,7 @@ def test_deleting_a_user_removes_their_responses_everywhere_only(app_modules):
 def test_deleting_a_response_leaves_the_test_intact(app_modules):
     assessments, deletion = app_modules["assessments"], app_modules["deletion"]
     _slug, _window, test = _season_with_test(app_modules)
-    assessments.start_or_get_response(test.assessment_id, "stu1", 3)
+    assessments.start_or_get_response(test.assessment_id, "stu1", [{}, {}, {}])
 
     deletion.delete_response(test.assessment_id, "stu1")
 
@@ -387,8 +387,8 @@ def test_bulk_prefix_delete_leaves_real_accounts_and_their_data_alone(app_module
     _slug, _window, assessment = _season_with_test(app_modules)
     auth.create_user("realstudent", "password123", "student")
     auth.create_user("loadtest_ab12_0000", "password123", "student")
-    assessments.start_or_get_response(assessment.assessment_id, "realstudent", 2)
-    assessments.start_or_get_response(assessment.assessment_id, "loadtest_ab12_0000", 2)
+    assessments.start_or_get_response(assessment.assessment_id, "realstudent", [{}, {}])
+    assessments.start_or_get_response(assessment.assessment_id, "loadtest_ab12_0000", [{}, {}])
 
     for name in deletion.users_with_prefix("loadtest_"):
         deletion.delete_user(name)
