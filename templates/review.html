@@ -2648,14 +2648,14 @@ async function performCapture(mode, x, y, w, h){
       annOverrideMatching(q);
       setDirty(true); renderCards();
       setStatus(`Captured ${(j.items||[]).length} more ${side} item(s) for Q#${q.number}.`, "ok");
-      if(hb) hb.style.display = "";
+      _showHaikuFallback();
       cancelCapture({preserveLast: true});
       return;
     }
 
     MATCHING_DRAFT = MATCHING_DRAFT || { left: [], right: [] };
     MATCHING_DRAFT[side] = j.items || [];
-    if(hb) hb.style.display = "";
+    _showHaikuFallback();
     if(side === "left"){
       // Auto-advance to the right-column drag — no second toolbar click needed.
       cancelCapture({preserveLast: true, preserveDraft: true});
@@ -2753,10 +2753,13 @@ async function performCapture(mode, x, y, w, h){
   applyCapture(mode, j, text);
   // Show Haiku fallback for text/choice/newQ captures (math has its own path)
   if(!mode.field.startsWith("math:")){
-    const hb = document.getElementById("haikuFallback");
-    if(hb) hb.style.display = "";
+    const shown = _showHaikuFallback();
     const hint = document.getElementById("captureHintText");
-    if(hint) hint.textContent = "Capture applied. If the split looks wrong, click Try Haiku to re-extract this region with vision.";
+    // Don't promise a re-extract that isn't on offer — without a key the
+    // recovery is to redraw the region or fix the field by hand.
+    if(hint) hint.textContent = shown
+      ? "Capture applied. If the split looks wrong, click Try Haiku to re-extract this region with vision."
+      : "Capture applied. If the split looks wrong, redraw the region or edit the field directly.";
   }
   cancelCapture({preserveLast: true});
 }
@@ -2847,6 +2850,21 @@ document.getElementById("haikuFallback").addEventListener("click", async () => {
   setStatus("Re-extracted via Haiku.", "ok");
   document.getElementById("haikuFallback").style.display = "none";
 });
+
+// Reveal the "✨ Try Haiku on this region" affordance only when vision is
+// actually usable. The button calls a paid Anthropic vision endpoint whose
+// routes 403 without ANTHROPIC_API_KEY (see review_app's _vision_available
+// guards), so offering it on a keyless instance is an invitation to a dead
+// end — and it appears at the exact moment a capture went wrong, which is
+// the worst time to hand someone a button that can't work. Returns whether
+// it was shown, so callers can word their hint to match.
+function _showHaikuFallback(){
+  const hb = document.getElementById("haikuFallback");
+  if(!hb) return false;
+  if(!STATE.vision_available){ hb.style.display = "none"; return false; }
+  hb.style.display = "";
+  return true;
+}
 
 // How many choices a capture response actually contributed. The parsed list
 // when split_choices recognised the layout, otherwise the single raw-text
