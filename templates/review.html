@@ -34,6 +34,10 @@
 .q-card.assign-target{outline:2px solid var(--accent);
   cursor:pointer;background:#f0f7ff}
 .q-card.dirty{border-left:3px solid var(--warn)}
+/* A T/F question with no recorded answer — the extractor preserves an
+   unparseable key rather than blanking it, so surface that instead of
+   silently showing "True". */
+.q-card select[data-edit="answer"].unset{border-color:var(--warn);background:#fffaf0}
 .q-card .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
   row-gap:5px;margin-bottom:6px;min-width:0}
 .q-card .row.tight{margin-bottom:3px}
@@ -705,7 +709,13 @@ function annOverrideQtype(q, newType){
   if(newType === "tf"){
     q.qtype = "tf";
     q.choices = [];
-    if(q.answer !== "True" && q.answer !== "False") q.answer = "True";
+    // Deliberately does NOT default the answer to "True". Defaulting writes a
+    // fabricated answer key that looks like a real one — and unlike the
+    // cleared choices above (visibly gone), nothing signals it was guessed.
+    // That key drives auto-grading. The extractor takes the same position:
+    // an unparseable T/F answer is left untouched rather than blanked
+    // (build_question_bank._finalize_tf_answers), so the review UI must not
+    // be the thing that invents one. The select below renders "not set".
   } else if(newType === "frq"){
     q.qtype = "frq";
     q.choices = [];
@@ -1789,7 +1799,9 @@ function cardHTML(q){
     <div class="math-preview" data-preview-for="text"></div>
     ${curQtype === "matching" ? matchingHTML(q) : curQtype === "tf" ? `
     <div class="field-row" style="margin-top:6px"><span class="lbl">Answer</span></div>
-    <select data-edit="answer">
+    <select data-edit="answer" class="${q.answer === "True" || q.answer === "False" ? "" : "unset"}">
+      ${q.answer === "True" || q.answer === "False" ? "" : `
+      <option value="" selected>${q.answer ? `⚠ not set — extracted "${esc(q.answer)}"` : "⚠ not set"}</option>`}
       <option value="True" ${q.answer === "True" ? "selected" : ""}>True</option>
       <option value="False" ${q.answer === "False" ? "selected" : ""}>False</option>
     </select>` : `
