@@ -1792,8 +1792,8 @@ function cardHTML(q){
     ${qtypeSegHTML}
     <div class="field-row">
       <span class="lbl">Text</span>
-      ${isFocused ? `<button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="stem"
-              title="Drag a rectangle on the PDF; the text is captured as this question's stem (replaces existing text)">📋 Capture stem</button>` : ""}
+      <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="stem"
+              title="Drag a rectangle on the PDF; the text is captured as this question's stem (replaces existing text)">📋 Capture stem</button>
     </div>
     <textarea data-edit="text">${esc(q.text)}</textarea>
     <div class="math-preview" data-preview-for="text"></div>
@@ -1808,14 +1808,16 @@ function cardHTML(q){
     <div class="field-row" style="margin-top:6px">
       <span class="lbl">Choices</span>
       <button class="ghost" data-act="addChoice" title="Append a new empty choice to this question">+ add choice</button>
-      ${isFocused ? `<button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="choices"
-              title="Drag a rectangle that contains A/B/C/D options; they're split and assigned to this question. Falls back to line-splitting if option letters were dropped during PDF extraction.">📋 Capture choices</button>` : ""}
+      <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="choices"
+              title="Drag a rectangle that contains A/B/C/D options; they're split and REPLACE this question's choices. Falls back to line-splitting if option letters were dropped during PDF extraction.">📋 Capture choices</button>
+      <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="choicesAppend"
+              title="Drag a rectangle containing more options; they're split and ADDED after the existing ones, then re-lettered in order. Use when the choices run across two columns or continue on the next page.">➕ Add choices from page</button>
     </div>
     ${choices}
     <div class="field-row" style="margin-top:6px">
       <span class="lbl">Answer</span>
-      ${isFocused ? `<button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="answer"
-              title="Drag a rectangle whose text becomes this question's answer">📋 Capture answer ${target !== "key" && STATE.has_key ? "(switch to Key)" : ""}</button>` : ""}
+      <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="answer"
+              title="Drag a rectangle whose text becomes this question's answer">📋 Capture answer ${target !== "key" && STATE.has_key ? "(switch to Key)" : ""}</button>
     </div>
     <input type="text" data-edit="answer" value="${esc(q.answer)}">`}
     ${isFocused ? `
@@ -2144,6 +2146,12 @@ function bindCardEvents(){
         } else if(act === "pickImage"){
           startCapture("pickImage", q._id);
         } else if(act === "capture"){
+          // These buttons used to render only on the focused card, so a
+          // capture needed a prior click to reveal them — invisible until
+          // you'd already guessed the control existed. They're now on every
+          // card, which means the button itself has to establish focus
+          // rather than assuming it.
+          if(focusedId !== q._id){ focusedId = q._id; renderCards(); }
           startCapture(el.dataset.field, q._id);
         } else if(act === "capture-math"){
           startCapture("math:" + el.dataset.into, q._id);
@@ -2493,6 +2501,7 @@ function startCapture(field, qid){
   stage.classList.add("capturing");
   hint.classList.add("on");
   const labels = {stem:"the question stem", choices:"the multiple-choice options",
+                  choicesAppend:"the ADDITIONAL options to add after the existing ones",
                   answer:"the answer", newQ:"the new question",
                   newContext:"the shared context (passage, intro, table)",
                   pickImage:"the image you want to attach to this question",
@@ -2728,15 +2737,19 @@ async function performCapture(mode, x, y, w, h){
       method:"POST",headers:{"Content-Type":"application/json"},
       body: JSON.stringify({
         x, y, w, h, dpi: 120, target,
-        parse_choices: (mode.field === "choices" || mode.field === "newQ"),
+        parse_choices: (mode.field === "choices" || mode.field === "choicesAppend" || mode.field === "newQ"),
       }),
     });
   } catch(err){ setStatus("Extract failed: " + err.message, "err"); cancelCapture(); return; }
   if(!r.ok){ setStatus("Extract failed: HTTP " + r.status, "err"); cancelCapture(); return; }
   const j = await r.json();
   const text = (j.text || "").trim();
-  // Remember region + applied target so Haiku fallback can re-run with vision
-  LAST_CAPTURE = { mode: {...mode}, x, y, w, h, page: curPage, target };
+  // Remember region + applied target so Haiku fallback can re-run with vision.
+  // appendCount mirrors the matching-column append path: it records how many
+  // choices THIS capture contributed, so a Haiku re-try can replace just
+  // those instead of stacking a second copy after them.
+  LAST_CAPTURE = { mode: {...mode}, x, y, w, h, page: curPage, target,
+                   appendCount: (mode.field === "choicesAppend" ? _parsedChoiceCount(j, text) : undefined) };
   applyCapture(mode, j, text);
   // Show Haiku fallback for text/choice/newQ captures (math has its own path)
   if(!mode.field.startsWith("math:")){
@@ -2820,11 +2833,42 @@ document.getElementById("haikuFallback").addEventListener("click", async () => {
   const j = await r.json();
   if(j.error){ setStatus("Haiku error: " + j.error, "err"); return; }
   const text = (j.stem || j.text || "").trim();
+  // Re-trying an append: drop what the first (text-extraction) pass added
+  // before applying the vision result, or the two stack up. Same guard the
+  // matching-column append path uses above.
+  if(c.mode.field === "choicesAppend" && c.mode.id){
+    const q = findQ(c.mode.id);
+    if(q && (c.appendCount || 0) > 0 && Array.isArray(q.choices)){
+      q.choices = q.choices.slice(0, Math.max(0, q.choices.length - c.appendCount));
+    }
+  }
   // For Q-aimed captures, applyCapture will use j.stem + j.choices.
   applyCapture(c.mode, j, text);
   setStatus("Re-extracted via Haiku.", "ok");
   document.getElementById("haikuFallback").style.display = "none";
 });
+
+// How many choices a capture response actually contributed. The parsed list
+// when split_choices recognised the layout, otherwise the single raw-text
+// choice the append path falls back to (mirrors the replace path's fallback).
+function _parsedChoiceCount(j, text){
+  if(j && j.choices && j.choices.length) return j.choices.length;
+  return (text && text.trim()) ? 1 : 0;
+}
+
+// Append captured choices after the existing ones and re-letter the whole
+// list A, B, C… Re-lettering rather than trusting the captured letters is
+// deliberate: a second column or a continuation page usually restarts its
+// own lettering at A, so keeping them would produce two A's. Sequential
+// re-lettering matches what "+ add choice" already does.
+function _appendParsedChoices(existing, j, text){
+  const base = Array.isArray(existing) ? existing.slice() : [];
+  const incoming = (j && j.choices && j.choices.length)
+    ? j.choices.map(c => ({...c}))
+    : ((text && text.trim()) ? [{letter:"", text: text.trim()}] : []);
+  const merged = base.concat(incoming);
+  return merged.map((c, i) => ({...c, letter: String.fromCharCode(65 + i)}));
+}
 
 function applyMathCapture(mode, delimitedLatex){
   const q = findQ(mode.id);
@@ -2929,6 +2973,10 @@ function applyCapture(mode, j, text){
     } else {
       q.choices = [{letter:"A", text}];
     }
+    annOverride(q.number, "choices", q.choices);
+  } else if(mode.field === "choicesAppend"){
+    _undoSnapshot(`add choices from page to Q#${q.number}`);
+    q.choices = _appendParsedChoices(q.choices, j, text);
     annOverride(q.number, "choices", q.choices);
   }
   annUpdateAdded(q.number, q);
