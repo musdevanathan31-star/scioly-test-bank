@@ -101,7 +101,11 @@ async function load(){
 document.addEventListener("click", async e => {
   const v = e.target.dataset.view;
   if(v){
-    const handle = openJobProgress({eventSlug: e.target.dataset.event, jobId: v, title: "Job console"});
+    // autoClose:false — same reason as event_jobs.html: this console is
+    // opened from a list row, typically for an already-finished job, so the
+    // launch flow's auto-close would hide it ~900ms after it appears.
+    const handle = openJobProgress({eventSlug: e.target.dataset.event, jobId: v,
+                                    title: "Job console", autoClose: false});
     handle.onDone(() => load());
     return;
   }

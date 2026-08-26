@@ -104,7 +104,13 @@ async function load(){
 document.addEventListener("click", async e => {
   const v = e.target.dataset.view;
   if(v){
-    const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: v, title: "Job console"});
+    // autoClose:false — this opens the console of a job picked from the
+    // list, usually one that already finished. The default auto-close is
+    // for the launch flow (watch it run, it tidies itself away); here the
+    // first poll comes back "succeeded" immediately, so the modal would
+    // hide ~900ms after opening and the output could never be read.
+    const handle = openJobProgress({eventSlug: EVENT_SLUG, jobId: v,
+                                    title: "Job console", autoClose: false});
     handle.onDone(() => load());
     return;
   }

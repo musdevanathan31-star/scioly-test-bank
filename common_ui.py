@@ -559,6 +559,14 @@ window.setLLMKeys = function(keys){
 // once. The Cancel button is shown only when the job payload's `can_cancel`
 // flag is true — computed server-side (jobs.can_cancel), never re-derived
 // client-side.
+//
+// `autoClose` defaults to TRUE, which suits the launch flow: you kick a job
+// off, watch it run, and the modal tidies itself away ~900ms after success.
+// Pass `autoClose: false` when opening the console of a job the user picked
+// from a list — that job has usually already finished, so the very first
+// poll is terminal and the modal would vanish a moment after appearing,
+// before its output could be read. Failed/cancelled jobs never auto-close
+// either way, since the console is the only place the reason exists.
 window.openJobProgress = function({eventSlug, jobId, title, autoClose = true}){
   let modal = document.getElementById("job_progress_modal");
   if(!modal){
