@@ -177,7 +177,7 @@ A shared passage, table, or diagram that several questions on the same PDF refer
 }
 ```
 
-A question opts in via its `context_id`; review.html then renders the context above the stem and any edit to the shared text flows through to every linked question. The review page's **"🔗 Group questions"** toggle (under `Tools ▾` since Phase 2b) lets a user multi-select several questions (via card checkboxes or PDF bounding-box clicks, persisting the selection across page turns) and bulk-assign them to a context in one step — either an existing one or a freshly drag-captured one — instead of linking one question at a time via the per-card dropdown.
+A question opts in via its `context_id`; review.html then renders the context above the stem and any edit to the shared text flows through to every linked question. Multi-selecting several questions and bulk-assigning them to a context in one step (P-03, replacing the earlier separate "selection mode") works like this: every collapsed question row carries a permanent checkbox (`.sel-check`); ticking any one of them makes the selection "active" — there's no mode to enter or exit, `SELECTED_QNUMS` (a `Set` of question numbers, persisting across page turns) is simply non-empty. Once active, a PDF bounding-box click also toggles that question's selection. A contextual bar (`#selectionBar`, inside the reserved `#contextSlot` under the toolbar — see facts.md §17) shows the count, the picked question numbers, **Assign to context ▾**, and **Clear**; clearing the last selection hides the bar again automatically. `Tools ▾ → 🔗 Group questions on this page` remains as a discoverable entry point — it selects (or, if the whole page is already selected, deselects) every question on the current page, since the common case is a shared passage/diagram whose questions share a page. **Assign to context ▾** offers every existing context plus **"+ New context from region…"**, which auto-links a freshly drag-captured context to whatever's currently selected — instead of linking one question at a time via the per-card dropdown.
 
 `ctx.images` is populated via `POST /event/<slug>/api/context-image` (`review_app.py`'s `api_context_image()`, modeled on `api_q_pick_image()`): body `{pdfname, page, target, x, y, w, h, dpi}`, crops the region at 300 DPI via `region_image_b64()`, writes it into `bqb.EVENT.image_dir` with `_slug_image_name(pdfname, "ctx", "png", "ctx")`, and returns `{"ok": true, "image": fname, "size": ...}`. Unlike the question-scoped pick-image route, this one deliberately never touches `state` — a context lives in `annotations[bucket].contexts`, so the filename is pushed into `ctx.images` client-side (`templates/review.html`'s `applyCapture()`'s `contextImage` branch, via `annUpdateContext()`) and persisted by the normal annotations save. review.html's per-context **"📌 Add figure"** button drives this (`startCapture("contextImage", ctxId)`); the `×` remover on each thumbnail only splices the filename out of `images` — it never hard-deletes the PNG, since another context or question may still reference it (same non-deletion policy as every other image removal path in the app).
 
@@ -419,7 +419,7 @@ Reusable components added alongside the extraction (used across every template, 
 - **`.modal-backdrop` / `.modal-box`** — generalizes what used to be ~9 hand-rolled dialogs (snapshots/compare/diagram modals in `review.html`, edit-user/edit-event modals, the admin app's password-confirm modal), each previously repeating `position:fixed;inset:0;background:rgba(0,0,0,.5-.55);...` verbatim. `.modal-box.wide`/`.narrow` cover the two common sizes; anything else overrides `width` inline. Tall, potentially-overflowing content (e.g. a side-by-side question-compare grid) overrides `align-items:flex-start` on the backdrop instead of using the default vertical centering, which would otherwise clip the top of content taller than the viewport with no way to scroll back to it.
 - **`confirmModal(message, opts)`** (JS) — Promise-based replacement for `window.confirm()`, built on `.modal-backdrop`/`.modal-box`. Used at all 22 of the app's destructive/confirmation prompts (archive event, disable user, delete question(s)/context(s)/all-questions, reprocess/wipe/manual-mode, restore snapshot, cancel job, etc.). `opts.danger` swaps the confirm button to `.danger` styling; `opts.wide` uses `.modal-box.wide` for longer messages (e.g. previewing a list of OCR suggestions before replacing a page's questions). The calling function must be `async`, since this returns a Promise — a missing `async` throws immediately and loudly in devtools on the next click, so this fails loud rather than silently doing nothing.
 - **Badge semantics** — four modifier classes (`.badge-ok`/`.badge-bad`/`.badge-warn`/`.badge-neutral`) replacing what used to be three inconsistently-overloaded names (`.badge.processed`/`.fresh`/`.edited`, plus separate ad-hoc systems in `browse.html` (`.v-correct` etc.) and the admin dashboard (`.badge.active`/`.inactive`/`.failed`)). The old names are kept as CSS aliases (`.badge.fresh, .badge.badge-bad{...}`) so nothing broke mid-migration, but markup now uses the semantic names directly. One real fix, not just a rename: "not processed yet"/"no key" states used to render in the same red as a job *failure* (`.fresh`) — they're now `.badge-warn` ("needs attention"), distinct from genuine failures (`.badge-bad`).
-- **`.toolbar-group`** — clusters related buttons inside a `.toolbar`/`header` row with a thin divider, instead of one flat row. Used to regroup `event_index.html`'s header (Browse/Quiz/Generate | Jobs/Scan files) — markup-only changes, every button kept its original `id`, so no JS needed updating. `review.html`'s toolbar has since been retriaged (2026-08, Phase 2b) down to `go-to-Q | + Add ▾ | Tools ▾ | ⋯`, with page-nav and the target-toggle moved into the floating `.zoom-controls` panel over the PDF image instead — see facts.md §17 for the full breakdown.
+- **`.toolbar-group`** — clusters related buttons inside a `.toolbar`/`header` row with a thin divider, instead of one flat row. Used to regroup `event_index.html`'s header (Browse/Quiz/Generate | Jobs/Scan files) — markup-only changes, every button kept its original `id`, so no JS needed updating. `review.html`'s toolbar has since been retriaged (2026-08, Phase 2b) down to `go-to-Q | + Add ▾ | Tools ▾ | ⋯`, with page-nav and the target-toggle moved into the floating `.zoom-controls` panel over the PDF image instead — see facts.md §17 for the full breakdown. Phase 2b's Save/Undo bar (`.floating-actions`, defined in `common_ui.py`) stayed bottom-fixed; the old bottom-fixed "selection pill" did not — P-03 (2026-08) replaced it with `.context-slot` (`#contextSlot`, `templates/review.html` only), one reserved strip fixed directly under the toolbar (`top:90px`) that renders nothing and costs no layout space until a `.slot-panel` inside it (the capture-in-progress hint, or the bulk-selection bar) is toggled `.on` — a bare CSS `:has()` selector shows/hides the wrapper, no JS needed for that part. Unlike the pill it replaced, everything in it draws from the shared CSS variables instead of a one-off hardcoded palette.
 - **`.dropdown-panel`** — a lighter-weight anchored popup (vs. a full `.modal-backdrop`) for non-blocking actions: `browse.html`'s Export menu, and `event_index.html`'s new upload form (see below).
 - **`.form-grid`** — standardizes the dominant `grid-template-columns:160px 1fr` "label | input" layout used by several add/edit forms.
 
@@ -476,12 +476,32 @@ Algorithm:
 4. For each consecutive pair of anchors, compute the bbox spanning from `anchor[i].y0` to `anchor[i+1].y0` (or page height for the last one), widened to the leftmost/rightmost edges of every text block inside that vertical slice.
 5. Return PDF-point coords; the frontend scales to displayed image pixels.
 
-UI behavior:
-- Boxes render as soft-green overlays after the page image loads.
-- **Focused** (the q whose `_id` matches `focusedId`): orange box.
-- **Unmatched** (the box's qnum doesn't appear in `STATE.questions`): dashed red box — this is the "the algorithm thinks there's a Q here but the parser dropped it" diagnostic.
-- Click a box → jumps to that question's card and focuses it.
-- Toggle on/off via the ▢ button in the zoom controls; preference persists in `localStorage` (default ON).
+UI behavior — a three-role signal hierarchy (P-06), all drawn from the shared
+CSS variables (`var(--accent)`, `var(--warn)`, `var(--muted)`/`var(--line)`)
+rather than hardcoded colors, so only one thing on the page ever reads as
+loud:
+- **Neutral** (default): every ordinary extracted question renders a quiet,
+  low-opacity `var(--muted)` box — "this is an ordinary question" is the
+  least urgent state on the page, so it no longer gets the strongest color.
+  Persisted capture-region overlays (`#regionOverlays`) share this role.
+- **Accent** (the one loud state): the **focused** question (the card whose
+  `_id` matches `focusedId`) and, while a capture is in progress, every box
+  a click would reuse as the capture region ("pickable") — both are "what
+  you're working on right now."
+- **Warning/diagnostic**: **unmatched** boxes (the box's qnum doesn't appear
+  in `STATE.questions` — "the algorithm thinks there's a Q here but the
+  parser dropped it"). Off by default; rendered only when the ▢ toggle is
+  on. A box that's neither focused nor extracted isn't clickable to
+  anything useful, so it's omitted entirely rather than shown quiet.
+- A bulk-selected-but-not-focused box (see Group Questions below) gets a
+  dashed neutral outline, slightly stronger once picked — still neutral, so
+  accent keeps meaning "the one thing" even mid-selection.
+- Click a box → jumps to that question's card and focuses it (or, mid
+  capture/selection, performs that action instead).
+- Toggle via the ▢ button in the zoom controls; preference persists in
+  `localStorage`. This toggle now controls only the warning/diagnostic
+  layer (default **off**) — ordinary question boxes always render so
+  click-to-focus keeps working without an extra step.
 - Key PDF mode hides bboxes (key PDFs aren't question-numbered the same way).
 
 ### Status-bar lifecycle
