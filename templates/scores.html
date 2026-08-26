@@ -2,18 +2,89 @@
 <html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Scores · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
-.wrap{padding:18px;max-width:1100px;margin:0 auto}
+.wrap{padding:18px;max-width:1180px;margin:0 auto}
 section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
   padding:14px 18px;margin-bottom:18px}
-.season-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px}
-.season-bar select{padding:5px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:13px}
+.season-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.season-bar label{font-size:12px;color:var(--muted)}
+.season-bar select,.season-bar input{padding:5px 8px;border:1px solid var(--line);
+  border-radius:4px;font:inherit;font-size:13px;background:var(--bg-input);color:var(--fg)}
+.season-bar .spacer{flex:1}
+
+/* View toggle */
+.viewtabs{display:flex;gap:0;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.viewtabs a{padding:5px 12px;font-size:12px;color:var(--fg-soft);background:var(--bg-card);
+  border-right:1px solid var(--line)}
+.viewtabs a:last-child{border-right:none}
+.viewtabs a.on{background:var(--accent);color:#fff}
+
 .scores-tbl{width:100%;border-collapse:collapse;font-size:13px}
 .scores-tbl th,.scores-tbl td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left}
-.scores-tbl th{background:#fafafa;font-weight:600;color:var(--fg-soft);font-size:11px;
+.scores-tbl th{background:var(--bg-alt);font-weight:600;color:var(--fg-soft);font-size:11px;
   text-transform:uppercase;letter-spacing:.3px}
-.scores-tbl td.score{text-align:center}
-.scores-tbl a{text-decoration:none}
+.scores-tbl td.num,.scores-tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
+.scores-tbl tbody tr:hover{background:var(--row-hover)}
 .empty{color:var(--muted);font-size:13px}
+
+/* Sortable summary headers */
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--fg)}
+th.sortable .arrow{opacity:.35;font-size:9px;margin-left:3px}
+th.sortable.sorted .arrow{opacity:1}
+
+/* Score bands - a scanning aid only. Tinted background rather than
+   coloured text so the number itself stays high-contrast in both themes. */
+.band-ok{background:rgba(31,138,77,.13)}
+.band-warn{background:rgba(184,107,0,.15)}
+.band-bad{background:rgba(192,57,43,.13)}
+.pct{font-weight:600;font-variant-numeric:tabular-nums}
+/* On the summary the band tints a pill around the number, not the whole
+   cell -- a full-width tint on a wide column reads as a chart bar and
+   implies a magnitude the colour isn't encoding. In the dense matrix the
+   cells are narrow, so tinting the cell there is fine. */
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;min-width:52px;text-align:right}
+.raw{color:var(--muted);font-size:11px}
+
+/* The matrix. Its own scroll container: the page body must never scroll
+   sideways (a season is 50+ columns wide). Sticky student column + sticky
+   header keep a cell in the middle identifiable. */
+.matrix-scroll{overflow:auto;max-height:72vh;border:1px solid var(--line);border-radius:6px}
+.matrix{border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap}
+.matrix th,.matrix td{padding:6px 9px;border-bottom:1px solid var(--line);
+  border-right:1px solid var(--line-soft)}
+.matrix thead th{position:sticky;top:0;z-index:2;background:var(--bg-alt);
+  font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--fg-soft);
+  font-weight:600;text-align:center;vertical-align:bottom}
+.matrix thead th .ev{display:block;font-size:9px;color:var(--muted);
+  text-transform:none;letter-spacing:0}
+/* The denominator, stated once per column instead of in all ~2000 cells. */
+.matrix thead th .max{display:block;font-size:9px;color:var(--muted);
+  text-transform:none;letter-spacing:0;font-weight:400}
+.spark{vertical-align:middle;overflow:visible}
+.matrix tbody th,.matrix tfoot th.stub{position:sticky;left:0;z-index:1;
+  background:var(--bg-card);text-align:left;font-weight:500;font-size:12px;
+  text-transform:none;letter-spacing:0;color:var(--fg);
+  border-right:1px solid var(--line)}
+.matrix thead th.corner{left:0;z-index:3;text-align:left}
+.matrix td{text-align:center;font-variant-numeric:tabular-nums}
+.matrix tbody tr:hover td{outline:1px solid var(--line)}
+.matrix tfoot th{position:sticky;bottom:0;z-index:2;background:var(--bg-alt);
+  font-size:11px;text-align:center;color:var(--fg-soft)}
+.matrix tfoot th.stub{z-index:3}
+.matrix .rowavg{background:var(--bg-alt);font-weight:600}
+
+/* Student's own view - a list, not a one-row matrix. */
+.mine{display:flex;flex-direction:column;gap:8px}
+.mine .row{display:flex;justify-content:space-between;align-items:center;
+  border:1px solid var(--line);border-radius:6px;padding:10px 14px}
+.mine .row .info{display:flex;flex-direction:column;gap:2px}
+.mine .row .ev{font-weight:600;font-size:14px}
+.mine .row .when{font-size:12px;color:var(--muted)}
+.mine .row .val{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.headline{display:flex;gap:24px;flex-wrap:wrap;align-items:baseline;margin-bottom:4px}
+.headline .big{font-size:30px;font-weight:700;color:var(--accent);
+  font-variant-numeric:tabular-nums}
+.headline .lbl{font-size:12px;color:var(--muted)}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -33,49 +104,254 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
         </option>
         {% endfor %}
       </select>
+
+      <label for="event_picker">Event</label>
+      <select id="event_picker">
+        <option value="all" {{ "selected" if event_filter == "all" }}>All events</option>
+        {% for slug in season_events %}
+        <option value="{{ slug }}" {{ "selected" if slug == event_filter }}>{{ slug }}</option>
+        {% endfor %}
+      </select>
+
+      {% if not is_student %}
+      <label for="student_picker">Student</label>
+      <select id="student_picker">
+        <option value="all" {{ "selected" if student_filter == "all" }}>All students</option>
+        {% for u in all_students %}
+        <option value="{{ u }}" {{ "selected" if u == student_filter }}>{{ u }}</option>
+        {% endfor %}
+      </select>
+
+      <div class="spacer"></div>
+      <div class="viewtabs">
+        <a href="#" data-view="summary" class="{{ 'on' if view == 'summary' }}">Summary</a>
+        <a href="#" data-view="matrix" class="{{ 'on' if view == 'matrix' }}">By assessment</a>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ---------------------------------------------------------------- #}
+  {# Student's own scores. A single row in a 50-column matrix would be #}
+  {# unreadable, so this is a chronological list instead - the same    #}
+  {# shape as the Past section of My Assessments.                      #}
+  {# ---------------------------------------------------------------- #}
+  {% if is_student %}
+  <section>
+    {% set me = summary[0] if summary else None %}
+    <div class="headline">
+      <div>
+        <div class="big">{{ "%.0f%%"|format(me.avg) if me and me.avg is not none else "—" }}</div>
+        <div class="lbl">season average</div>
+      </div>
+      <div>
+        <div class="big">{{ me.n_taken if me else 0 }}</div>
+        <div class="lbl">assessments taken</div>
+      </div>
+      {% if me and me.n_missing %}
+      <div>
+        <div class="big">{{ me.n_missing }}</div>
+        <div class="lbl">not submitted</div>
+      </div>
+      {% endif %}
     </div>
   </section>
 
   <section>
     {% if not columns %}
-    <p class="empty">No graded tests yet for this season.</p>
-    {% elif not students %}
-    <p class="empty">No students rostered for this season.</p>
+    <p class="empty">No graded assessments yet for this season.</p>
     {% else %}
-    <table class="scores-tbl">
+    <div class="mine">
+      {% for col in columns %}
+      {% set cell = (grid.get(students[0]) or {}).get(col.assessment.assessment_id) %}
+      <div class="row">
+        <div class="info">
+          <span class="ev">{{ col.event_slug }}</span>
+          <span class="when">{{ col.short }}{{ " · " + col.date if col.date and col.date != col.short }}</span>
+        </div>
+        {% if not cell %}
+        <span class="badge badge-neutral">not submitted</span>
+        {% elif cell.pending %}
+        <span class="badge badge-warn">pending release</span>
+        {% elif cell.detail_ok %}
+        <a class="val" href="{{ url_for('score_detail_page', assessment_id=col.assessment.assessment_id, student_username=students[0]) }}">{{ "%.0f%%"|format(cell.pct) }}<span class="raw"> &nbsp;{{ "%.1f"|format(cell.earned) }}/{{ "%.0f"|format(cell.possible) }}</span></a>
+        {% else %}
+        <span class="val">{{ "%.0f%%"|format(cell.pct) }}<span class="raw"> &nbsp;{{ "%.1f"|format(cell.earned) }}/{{ "%.0f"|format(cell.possible) }}</span></span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  {# ---------------------------------------------------------------- #}
+  {# Coach / volunteer                                                 #}
+  {# ---------------------------------------------------------------- #}
+  {% elif not columns %}
+  <section><p class="empty">No graded assessments yet for this season.</p></section>
+  {% elif not students %}
+  <section><p class="empty">No students rostered for this season.</p></section>
+
+  {% elif view == "summary" %}
+  <section>
+    <div class="season-bar" style="margin-bottom:10px">
+      <input id="quickfilter" type="search" placeholder="Filter students…" style="min-width:200px">
+      <span class="muted" id="filtercount"></span>
+    </div>
+    <table class="scores-tbl" id="summary_tbl">
       <thead><tr>
-        <th>Student</th>
-        {% for col in columns %}<th>{{ col.label }}</th>{% endfor %}
+        <th class="sortable sorted" data-key="name">Student<span class="arrow">▲</span></th>
+        <th class="sortable num" data-key="avg">Average<span class="arrow">▲</span></th>
+        <th>Trend <span class="muted" style="text-transform:none">(last {{ summary[0].trend|length if summary and summary[0].trend else 8 }})</span></th>
+        <th class="sortable num" data-key="last">Last<span class="arrow">▲</span></th>
+        <th class="sortable num" data-key="taken">Taken<span class="arrow">▲</span></th>
+        <th class="sortable num" data-key="missing">Missing<span class="arrow">▲</span></th>
       </tr></thead>
       <tbody>
-        {% for student in students %}
-        <tr>
-          <td>{{ student }}</td>
-          {% for col in columns %}
-          {% set cell = (grid.get(student) or {}).get(col.assessment.assessment_id) %}
-          <td class="score">
-            {% if not cell %}
-            <span class="muted">—</span>
-            {% elif cell.pending %}
-            <span class="badge badge-neutral">pending release</span>
-            {% elif cell.detail_ok %}
-            <a href="{{ url_for('score_detail_page', assessment_id=col.assessment.assessment_id, student_username=student) }}">{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</a>
-            {% else %}
-            <span>{{ "%.1f"|format(cell.earned) }} / {{ "%.0f"|format(cell.possible) }}</span>
-            {% endif %}
+        {% for r in summary %}
+        <tr data-name="{{ r.username }}"
+            data-avg="{{ r.avg if r.avg is not none else -1 }}"
+            data-last="{{ r.last if r.last is not none else -1 }}"
+            data-taken="{{ r.n_taken }}"
+            data-missing="{{ r.n_missing }}">
+          <td><a href="{{ url_for('scores_page', season=selected.season_id, view='matrix', event=event_filter, student=r.username) }}">{{ r.username }}</a></td>
+          <td class="num">
+            {% if r.avg is not none %}<span class="pct pill {{ r.band }}">{{ "%.0f%%"|format(r.avg) }}</span>
+            {% else %}<span class="muted">—</span>{% endif %}
           </td>
-          {% endfor %}
+          <td>
+            {% if r.spark %}
+            <svg class="spark" width="84" height="18" viewBox="-2 -2 88 22" aria-hidden="true">
+              <polyline points="{{ r.spark }}" fill="none" stroke="var(--accent)"
+                        stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+            </svg>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="num">{% if r.last is not none %}{{ "%.0f%%"|format(r.last) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="num">{{ r.n_taken }} <span class="muted">/ {{ r.n_expected }}</span></td>
+          <td class="num">
+            {% if r.n_missing %}<span class="badge badge-warn">{{ r.n_missing }}</span>
+            {% else %}<span class="muted">0</span>{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% endif %}
   </section>
+
+  {% else %}
+  <section>
+    <p class="muted" style="margin:0 0 10px 0">
+      {{ students|length }} student{{ "" if students|length == 1 else "s" }} ×
+      {{ columns|length }} assessment{{ "" if columns|length == 1 else "s" }}.
+      Scroll inside the grid; the student column and header stay put.
+    </p>
+    <div class="matrix-scroll">
+      <table class="matrix">
+        <thead><tr>
+          <th class="corner">Student</th>
+          {% for col in columns %}
+          <th title="{{ col.label }} — {{ col.n_taken }} submitted">{{ col.short }}<span class="ev">{{ col.event_slug }}</span><span class="max">/ {{ "%.0f"|format(col.possible) }}</span></th>
+          {% endfor %}
+          <th class="rowavg">Avg %</th>
+        </tr></thead>
+        <tbody>
+          {% for r in summary %}
+          <tr>
+            <th>{{ r.username }}</th>
+            {% for col in columns %}
+            {% set cell = (grid.get(r.username) or {}).get(col.assessment.assessment_id) %}
+            <td class="{{ cell.band if cell and not cell.pending else '' }}">
+              {% if not cell %}<span class="muted">—</span>
+              {% elif cell.pending %}<span class="muted" title="graded, not released">·</span>
+              {% elif cell.detail_ok %}
+              <a href="{{ url_for('score_detail_page', assessment_id=col.assessment.assessment_id, student_username=r.username) }}"
+                 title="{{ '%.1f'|format(cell.earned) }} / {{ '%.0f'|format(cell.possible) }} — {{ '%.0f%%'|format(cell.pct) }}">{{ "%g"|format(cell.earned) }}</a>
+              {% else %}
+              <span title="{{ '%.1f'|format(cell.earned) }} / {{ '%.0f'|format(cell.possible) }} — {{ '%.0f%%'|format(cell.pct) }}">{{ "%g"|format(cell.earned) }}</span>
+              {% endif %}
+            </td>
+            {% endfor %}
+            <td class="rowavg {{ r.band }}" title="season average across differing maxes">{% if r.avg is not none %}{{ "%.0f%%"|format(r.avg) }}{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot><tr>
+          <th class="stub">Class average</th>
+          {% for col in columns %}
+          <th class="{{ col.band }}" title="{{ col.n_taken }} submitted">{% if col.avg is not none %}{{ "%.0f%%"|format(col.avg) }}{% else %}—{% endif %}</th>
+          {% endfor %}
+          <th class="rowavg"></th>
+        </tr></tfoot>
+      </table>
+    </div>
+  </section>
+  {% endif %}
 
 </div>
 <script>
-document.getElementById("season_picker").addEventListener("change", (e) => {
-  location.href = `${APP_ROOT}/scores?season=${encodeURIComponent(e.target.value)}`;
-});
+(function(){
+  const qs = new URLSearchParams(location.search);
+  function go(key, val){
+    qs.set(key, val);
+    if(key !== "season" && !qs.get("season")) { /* keep whatever server resolved */ }
+    location.href = `${APP_ROOT}/scores?${qs.toString()}`;
+  }
+  const season = document.getElementById("season_picker");
+  if(season) season.addEventListener("change", e => go("season", e.target.value));
+  const ev = document.getElementById("event_picker");
+  if(ev) ev.addEventListener("change", e => go("event", e.target.value));
+  const st = document.getElementById("student_picker");
+  if(st) st.addEventListener("change", e => go("student", e.target.value));
+  document.querySelectorAll(".viewtabs a").forEach(a => {
+    a.addEventListener("click", e => { e.preventDefault(); go("view", a.dataset.view); });
+  });
+
+  // Quick filter over the summary rows. Client-side on purpose: 40 rows
+  // is nothing, and a round trip per keystroke would be worse than useless.
+  const qf = document.getElementById("quickfilter");
+  const tbl = document.getElementById("summary_tbl");
+  const count = document.getElementById("filtercount");
+  function applyFilter(){
+    if(!tbl) return;
+    const needle = (qf.value || "").trim().toLowerCase();
+    let shown = 0, total = 0;
+    tbl.tBodies[0].querySelectorAll("tr").forEach(tr => {
+      total++;
+      const hit = !needle || (tr.dataset.name || "").toLowerCase().includes(needle);
+      tr.style.display = hit ? "" : "none";
+      if(hit) shown++;
+    });
+    count.textContent = needle ? `${shown} of ${total}` : "";
+  }
+  if(qf) qf.addEventListener("input", applyFilter);
+
+  // Sorting. Numeric columns store -1 for "no data" so those rows sink to
+  // the bottom ascending and don't masquerade as a zero score.
+  let sortKey = "name", sortAsc = true;
+  function sortBy(key){
+    if(!tbl) return;
+    if(key === sortKey) sortAsc = !sortAsc; else { sortKey = key; sortAsc = (key === "name"); }
+    const body = tbl.tBodies[0];
+    const rows = Array.from(body.querySelectorAll("tr"));
+    rows.sort((a, b) => {
+      let av = a.dataset[sortKey], bv = b.dataset[sortKey];
+      if(sortKey !== "name"){ av = parseFloat(av); bv = parseFloat(bv); }
+      if(av < bv) return sortAsc ? -1 : 1;
+      if(av > bv) return sortAsc ? 1 : -1;
+      return (a.dataset.name || "").localeCompare(b.dataset.name || "");
+    });
+    rows.forEach(r => body.appendChild(r));
+    tbl.querySelectorAll("th.sortable").forEach(th => {
+      const on = th.dataset.key === sortKey;
+      th.classList.toggle("sorted", on);
+      const arrow = th.querySelector(".arrow");
+      if(arrow) arrow.textContent = on ? (sortAsc ? "▲" : "▼") : "▲";
+    });
+  }
+  document.querySelectorAll("th.sortable").forEach(th => {
+    th.addEventListener("click", () => sortBy(th.dataset.key));
+  });
+})();
 </script>
 </body></html>

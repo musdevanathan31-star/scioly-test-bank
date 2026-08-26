@@ -6,7 +6,7 @@ A task-oriented guide: "I want to do X" rather than "how does X work." For *why*
 
 - **Coach** — full admin. Sees every event, can manage users and shared textbooks, runs Club Management and the Assessments dashboard, and can do everything a volunteer can do on every event (not just assigned ones).
 - **Volunteer** — sees and can edit only the specific events a coach assigned them. Everything else is hidden from their landing page and returns a 403 on a direct URL. May also be assigned to prepare/grade a season assessment for an event — a separate grant, unrelated to event access (see "For Volunteers" below).
-- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-assessments` (take a live assessment, see released results for past ones) and `/scores` (see everyone's named scores). Logging in takes you straight to My Assessments, since there's no bank to land on. See "For Students" below.
+- **Student** — no question-bank access at all, not even read-only. Scoped to `/my-assessments` (take a live assessment, see released results for past ones) and `/scores` (their own scores for the season). Logging in takes you straight to My Assessments, since there's no bank to land on. See "For Students" below.
 
 Log in at `/login` with the username/password a coach gave you. Where you land depends on your role: coaches and volunteers arrive on the **Assessments** dashboard — during a season that's the recurring job, while curating the question bank is off-season work — and students arrive on **My Assessments**. The event list is still one click away under **☰ → Events**, and following a link straight to a page takes you there instead.
 
@@ -608,7 +608,7 @@ If you missed the window, ask a coach for a personal makeup window — once gran
 
 Once a coach releases grades for a test, **My Assessments** shows it under Past with your full results — your answers, the correct answers, and your score per question (including partial credit on matching questions). Until release, it just shows as submitted/pending, even if a volunteer has already graded the free-response parts behind the scenes.
 
-**Scores** (☰ menu, visible to every role) shows every rostered student's named score on every graded test for the season — not just your own. You can only drill into the question-by-question detail of your *own* responses; other students' rows show the score only.
+**Scores** (☰ menu) shows **your own** scores for the season: your season average, how many assessments you've taken, and a list of each graded assessment with your score. Click any released score to see the question-by-question detail. You cannot see other students' scores.
 
 ## For the server operator — moving to a new machine
 
@@ -737,5 +737,6 @@ While a long action runs (upload/extract, reprocess, a scrape, LLM generation) a
 | Release grades | Coach only | Assessments dashboard → Release grades |
 | Take a live assessment | Student | My Assessments |
 | View your own released results | Student | My Assessments |
-| View season-wide named scores | Coach, Volunteer, Student | Scores |
+| View season-wide named scores | Coach, Volunteer | Scores |
+| View your own scores | Student | Scores |
 | View another student's response detail | Coach; Volunteer who graded it (or assigned, all-MCQ test) | Scores → click a score |

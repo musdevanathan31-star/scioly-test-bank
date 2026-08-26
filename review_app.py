@@ -2475,40 +2475,143 @@ def can_view_response_detail(viewer: "auth.User", test: "assessments.Assessment"
     return False
 
 
+def _pct(earned: float, possible: float):
+    """Percentage, or None when there's nothing to divide by. None is a
+    real state here (no attempts yet) and must stay distinguishable from
+    0.0 (attempted and scored nothing) everywhere downstream."""
+    if not possible:
+        return None
+    return 100.0 * earned / possible
+
+
+def _score_band(pct) -> str:
+    """Coarse band used only to colour a cell so a coach can scan the grid
+    without reading every number. Deliberately absolute and deliberately
+    crude - it is a reading aid, not an assessment of the student, and
+    nothing computed from it is stored or shown as a grade."""
+    if pct is None:
+        return ""
+    if pct >= 80:
+        return "band-ok"
+    if pct >= 60:
+        return "band-warn"
+    return "band-bad"
+
+
+def _sparkline_points(vals, width: float = 84.0, height: float = 18.0) -> str:
+    """SVG polyline points for a trend sparkline, or "" when there aren't
+    at least two readings to draw a line between.
+
+    Fixed 0-100% vertical scale on purpose: self-scaling each student's
+    line to their own min/max would make a student who moved 61->63%
+    look identical to one who moved 20->95%, and these sit in a column
+    being compared across 40 students."""
+    pts = [v for v in vals if v is not None]
+    if len(pts) < 2:
+        return ""
+    step = width / (len(pts) - 1)
+    out = []
+    for i, v in enumerate(pts):
+        y = height - (max(0.0, min(100.0, v)) / 100.0) * height
+        out.append(f"{i * step:.1f},{y:.1f}")
+    return " ".join(out)
+
+
 @app.route("/scores")
 def scores_page():
+    """Season scores.
+
+    Two shapes, because one table cannot serve both audiences at the size
+    a real season reaches. A weekly season (Oct-Apr) is ~26 windows, and a
+    column here is per (window x event) - so a club running two events a
+    week produces ~52 columns, five events ~130. The old single matrix was
+    4688px wide at 40 students and scrolled the page body sideways with no
+    sticky header or student column, which made a cell in the middle
+    unreadable: by the time you scrolled to it you could see neither whose
+    row it was nor which assessment.
+
+    So: coaches/volunteers land on a per-student summary (one row each,
+    fixed column count, sortable) and opt into the full matrix as a
+    drill-down, narrowed by event and/or student and rendered in its own
+    scroll container.
+
+    Students see only themselves - see the privacy note below.
+    """
     import seasons as seasons_mod
 
     user = g.user
     if user.role not in ("coach", "volunteer", "student"):
         abort(403)
+    # PRIVACY (2026-08-26): a student sees only their own scores. Before
+    # this, /scores served every rostered student's name and every score
+    # to every student - can_view_response_detail() gated the drill-down
+    # but the grid itself was unfiltered, so ~300KB of other people's
+    # grades reached a student's browser. Filtering happens while BUILDING
+    # the grid, not in the template, so other students' scores are never
+    # in the response body at all.
+    #
+    # Deliberately isolated to `is_student` branches so it can be reverted
+    # by deleting them - the coach path is untouched by it.
+    is_student = user.role == "student"
+
     all_seasons = sorted(seasons_mod.load_seasons().values(), key=lambda s: s.season_id, reverse=True)
-    current = seasons_mod.get_current_season()
     selected_id = seasons_mod.resolve_season_id(request.args.get("season"))
     selected = seasons_mod.get_season(selected_id) if selected_id else None
+    view = request.args.get("view") or "summary"
+    if view not in ("summary", "matrix"):
+        view = "summary"
+    event_filter = request.args.get("event") or "all"
+    # A student can never widen this past themselves, whatever they pass.
+    student_filter = user.username if is_student else (request.args.get("student") or "all")
 
     students_seen: dict[str, str] = {}
-    columns = []  # [{test, window, event_slug, label}]
-    grid = {}     # {username: {assessment_id: {earned, possible, pending, detail_ok}}}
+    rosters: dict[str, set] = {}
+    columns = []  # [{assessment, window, event_slug, label, short, date}]
+    grid = {}     # {username: {assessment_id: {earned, possible, pending, detail_ok, pct, band}}}
 
     if selected:
-        users = auth.load_users()
         for slug in selected.event_slugs:
-            for u in seasons_mod.get_roster(selected.season_id, slug):
+            roster = set(seasons_mod.get_roster(selected.season_id, slug))
+            rosters[slug] = roster
+            for u in roster:
                 students_seen[u] = u
-        for w in assessments.load_windows().values():
-            if w.season_id != selected.season_id or w.archived:
-                continue
+
+        # Chronological. load_windows() returns dict insertion order -
+        # fine in practice but not a guarantee, and the trend sparkline
+        # below is meaningless if columns are not in time order, so sort
+        # explicitly rather than relying on it.
+        windows = [w for w in assessments.load_windows().values()
+                   if w.season_id == selected.season_id and not w.archived]
+        windows.sort(key=lambda w: (w.opens_at or "", w.window_id))
+
+        for w in windows:
             for slug in w.event_slugs:
+                if event_filter != "all" and slug != event_filter:
+                    continue
+                # A student has no business seeing columns for events they
+                # are not rostered in.
+                if is_student and user.username not in rosters.get(slug, set()):
+                    continue
                 t = assessments.get_assessment_for(w.window_id, slug)
                 if t is None or not t.snapshot:
                     continue
                 if not assessments.assessment_grading_complete(t.assessment_id, t.snapshot):
                     continue
-                columns.append({"assessment": t, "window": w, "event_slug": slug,
-                               "label": f"{slug} — {w.label or w.opens_at[:10]}"})
+                # Constant for every student on this assessment (it comes
+                # from the frozen snapshot), so it belongs in the column
+                # header once rather than in each cell.
+                col_possible = sum(float(q.get("max_points") or 1) for q in t.snapshot)
+                columns.append({
+                    "assessment": t, "window": w, "event_slug": slug,
+                    "label": slug + " - " + (w.label or (w.opens_at or "")[:10]),
+                    "short": w.label or (w.opens_at or "")[:10],
+                    "date": (w.opens_at or "")[:10],
+                    "possible": col_possible,
+                })
                 responses = assessments.get_responses_for_assessment(t.assessment_id)
                 for username, resp in responses.items():
+                    if is_student and username != user.username:
+                        continue
                     if resp.status not in ("submitted", "auto_submitted_late"):
                         continue
                     earned = sum((resp.auto_grade.get(str(q.get("number"))) or
@@ -2517,13 +2620,71 @@ def scores_page():
                     possible = sum(float(q.get("max_points") or 1) for q in t.snapshot)
                     detail_ok = (user.role == "coach") or can_view_response_detail(
                         user, t, username, resp, w)
+                    pct = _pct(earned, possible)
                     grid.setdefault(username, {})[t.assessment_id] = {
                         "earned": earned, "possible": possible,
                         "pending": not resp.released, "detail_ok": detail_ok,
+                        "pct": pct, "band": _score_band(pct),
                     }
 
+    # Everyone in the season (drives the student picker), then the subset
+    # actually rendered as rows.
+    all_students = [user.username] if is_student else sorted(students_seen.values())
+    if student_filter != "all" and student_filter in all_students:
+        students = [student_filter]
+    else:
+        students = all_students
+        student_filter = "all" if not is_student else student_filter
+
+    # Per-student aggregates. "Expected" counts only the columns whose
+    # event this student is actually rostered in - otherwise every student
+    # shows as missing every other event's assessments.
+    summary = []
+    for u in students:
+        cells = grid.get(u) or {}
+        expected = [c for c in columns if u in rosters.get(c["event_slug"], set())]
+        taken = [c for c in expected if c["assessment"].assessment_id in cells]
+        tot_e = sum(cells[c["assessment"].assessment_id]["earned"] for c in taken)
+        tot_p = sum(cells[c["assessment"].assessment_id]["possible"] for c in taken)
+        trend = [cells[c["assessment"].assessment_id]["pct"] for c in taken[-8:]]
+        avg = _pct(tot_e, tot_p)
+        summary.append({
+            "username": u, "n_taken": len(taken), "n_expected": len(expected),
+            "n_missing": len(expected) - len(taken),
+            "avg": avg, "band": _score_band(avg),
+            "last": trend[-1] if trend else None,
+            "trend": trend, "spark": _sparkline_points(trend),
+        })
+
+    # Per-assessment averages (the column footer), computed over the WHOLE
+    # grid rather than the filtered rows on purpose: narrowing to one
+    # student must not turn "class average on this test" into that same
+    # student's score wearing a misleading label. Meaningless on a
+    # student's page for the same reason, so it is skipped there.
+    if not is_student:
+        for c in columns:
+            aid = c["assessment"].assessment_id
+            vals = [row[aid] for row in grid.values() if aid in row]
+            c["n_taken"] = len(vals)
+            c["avg"] = _pct(sum(v["earned"] for v in vals), sum(v["possible"] for v in vals))
+            c["band"] = _score_band(c["avg"])
+
+    # The event filter offers only what the viewer can actually have data
+    # for. A student rostered in one event of a three-event season should
+    # not be offered the other two -- the dropdown would be listing events
+    # that can only ever render empty for them.
+    if not selected:
+        season_events = []
+    elif is_student:
+        season_events = [slug for slug in selected.event_slugs
+                         if user.username in rosters.get(slug, set())]
+    else:
+        season_events = list(selected.event_slugs)
     return render_template("scores.html", all_seasons=all_seasons, selected=selected,
-                           columns=columns, students=sorted(students_seen.values()), grid=grid)
+                           columns=columns, students=students, grid=grid,
+                           summary=summary, view=view, is_student=is_student,
+                           season_events=season_events, event_filter=event_filter,
+                           all_students=all_students, student_filter=student_filter)
 
 
 @app.route("/scores/<assessment_id>/<student_username>")
