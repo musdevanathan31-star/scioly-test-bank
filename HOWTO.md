@@ -12,7 +12,7 @@ Log in at `/login` with the username/password a coach gave you. Where you land d
 
 ## Getting around (any role)
 
-Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself; it sits where the per-page back arrow it replaced used to be, ahead of the school logo) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Events** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club**, and **Assessments** are coach/volunteer destinations; **Scores** is open to everyone, including students; **Notifications** shows recent toast messages; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Assessments, Scores, Notifications, Settings, Logout.
+Click **☰** at the far left of the header on any page (it's pinned there on every page you can reach as a logged-in user, except the test-taking page itself; it sits where the per-page back arrow it replaced used to be, ahead of the school logo) to open the navigation menu — it's the one place to reach every major section, scoped to what your role can actually access: **Events** jumps to the landing page (hidden for students — they have no bank to manage); **Test bank** / **Question bank** / **Primary sources** expand to a list of your events (click one to jump straight in — empty/absent for students, who have none); **Jobs**, **Club**, and **Assessments** are coach/volunteer destinations; **Scores** is open to everyone, including students; and your identity line, **Settings**, and **Logout** live at the bottom of the same menu. A student's menu is correspondingly short: My Assessments, Scores, Settings, Logout.
 
 ## Account settings (any role)
 
@@ -584,7 +584,7 @@ Neither number updates instantly; both refresh about every 20 seconds.
 
 ### Logging in for the first time
 
-A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login` — you land directly on **My Assessments**, your home page (there's no question bank to manage, so the navigation menu only shows what you can actually use: My Assessments, Scores, Notifications, Settings, Logout). Go to **☰ → Settings → My Account** to change your password whenever you like.
+A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login` — you land directly on **My Assessments**, your home page (there's no question bank to manage, so the navigation menu only shows what you can actually use: My Assessments, Scores, Settings, Logout). Go to **☰ → Settings → My Account** to change your password whenever you like.
 
 ### Build events (bridges, rockets, robots)
 

@@ -314,6 +314,10 @@ function renderHistory(){
     `<div class="item ${e.kind}"><span class="ts">${e.ts}</span>${
        (e.msg||"").replace(/&/g,'&amp;').replace(/</g,'&lt;')}</div>`).join("");
 }
+// DEPRECATED — no caller since 2026-08-26. The "Notifications" nav item in
+// _user_badge.html was the only entry point and is now hidden (see the
+// comment there for why). Kept, along with renderHistory()/_toastLog, so
+// re-enabling is a one-line revert; remove all three together.
 window.toggleToastHistory = function(){
   const el = document.getElementById("toast-history");
   if(!el) return;

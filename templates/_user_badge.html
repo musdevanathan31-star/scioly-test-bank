@@ -139,7 +139,25 @@
     <span id="cost-badge" class="cost-badge" style="display:none;margin:4px 10px"
           title="Anthropic API spend this process. Hover for details.">$0.00</span>
     {% endif %}
-    <button type="button" class="nav-link" id="navNotifBtn" style="width:100%;text-align:left">🔔 Notifications</button>
+    {# DEPRECATED — hidden 2026-08-26, slated for removal.
+       This opened toggleToastHistory(): a "Recent messages" panel over
+       window._toastLog, an in-memory array of the toasts fired since the
+       current page loaded. It was the only entry point to that panel.
+
+       It no longer earns a slot. The long-running work it was built to
+       give you a scrollback of — reprocess, scrape, generation — moved to
+       the jobs page, which persists its console per job and survives both
+       navigation and a logout; _toastLog never did either. What's left in
+       the log is transient acknowledgements ("Saved", "3 questions added")
+       that need no second reading.
+
+       Known loss, accepted: a missed error toast (8s on screen, ~67 call
+       sites) is now unrecoverable. Errors that matter should be made
+       sticky at the call site rather than recovered from a global log.
+
+       toggleToastHistory()/renderHistory()/_toastLog stay in common_ui.py
+       for now so re-enabling is a one-line revert; remove them together
+       with this block. #}
     <form action="{{ url_for('logout') }}" method="post" style="margin:0">
       <button type="submit" class="nav-link" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;font:inherit">🚪 Logout</button>
     </form>
@@ -195,8 +213,8 @@
   setInterval(refreshPresenceBadge, 20000);
 
   // Navicon — toggle the transient panel, close it on any outside click,
-  // expand/collapse per-event accordions in place, and have "Notifications"
-  // close the panel then reuse the existing toast-history toggle.
+  // and expand/collapse per-event accordions in place. (The "Notifications"
+  // item that also lived here is deprecated — see the comment above.)
   const navBtn = document.getElementById("navIconBtn");
   const navPanel = document.getElementById("navIconPanel");
   if(navBtn && navPanel){
@@ -213,11 +231,6 @@
         e.stopPropagation();
         btn.nextElementSibling.classList.toggle("on");
       });
-    });
-    const notifBtn = document.getElementById("navNotifBtn");
-    if(notifBtn) notifBtn.addEventListener("click", () => {
-      navPanel.classList.remove("on");
-      toggleToastHistory();
     });
   }
 })();
