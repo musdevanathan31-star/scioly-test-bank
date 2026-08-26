@@ -38,14 +38,24 @@
      title="Background jobs (PDF reprocess, scio.ly scrape, LLM generation, …) currently running or queued"></a>
 </div>
 {% endif %}
+</div>
 {# The navicon — single consolidated entry point for every cross-page
    destination (test bank / question bank / sources are per-event, so
    each expands an accordion over nav_events; the rest are direct links).
    Replaces what used to be a different scattered set of links on every
-   template (see git history for the pre-navicon layout). It now sits at
-   the header's right end, inside .header-right below, because the school
-   logo holds the left edge. #}
-<div class="toolbar-group nav-anchor" style="position:relative;border-right:none">
+   template (see git history for the pre-navicon layout).
+
+   It sits at the header's LEFT edge, outside .header-right. This partial is
+   included after each page's <h1>, so source order can't put it there —
+   order:-2 does, the same trick the school logo uses with order:-1, and one
+   step further left so the menu leads and the logo follows.
+
+   It must stay OUTSIDE .header-right: `order` can't move a node out of its
+   flex container, and .header-right owns the header's single
+   margin-left:auto. Do not give this element an auto margin of its own — a
+   second one splits the free space rather than stacking, which previously
+   stranded the badges mid-header. #}
+<div class="toolbar-group nav-anchor" style="order:-2;position:relative;border-right:none;margin-right:8px">
   <button id="navIconBtn" type="button" title="Navigate">☰</button>
   <div id="navIconPanel" class="dropdown-panel nav-panel">
     <div class="nav-identity">
@@ -134,7 +144,6 @@
       <button type="submit" class="nav-link" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;font:inherit">🚪 Logout</button>
     </form>
   </div>
-</div>
 </div>
 <script>
 (function(){

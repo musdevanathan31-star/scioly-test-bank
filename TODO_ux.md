@@ -98,7 +98,9 @@ Legend: ✅ shipped · 🛠 still open (mid) · 🏗 still open (large)
 This sprint landed alongside the season-long testing workflow and the tournament archive (both substantial enough to have their own design notes — see `spec.md` §17/§20 and `TODO_archive.md` — this section covers only the UI polish around them).
 
 ### Navigation
-- ✅ Menu moved to the header's right edge; the per-page back arrow it replaced is gone
+- ✅ Menu consolidated into one navicon; the per-page back arrow it replaced is gone.
+  Originally placed at the header's right edge, moved back to the far left (ahead of
+  the school logo) on request — it reads as the page's primary navigation there.
 - ✅ "Management" dropped from hamburger menu labels (shorter, less redundant)
 - ✅ Menu items reordered and iconed
 - ✅ Coaches and volunteers land on the Assessments dashboard after sign-in instead of the event list — during a season, assessment work is the recurring job; the event list is one click away

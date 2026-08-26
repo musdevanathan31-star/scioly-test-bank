@@ -203,10 +203,12 @@ a{color:var(--accent);text-decoration:none}
    navigation entry point, replacing the per-template scattered links it
    used to take to reach the same destinations. A .dropdown-panel variant
    with its own link/accordion styling. */
-/* Opens leftward from the menu button's right edge. .dropdown-panel sets
-   left:0, which was right when the navicon lived at the header's left edge
-   and would now run the panel off the right of the viewport. */
-.nav-panel{min-width:230px;left:auto;right:0}
+/* Opens rightward from the menu button's left edge, inheriting
+   .dropdown-panel's left:0. The navicon sits at the header's left edge
+   again (templates/_user_badge.html, order:-2), so the previous
+   left:auto;right:0 override — which existed only while the navicon lived
+   at the right end — would now run the panel off the left of the viewport. */
+.nav-panel{min-width:230px}
 .nav-identity{padding:6px 10px 8px;margin-bottom:4px;border-bottom:1px solid var(--line);
   font-size:12px;color:var(--fg-soft)}
 .nav-panel .nav-link{display:block;padding:6px 10px;border-radius:4px;color:var(--fg);
