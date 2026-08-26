@@ -544,9 +544,11 @@ venv/bin/pip install -r requirements.txt
 # (requirements-dev.txt's playwright is only needed if you'll run
 #  download_event.py --reauth from this machine — see "running on a
 #  headless server" above for why production servers typically skip it)
-sudo dnf install libreoffice-headless   # only needed for .docx/.doc test/key ingestion
+sudo dnf install libreoffice-headless   # .docx/.doc ingestion + Word preview in the tournament archive
 venv/bin/python auth.py --create-coach
 ```
+
+**If `libreoffice-headless` won't install**, recent RHEL releases no longer ship a LibreOffice package in the default repos. Install it another way — Flatpak (`flatpak install -y flathub org.libreoffice.LibreOffice`) or a container — and point the app at the binary with **`SOFFICE_BIN`** in that instance's `.env`, e.g. `SOFFICE_BIN=/usr/local/bin/soffice-wrapper`. The app checks `SOFFICE_BIN` before falling back to `soffice` on `PATH`, so a wrapper script doesn't have to be named `soffice`. Without a converter, `.docx`/`.doc` uploads are rejected with an explanatory error and Word documents in the tournament archive show that message instead of a preview — nothing else is affected.
 
 Then install [`deploy/qbank.service`](deploy/qbank.service) as a systemd unit (`gunicorn`, bound to `127.0.0.1:5000`) and [`deploy/Caddyfile`](deploy/Caddyfile) as a reverse proxy in front of it — both files have install steps in their header comments.
 

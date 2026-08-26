@@ -500,7 +500,7 @@ not exist on the old one. Export it before rolling back if it matters.
 | Nobody can log in, but the app runs | `auth_users.json` missing or under the wrong path | It follows `DATA_ROOT`, not the app dir |
 | No certificate; browser warns | DNS not pointing here, or port 80 not forwarded | Section 6.3 and 9; check `journalctl -u caddy` |
 | 404 on every school URL | `APPLICATION_ROOT` and the Caddyfile `handle` block disagree | Compare the `.env` value with `/etc/caddy/Caddyfile` |
-| `.docx` uploads fail | `libreoffice-headless` not installed | `sudo dnf install libreoffice-headless` |
+| `.docx` uploads fail, or archive Word previews show an error | `libreoffice-headless` not installed | `sudo dnf install libreoffice-headless`. If the distribution no longer ships it (recent RHEL), install LibreOffice via Flatpak or a container and set `SOFFICE_BIN=<path-to-binary>` in that instance's `.env` |
 | Admin app rejects the password | `ADMIN_PASSWORD_HASH` missing from `/opt/qbank-admin/.env` | Re-import secrets |
 | `restic` cannot read the repository | Wrong repository password, or AWS keys not sourced | `set -a; . /opt/qbank/backup/.env; set +a` |
 | Thread count reverted to default | Set via a systemd drop-in, which is host-local and not migrated | `qbank-set-threads.sh <instance> <n>` |

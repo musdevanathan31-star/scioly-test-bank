@@ -3145,24 +3145,83 @@ def _archive_pdf_or_404(rel: str):
     return path
 
 
+ARCHIVE_DOC_PDF_SCOPE = ".archive_doc"
+_ARCHIVE_DOC_EXTS = (".docx", ".doc")
+
+
+def _archive_renderable_pdf(path: Path) -> Path:
+    """The PDF whose pages should be rendered for an archive file.
+
+    A `.pdf` is itself. A `.doc`/`.docx` is converted once through
+    LibreOffice and cached, so that:
+
+    - paging through a document doesn't re-run `soffice` for every page
+      (conversion takes seconds; the viewer requests one PNG per page), and
+    - the archive tree is never written to. It is frequently mounted
+      read-only — the app already surfaces "the archive tree is read-only to
+      the server" as a first-class state — so dropping a sibling `.pdf` next
+      to the source is not an option.
+
+    The cache lives beside the page-render cache and is keyed on the
+    source's mtime+size, the same identity `_render_cache_key` uses, so
+    replacing a document in the archive invalidates its conversion instead
+    of serving the previous file's pages.
+
+    Raises `doc_convert.DocConvertError` when conversion isn't possible
+    (most often: LibreOffice isn't installed on the server). Callers surface
+    that to the coach rather than 500ing — a document that can't be
+    previewed is information, not a failure.
+    """
+    import tempfile   # local, matching this module's convention for it
+
+    if path.suffix.lower() not in _ARCHIVE_DOC_EXTS:
+        return path
+    try:
+        st = path.stat()
+        stamp = f"{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        stamp = "0:0"
+    key = hashlib.sha256(f"{path.resolve()}|{stamp}".encode("utf-8")).hexdigest()
+    cached = _RENDER_CACHE_DIR / ARCHIVE_DOC_PDF_SCOPE / key[:2] / f"{key}.pdf"
+    if cached.is_file():
+        return cached
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    # Convert into a scratch dir and move the result into place, so a
+    # crashed or timed-out conversion never leaves a half-written PDF at the
+    # cache path for the next request to read as valid.
+    with tempfile.TemporaryDirectory(prefix="archive_doc_pdf_") as tmp:
+        produced = doc_convert.convert_to_pdf(path, Path(tmp))
+        os.replace(str(produced), str(cached))
+    return cached
+
+
 @app.route("/api/archive/pdf/info")
 @coach_or_volunteer_required
 def api_archive_pdf_info():
     """Page count and size, so the viewer knows how far it can page."""
     rel = request.args.get("path", "") or ""
     path = _archive_pdf_or_404(rel)
-    if not pdf_safety.looks_like_pdf(path):
-        return jsonify({"error": "not a PDF", "pages": 0,
-                        "bytes": path.stat().st_size}), 200
+    # Size and name always describe the file the coach is looking at in the
+    # archive, never the derived PDF a .docx was converted into — they use
+    # these to decide whether to keep or delete the source document.
+    src_bytes, src_name = path.stat().st_size, path.name
     try:
-        doc = pdf_safety.open_pdf_safely(path)
+        render_path = _archive_renderable_pdf(path)
+    except doc_convert.DocConvertError as e:
+        # Same shape as the not-a-PDF case below: the viewer shows the
+        # message instead of an empty frame.
+        return jsonify({"error": str(e), "pages": 0, "bytes": src_bytes}), 200
+    if not pdf_safety.looks_like_pdf(render_path):
+        return jsonify({"error": "not a PDF", "pages": 0, "bytes": src_bytes}), 200
+    try:
+        doc = pdf_safety.open_pdf_safely(render_path)
     except pdf_safety.UnsafePdfError as e:
         # A malformed PDF is data here, not an incident: the coach needs to
         # be told it will not open so they can delete it.
-        return jsonify({"error": str(e), "pages": 0,
-                        "bytes": path.stat().st_size}), 200
-    return jsonify({"pages": doc.page_count, "bytes": path.stat().st_size,
-                    "name": path.name})
+        return jsonify({"error": str(e), "pages": 0, "bytes": src_bytes}), 200
+    return jsonify({"pages": doc.page_count, "bytes": src_bytes,
+                    "name": src_name,
+                    "converted": render_path != path})
 
 
 @app.route("/api/archive/pdf/page/<int:pno>.png")
@@ -3171,6 +3230,14 @@ def api_archive_pdf_page(pno: int):
     """One page as PNG, through the same two caches the event viewer uses."""
     rel = request.args.get("path", "") or ""
     path = _archive_pdf_or_404(rel)
+    try:
+        # For a .doc/.docx this is the cached conversion, so the render
+        # cache below keys off the derived PDF — correct, since that is what
+        # is actually being rasterised, and its identity already folds in the
+        # source's mtime/size via the conversion cache key.
+        path = _archive_renderable_pdf(path)
+    except doc_convert.DocConvertError:
+        abort(415, "this document could not be converted for preview")
     try:
         dpi = max(10, min(300, int(request.args.get("dpi", "110"))))
     except ValueError:

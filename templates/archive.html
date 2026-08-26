@@ -224,6 +224,15 @@ function esc(s){ return (s == null ? "" : String(s))
   .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
   .replaceAll('"',"&quot;").replaceAll("'","&#39;"); }
 
+// Which archive files the preview pane can show. Word documents are
+// converted to PDF server-side on first preview, so they belong here too —
+// most scioly.org tests are distributed as .docx, and having to download one
+// just to see whether it's the test or the key defeats the point of the
+// archive browser.
+const PREVIEWABLE_EXTS = [".pdf", ".docx", ".doc"];
+function isPreviewable(ext){
+  return PREVIEWABLE_EXTS.includes(String(ext || "").toLowerCase());
+}
 function fmtBytes(n){
   if(n === null || n === undefined) return "";
   const u = ["B","KB","MB","GB","TB"];
@@ -359,11 +368,11 @@ async function go(rel){
     html += `<div class="row">
       <input type="checkbox" class="pick" data-pick="${esc(frel)}"
              ${PICKED.has(frel) ? "checked" : ""}>
-      <span class="ico">${f.ext === ".pdf" ? "📄" : "•"}</span>
+      <span class="ico">${isPreviewable(f.ext) ? (f.ext === ".pdf" ? "📄" : "📝") : "•"}</span>
       <span class="nm">${esc(f.name)}</span>
       ${dup}
       <span class="num">${fmtBytes(f.size)}</span>
-      ${f.ext === ".pdf" ? `<button class="ghost" data-preview="${esc(frel)}">Preview</button>` : ""}
+      ${isPreviewable(f.ext) ? `<button class="ghost" data-preview="${esc(frel)}"${f.ext === ".pdf" ? "" : ` title="Word document — converted to PDF on the server the first time you preview it"`}>Preview</button>` : ""}
       ${rowOps(frel, true)}</div>`;
   });
   if(!html){

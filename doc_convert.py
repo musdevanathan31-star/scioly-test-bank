@@ -57,13 +57,42 @@ def looks_like_doc(path: Path) -> bool:
 
 
 def _soffice_path() -> str:
+    """Locate the LibreOffice binary used for .docx/.doc conversion.
+
+    `SOFFICE_BIN` wins over PATH discovery. That override exists because
+    LibreOffice is not installable from the default repos on every target
+    distribution — notably newer RHEL, where `dnf install
+    libreoffice-headless` can fail outright — leaving a wrapper (Flatpak, a
+    container, or a hand-built install) as the only way to get a converter.
+    Those don't put a plain `soffice` on PATH, and requiring a shell shim
+    named `soffice` just to satisfy `shutil.which` is a worse contract than
+    naming the binary directly.
+    """
+    override = (os.environ.get("SOFFICE_BIN") or "").strip()
+    if override:
+        # Accept either an absolute path or a bare name resolvable on PATH,
+        # so `SOFFICE_BIN=/opt/lo/soffice` and `SOFFICE_BIN=soffice.bin`
+        # both work.
+        exe = override if Path(override).is_file() else shutil.which(override)
+        if not exe:
+            raise DocConvertError(
+                f"SOFFICE_BIN is set to {override!r} but that is not an "
+                "executable file and was not found on PATH."
+            )
+        return exe
     exe = shutil.which("soffice") or shutil.which("soffice.bin")
     if not exe:
         raise DocConvertError(
             "LibreOffice ('soffice') is not installed or not on PATH. "
-            "Install it to enable .docx/.doc ingestion, e.g.:\n"
-            "  RHEL/Fedora:   sudo dnf install libreoffice-headless\n"
-            "  Debian/Ubuntu: sudo apt install libreoffice"
+            "It is needed to ingest .docx/.doc tests and to preview Word "
+            "documents in the tournament archive. Install it, e.g.:\n"
+            "  Debian/Ubuntu: sudo apt install libreoffice\n"
+            "  Fedora:        sudo dnf install libreoffice-headless\n"
+            "If your distribution no longer ships a LibreOffice package "
+            "(this affects recent RHEL releases), install it another way "
+            "and point SOFFICE_BIN at the binary, e.g.:\n"
+            "  flatpak install -y flathub org.libreoffice.LibreOffice\n"
+            "  SOFFICE_BIN=/usr/bin/flatpak-soffice   # a wrapper you provide"
         )
     return exe
 

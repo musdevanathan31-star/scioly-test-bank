@@ -131,7 +131,8 @@ section "System packages"
 
 if $DO_PACKAGES; then
   if command -v dnf >/dev/null; then
-    # libreoffice-headless is only needed for .docx/.doc ingestion and
+    # libreoffice-headless is needed for .docx/.doc ingestion and for
+    # previewing Word documents in the tournament archive, and
     # restic only for the bulk backups, but both are cheap to install now
     # and annoying to discover missing later (see requirements.txt's notes).
     run dnf install -y "${PKGS[@]}"
