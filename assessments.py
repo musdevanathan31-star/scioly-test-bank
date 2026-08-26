@@ -42,6 +42,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from text_utils import parse_answer_letters
+
 REPO_ROOT = Path(__file__).parent
 DATA_ROOT = Path(os.environ.get("DATA_ROOT") or REPO_ROOT)
 WINDOWS_FILE = DATA_ROOT / "assessment_windows.json"
@@ -461,8 +463,18 @@ def _snapshot_one_question(q: dict, bucket: str, max_points: float) -> dict:
     if qtype == "matching":
         entry["matching"] = q.get("matching") or {"left": [], "right": [], "pairs": {}}
     else:
-        entry["choices"] = list(q.get("choices") or [])
-        entry["correct_answer"] = q.get("answer", "")
+        choices = list(q.get("choices") or [])
+        answer = q.get("answer", "")
+        entry["choices"] = choices
+        entry["correct_answer"] = answer
+        if qtype == "mcq":
+            # Safe to send to students unsanitized (see api_take_assessment):
+            # it only says HOW MANY choices to pick, never WHICH ones are
+            # correct. Derived from the answer having more than one letter --
+            # never set for tf/frq/matching, and never set for a prose MCQ
+            # answer (parse_answer_letters returns empty for those, same as
+            # a genuinely single-answer one -- both render as single-select).
+            entry["select_multiple"] = len(parse_answer_letters(answer, choices)) > 1
     return entry
 
 
@@ -1181,10 +1193,38 @@ def windows_for_season(season_id: str) -> list[AssessmentWindow]:
     return [w for w in load_windows().values() if w.season_id == season_id]
 
 
-def _grade_mcq(picked: str | None, correct_answer: str) -> dict:
-    correct_raw = (correct_answer or "").strip()
-    ok = bool(picked) and picked.strip().upper() == correct_raw.upper()[:1]
-    return {"correct": ok, "points_earned": 1.0 if ok else 0.0, "points_possible": 1.0}
+def _grade_mcq(picked: str | None, correct_answer: str, choices: list | None = None,
+               max_points: float = 1.0) -> dict:
+    """Set-based grading: a multi-answer MCQ ("A, D, E") requires every
+    correct letter picked and no incorrect ones -- all-or-nothing, no partial
+    credit. This is a deliberate asymmetry with matching (which DOES give
+    partial credit per pair, see _grade_matching): the user was offered
+    partial credit for MCQ and declined it, so a student who gets 2 of 3
+    letters right on a multi-answer MCQ scores zero, same as getting 0 of 3.
+
+    Both sides route through parse_answer_letters() so "A", "A, B", "a,b"
+    etc. are parsed identically. A single-letter correct_answer degrades to
+    exactly today's behavior: the student's `picked` is always a single
+    letter for a single-answer MCQ (assessment_take.html only allows
+    multi-select when the published snapshot's `select_multiple` flag is
+    set), so the set-equality check below reduces to the old one-letter
+    compare.
+
+    Falls back to the ORIGINAL first-character compare when correct_answer
+    doesn't parse as letters (prose answers with units, etc. -- 23 of these
+    exist in the bank today) -- deliberately bit-for-bit unchanged, bug and
+    all, rather than "fixed" here too: those 23 questions must keep grading
+    exactly as they do today, not according to some new guess at what a
+    prose compare should mean.
+    """
+    correct_letters = parse_answer_letters(correct_answer, choices)
+    if not correct_letters:
+        correct_raw = (correct_answer or "").strip()
+        ok = bool(picked) and picked.strip().upper() == correct_raw.upper()[:1]
+        return {"correct": ok, "points_earned": max_points if ok else 0.0, "points_possible": max_points}
+    picked_letters = parse_answer_letters(picked, choices)
+    ok = bool(picked_letters) and picked_letters == correct_letters
+    return {"correct": ok, "points_earned": max_points if ok else 0.0, "points_possible": max_points}
 
 
 def _grade_tf(picked: str | None, correct_answer: str, max_points: float = 1.0) -> dict:
@@ -1241,7 +1281,8 @@ def submit_response(assessment_id: str, username: str, snapshot: list, now: date
             if not answer:
                 continue
             if q.get("qtype") == "mcq":
-                auto_grade[number] = _grade_mcq(answer.get("picked"), q.get("correct_answer", ""))
+                auto_grade[number] = _grade_mcq(answer.get("picked"), q.get("correct_answer", ""),
+                                                q.get("choices"), float(q.get("max_points") or 1))
             elif q.get("qtype") == "tf":
                 auto_grade[number] = _grade_tf(answer.get("picked"), q.get("correct_answer", ""),
                                                float(q.get("max_points") or 1))

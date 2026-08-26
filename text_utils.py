@@ -50,6 +50,36 @@ def normalize_unicode(s: str) -> str:
     return _INVISIBLE_CHARS_RE.sub("", s)
 
 
+def parse_answer_letters(answer, choices) -> set[str]:
+    """Parse an MCQ `answer` string into the set of choice letters it names,
+    e.g. "A" -> {"A"}, "A, D, E" -> {"A", "D", "E"}, "a,b" -> {"A", "B"}.
+
+    Returns an EMPTY set when `answer` doesn't parse as a set of choice
+    letters — most commonly a prose answer with units ("12 volts") rather
+    than a lettered pick. That empty-set return is the fallback signal: 23
+    real MCQs in the bank have prose answers instead of letters, and every
+    caller of this helper must treat an empty result as "not letter-shaped"
+    rather than "student picked nothing."
+
+    A letter with no matching entry in `choices` is dropped (a typo/stale
+    letter in `answer` shouldn't silently count as a valid pick). This is
+    intentionally the single place this parsing rule lives — every grading
+    and rendering path (Python and JS) must import/port this exact logic
+    rather than re-deriving it, so "A, D, E" means the same thing everywhere.
+    """
+    raw = (answer or "").strip()
+    if not raw:
+        return set()
+    # Letter-shaped: one or more single A-Z letters separated by commas
+    # (optional surrounding whitespace). Anything else — units, sentences,
+    # numbers — is prose and falls back to empty.
+    parts = [p.strip() for p in raw.split(",")]
+    if not all(re.fullmatch(r"[A-Za-z]", p) for p in parts):
+        return set()
+    valid_letters = {(c.get("letter") or "").strip().upper() for c in (choices or [])}
+    return {p.upper() for p in parts if p.upper() in valid_letters}
+
+
 def strip_points(s: str) -> str:
     """Remove parenthetical point-value markers like '(2 points)' from text.
 

@@ -54,7 +54,8 @@
          alt="{{ (q.image_descriptions or {}).get(fn) or 'figure' }}">
     {% endfor %}
     {% if q.qtype == "mcq" %}
-      <div class="ans">Your answer: <b>{{ row.answer.picked or "(none)" }}</b> — correct answer: <b>{{ q.correct_answer }}</b></div>
+      <div class="ans">Your {{ "picks" if q.select_multiple else "answer" }}: <b>{{ row.answer.picked or "(none)" }}</b>
+        — correct {{ "answers (select all that apply)" if q.select_multiple else "answer" }}: <b>{{ q.correct_answer }}</b></div>
     {% elif q.qtype == "tf" %}
       <div class="ans">Your answer: <b>{{ row.answer.picked or "(none)" }}</b> — correct answer: <b>{{ q.correct_answer }}</b></div>
     {% elif q.qtype == "frq" %}

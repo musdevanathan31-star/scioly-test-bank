@@ -15,6 +15,9 @@
   background:#fff;text-align:left;font-size:14px}
 .test-choice:hover{background:#f5f9fd;border-color:var(--accent)}
 .test-choice.picked{background:#e3f0fa;border-color:var(--accent)}
+.test-multi-hint{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px}
+.test-choice-multi::before{content:"\2610\a0";}
+.test-choice-multi.picked::before{content:"\2611\a0";}
 .test-frq-input{width:100%;padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:4px;font:inherit;min-height:80px}
 .test-match-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:18px;align-items:start}
 .test-match-col-head{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:4px}
@@ -205,15 +208,37 @@ function presentQuestion(){
     });
   } else if(q.qtype === "mcq"){
     choicesEl.style.display = "";
-    choicesEl.innerHTML = (q.choices || []).map(c =>
-      `<button type="button" class="test-choice ${saved && saved.picked === c.letter ? 'picked' : ''}" data-letter="${esc(c.letter)}">
+    // select_multiple comes straight from the published snapshot (see
+    // assessments._snapshot_one_question) -- it only says HOW MANY choices
+    // to pick, never which ones are correct, so it's safe for the student
+    // to see even though correct_answer itself is stripped from this payload
+    // (api_take_assessment's sanitizer).
+    const isMulti = !!q.select_multiple;
+    const savedLetters = new Set(
+      isMulti ? String((saved && saved.picked) || "").split(",").map(s => s.trim()).filter(Boolean)
+              : (saved && saved.picked ? [saved.picked] : []));
+    choicesEl.innerHTML =
+      (isMulti ? `<div class="test-multi-hint">Select all that apply</div>` : "")
+      + (q.choices || []).map(c =>
+      `<button type="button" class="test-choice ${isMulti ? 'test-choice-multi' : ''} ${savedLetters.has(c.letter) ? 'picked' : ''}" data-letter="${esc(c.letter)}">
          <b>${esc(c.letter)}.</b> ${esc(c.text)}
        </button>`).join("");
+    const saveMcqAnswer = () => {
+      // Comma-joined letters in choice (DOM) order -- the same string shape
+      // the bank itself uses for a multi-answer `answer`, so the grader's
+      // parse_answer_letters() parses both sides identically.
+      const letters = [...choicesEl.querySelectorAll(".test-choice.picked")].map(b => b.dataset.letter);
+      saveAnswer(q.number, {qtype: "mcq", picked: letters.join(", ")});
+    };
     choicesEl.querySelectorAll(".test-choice").forEach(b => {
       b.addEventListener("click", () => {
-        choicesEl.querySelectorAll(".test-choice").forEach(x => x.classList.remove("picked"));
-        b.classList.add("picked");
-        saveAnswer(q.number, {qtype: "mcq", picked: b.dataset.letter});
+        if(isMulti){
+          b.classList.toggle("picked");
+        } else {
+          choicesEl.querySelectorAll(".test-choice").forEach(x => x.classList.remove("picked"));
+          b.classList.add("picked");
+        }
+        saveMcqAnswer();
       });
     });
   } else if(q.qtype === "matching"){

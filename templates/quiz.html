@@ -21,6 +21,9 @@
 .quiz-choice.picked{background:#e3f0fa;border-color:var(--accent)}
 .quiz-choice.correct{background:#e3f4e9;border-color:var(--ok);color:#1f6f3a}
 .quiz-choice.wrong{background:#fde7e6;border-color:var(--bad);color:#a02020}
+.quiz-multi-hint{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px}
+.quiz-choice-multi::before{content:"\2610\a0";}
+.quiz-choice-multi.picked::before{content:"\2611\a0";}
 .quiz-frq-input{width:100%;padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:4px;font:inherit}
 .quiz-match-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:18px;align-items:start}
 .quiz-match-col-head{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:4px}
@@ -176,6 +179,25 @@ let TIMER_REMAIN = 0;
 
 function esc(s){ return (s == null ? "" : String(s))
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+// JS port of text_utils.parse_answer_letters() -- kept in lockstep with the
+// Python original (and review.html's own copy) so quiz-page practice
+// grading agrees with the real assessment grader (assessments._grade_mcq)
+// on every input, letter-shaped or prose. Returns null when `answer` isn't
+// letter-shaped (23 real MCQs in the bank have prose answers instead), an
+// array of letters otherwise -- more than one letter means the quiz must
+// let the student pick more than one choice ("select all that apply") and
+// grade them as a set, not just the first pick.
+function parseAnswerLettersJS(answer, choices){
+  const raw = (answer || "").toString().trim();
+  if(!raw) return null;
+  const parts = raw.split(",").map(p => p.trim());
+  if(!parts.every(p => /^[A-Za-z]$/.test(p))) return null;
+  const validLetters = new Set((choices || []).map(c => (c.letter || "").trim().toUpperCase()));
+  const out = [];
+  parts.forEach(p => { const u = p.toUpperCase(); if(validLetters.has(u) && !out.includes(u)) out.push(u); });
+  return out;
+}
 
 async function loadPool(){
   const r = await fetch(`${API}/all-questions`);
@@ -369,14 +391,25 @@ function presentQuestion(){
   } else if(isMcq){
     document.getElementById("q_choices").style.display = "";
     document.getElementById("q_frq").style.display = "none";
-    document.getElementById("q_choices").innerHTML = q.choices.map((c, i) =>
-      `<button class="quiz-choice" data-letter="${esc(c.letter)}">
+    // The quiz page has the answer client-side (unlike the real test), so it
+    // can tell single- from multi-answer directly rather than needing a
+    // published select_multiple flag.
+    const letters = parseAnswerLettersJS(q.answer, q.choices);
+    const isMulti = !!(letters && letters.length > 1);
+    document.getElementById("q_choices").innerHTML =
+      (isMulti ? `<div class="quiz-multi-hint">Select all that apply</div>` : "")
+      + q.choices.map((c, i) =>
+      `<button type="button" class="quiz-choice${isMulti ? " quiz-choice-multi" : ""}" data-letter="${esc(c.letter)}">
          <b>${esc(c.letter)}.</b> ${esc(c.text)}
        </button>`).join("");
     document.querySelectorAll(".quiz-choice").forEach(b => {
       b.addEventListener("click", () => {
-        document.querySelectorAll(".quiz-choice").forEach(x => x.classList.remove("picked"));
-        b.classList.add("picked");
+        if(isMulti){
+          b.classList.toggle("picked");
+        } else {
+          document.querySelectorAll(".quiz-choice").forEach(x => x.classList.remove("picked"));
+          b.classList.add("picked");
+        }
       });
     });
   } else {
@@ -455,8 +488,11 @@ function submitAnswer(timedOut){
     const sel = document.querySelector(".quiz-choice.picked");
     picked = sel ? sel.dataset.word : null;
   } else if(isMcq){
-    const sel = document.querySelector(".quiz-choice.picked");
-    picked = sel ? sel.dataset.letter : null;
+    // Comma-joined letters in choice (== DOM) order, same convention the
+    // bank itself uses for a multi-answer `answer` -- matches on both single
+    // and multi picks alike, so the compare below needs no special-casing.
+    const sels = [...document.querySelectorAll(".quiz-choice.picked")];
+    picked = sels.length ? sels.map(b => b.dataset.letter).join(", ") : null;
   } else {
     picked = document.getElementById("q_frq").value.trim();
   }
@@ -473,7 +509,23 @@ function submitAnswer(timedOut){
     // match the server's bqb._normalize_tf_answer() convention exactly.
     correct = (picked || "").toLowerCase() === correct_raw.toLowerCase();
   } else if(isMcq){
-    correct = (picked || "").toUpperCase() === correct_raw.toUpperCase().charAt(0);
+    // Set comparison via the same parse_answer_letters() rule the server
+    // grader (assessments._grade_mcq) uses: every correct letter picked, no
+    // extra wrong ones, all-or-nothing -- no partial credit for MCQ (that's
+    // deliberately matching-only, see _grade_matching). A single-letter
+    // answer degrades to exactly the old first-letter compare because a
+    // one-element set-equality check IS that compare.
+    const correctLetters = parseAnswerLettersJS(q.answer, q.choices);
+    if(correctLetters){
+      const pickedLetters = parseAnswerLettersJS(picked, q.choices) || [];
+      const cSet = new Set(correctLetters), pSet = new Set(pickedLetters);
+      correct = pSet.size > 0 && cSet.size === pSet.size && [...cSet].every(l => pSet.has(l));
+    } else {
+      // Prose answer (not letter-shaped) -- unchanged historical first-
+      // character compare, bug and all, same as assessments._grade_mcq's
+      // fallback branch.
+      correct = (picked || "").toUpperCase() === correct_raw.toUpperCase().charAt(0);
+    }
   } else {
     correct = (picked || "").toLowerCase() === correct_raw.toLowerCase();
   }
@@ -493,8 +545,12 @@ function submitAnswer(timedOut){
       b.style.pointerEvents = "none";
     });
   } else if(isMcq){
+    const correctLetters = parseAnswerLettersJS(q.answer, q.choices);
     document.querySelectorAll(".quiz-choice").forEach(b => {
-      if(b.dataset.letter === correct_raw.charAt(0).toUpperCase()) b.classList.add("correct");
+      const isCorrectChoice = correctLetters
+        ? correctLetters.includes(b.dataset.letter)
+        : b.dataset.letter === correct_raw.charAt(0).toUpperCase();
+      if(isCorrectChoice) b.classList.add("correct");
       else if(b.classList.contains("picked")) b.classList.add("wrong");
       b.style.pointerEvents = "none";
     });

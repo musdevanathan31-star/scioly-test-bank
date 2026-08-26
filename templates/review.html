@@ -146,9 +146,17 @@
   color:var(--fg-soft)}
 .q-card .ctx-preview .images{margin-top:4px}
 .q-card .ctx-preview .imgbox img{width:64px;height:64px}
-.choice-row{display:flex;gap:5px;align-items:center;margin-bottom:3px;min-width:0}
-.choice-row .letter{flex:0 0 25px;font-weight:bold;color:#555}
-.choice-row .x{flex:0 0 20px;color:var(--bad);cursor:pointer;text-align:center}
+.choice-table{width:100%;border-collapse:collapse;margin-bottom:6px}
+.choice-table th{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
+  text-align:left;font-weight:600;padding:2px 6px 4px}
+.choice-table th.correct-col{text-align:center;width:60px}
+.choice-table td{padding:2px 6px;vertical-align:middle}
+.choice-table td.correct-col{text-align:center}
+.choice-table tr.correct-row td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
+.choice-table input[type="text"]{width:100%;box-sizing:border-box}
+.choice-table input[type="checkbox"]{width:18px;height:18px;cursor:pointer}
+.choice-table .letter{font-weight:bold;color:#555;padding-right:2px}
+.choice-table .x{color:var(--bad);cursor:pointer;text-align:center;width:20px}
 .match-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;margin-bottom:6px}
 .match-col-head{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px}
 .match-item{display:flex;gap:5px;align-items:flex-start;margin-bottom:4px;min-width:0}
@@ -948,6 +956,23 @@ function annOverrideMatching(q){
 // but once the user picks a segment here we write it explicitly.
 function questionType(q){
   return q.qtype || (q.choices && q.choices.length ? "mcq" : "frq");
+}
+// JS port of text_utils.parse_answer_letters() (assessments.py/build_question_bank.py's
+// Python copy) -- kept in exact lockstep with that function's rules, since
+// this is what decides whether the choices table's checkboxes are the
+// source of truth for q.answer or a prose answer is left alone in the free-
+// text escape hatch. Returns null (not an empty array) when `answer` isn't
+// letter-shaped, so callers can tell "no letters ticked" apart from "not a
+// letter answer at all" -- an empty array would conflate the two.
+function parseAnswerLettersJS(answer, choices){
+  const raw = (answer || "").toString().trim();
+  if(!raw) return null;
+  const parts = raw.split(",").map(p => p.trim());
+  if(!parts.every(p => /^[A-Za-z]$/.test(p))) return null;
+  const validLetters = new Set((choices || []).map(c => (c.letter || "").trim().toUpperCase()));
+  const out = [];
+  parts.forEach(p => { const u = p.toUpperCase(); if(validLetters.has(u) && !out.includes(u)) out.push(u); });
+  return out;
 }
 // Pure, side-effect-free: given a question, says whether it's ready and, if
 // not, why — drives the collapsed-row completeness marker and the
@@ -1981,12 +2006,30 @@ function cardHTML(q){
   // page — building choice rows, topic/focus option lists, image markup
   // etc. for 65 collapsed rows that will never render them would be pure
   // waste (Phase 2a req. 8).
-  const choices = (q.choices||[]).map((c,i) => `
-    <div class="choice-row" data-cid="${i}">
-      <span class="letter">${c.letter || String.fromCharCode(65+i)}</span>
-      <input type="text" data-edit="choice" data-idx="${i}" value="${esc(c.text)}">
-      <span class="x" data-act="delChoice" data-idx="${i}" title="Remove">×</span>
-    </div>`).join("");
+  // Two-column choices editor: choice text | correct checkbox. The
+  // checkboxes are the source of truth for q.answer whenever it parses as
+  // letters (parseAnswerLettersJS !== null); a prose answer (units, etc.)
+  // leaves every box unticked and is edited via the free-text field below
+  // instead -- ticking a box in that state is itself the signal to rebuild
+  // q.answer from the table (see the "toggleCorrect" data-act handler).
+  const answerLetters = parseAnswerLettersJS(q.answer, q.choices);
+  const choices = (q.choices||[]).length ? `
+    <table class="choice-table">
+      <thead><tr><th>Choice</th><th class="correct-col">Correct</th><th></th></tr></thead>
+      <tbody>
+        ${(q.choices||[]).map((c,i) => {
+          const letter = c.letter || String.fromCharCode(65+i);
+          const checked = !!(answerLetters && answerLetters.includes(letter));
+          return `
+          <tr class="${checked ? "correct-row" : ""}" data-cid="${i}">
+            <td><span class="letter">${letter}.</span><input type="text" data-edit="choice" data-idx="${i}" value="${esc(c.text)}"></td>
+            <td class="correct-col"><input type="checkbox" data-act="toggleCorrect" data-idx="${i}" ${checked ? "checked" : ""}
+                title="Mark choice ${letter} as a correct answer"></td>
+            <td><span class="x" data-act="delChoice" data-idx="${i}" title="Remove">×</span></td>
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table>` : "";
   const imgDescs = q.image_descriptions || {};
   const imgs = (q.images||[]).map(fn => {
     const d = imgDescs[fn] || "";
@@ -2183,6 +2226,9 @@ function cardHTML(q){
     ${choices}
     <div class="field-row" style="margin-top:6px">
       <span class="lbl">Answer</span>
+      ${(q.choices||[]).length ? `<span class="muted" style="font-size:11px">${answerLetters !== null
+          ? "set by the checkboxes above — or type a non-letter answer here to override"
+          : "prose answer (not letter-shaped) — tick a checkbox above to switch to letter grading"}</span>` : ""}
       <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="answer"
               title="Drag a rectangle whose text becomes this question's answer">📋 Capture answer ${target !== "key" && STATE.has_key ? "(switch to Key)" : ""}</button>
     </div>
@@ -2445,6 +2491,25 @@ function bindCardEvents(){
           q.choices.splice(idx, 1);
           q.choices.forEach((c,i) => c.letter = String.fromCharCode(65+i));
           annOverride(q.number, "choices", q.choices);
+          annUpdateAdded(q.number, q);
+          setDirty(true); renderCards();
+        } else if(act === "toggleCorrect"){
+          // Rebuilds q.answer as the comma-joined letters of every ticked
+          // row, in choice order -- the checkboxes ARE the answer whenever
+          // it's letter-shaped. If the current answer is prose (not letter-
+          // shaped), ticking a box here discards it, so snapshot first —
+          // same undo contract as every other destructive edit on this page.
+          const idx = Number(el.dataset.idx);
+          const curLetters = parseAnswerLettersJS(q.answer, q.choices);
+          if(curLetters === null){
+            _undoSnapshot(`set Q#${q.number} answer from choices`);
+          }
+          const picked = new Set(curLetters || []);
+          const letter = (q.choices[idx] && q.choices[idx].letter) || String.fromCharCode(65+idx);
+          if(el.checked) picked.add(letter); else picked.delete(letter);
+          q.answer = q.choices.map((c,i) => c.letter || String.fromCharCode(65+i))
+                               .filter(l => picked.has(l)).join(", ");
+          annOverride(q.number, "answer", q.answer);
           annUpdateAdded(q.number, q);
           setDirty(true); renderCards();
         } else if(act === "splitQuestionGroup"){
