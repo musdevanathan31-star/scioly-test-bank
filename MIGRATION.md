@@ -313,6 +313,21 @@ sudo -e /opt/qbank-chs/.env      # DATA_ROOT=/data/qbank/chs
 
 Repeat for every instance in `deploy/instances.conf`.
 
+### 5.5 One-off: assessment window times
+
+This is a data-format migration, not a host-migration step, so it only needs
+running once **ever**, per instance — not on every host move. If the old
+host had already run it, restoring its data carries the already-migrated
+(offset-aware) values forward and this is a no-op; if not, run it now while
+you're already touching this data:
+
+```bash
+python deploy/migrate_window_times_to_utc.py --tz America/New_York --dry-run
+python deploy/migrate_window_times_to_utc.py --tz America/New_York
+```
+
+See README.md's ["Migrating stored assessment window times to UTC"](README.md#migrating-stored-assessment-window-times-to-utc-one-time-per-existing-instance) for the full explanation. Idempotent — safe to run even if you're unsure whether the old host already had.
+
 ---
 
 ## 6. Reverse proxy and DNS

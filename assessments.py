@@ -1066,11 +1066,28 @@ def effective_window(test: Assessment, window: AssessmentWindow, username: str) 
     return window.opens_at, window.closes_at
 
 
+# opens_at/closes_at are stored as absolute UTC instants — offset-aware ISO
+# strings written by the browser (new Date(...).toISOString(), see
+# assessments_dashboard.html's #nw_opens/#nw_closes/#mk_opens/#mk_closes
+# handlers) rather than the naive local wall-clock text a <input
+# type="datetime-local"> yields on its own. A naive value is genuinely
+# ambiguous — "18:00" means something different depending on which zone
+# wrote it — so it must never be silently reinterpreted as anything.
+
+
 def is_window_open(test: Assessment, window: AssessmentWindow, username: str, now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     opens_s, closes_s = effective_window(test, window, username)
     opens = datetime.fromisoformat(opens_s)
     closes = datetime.fromisoformat(closes_s)
+    # Legacy fallback ONLY: a value written before the browser started
+    # converting local -> UTC on entry (or on an instance that hasn't run
+    # deploy/migrate_window_times_to_utc.py yet) is naive local wall-clock
+    # text, not UTC — treating it as UTC here is wrong by the writer's own
+    # timezone offset, which is exactly the "extended window shows as past"
+    # bug this fallback used to cause unconditionally. It stays here only so
+    # an unmigrated instance keeps functioning instead of crashing; run the
+    # migration to eliminate this path rather than relying on it.
     if opens.tzinfo is None:
         opens = opens.replace(tzinfo=timezone.utc)
     if closes.tzinfo is None:
@@ -1082,6 +1099,8 @@ def is_window_past(test: Assessment, window: AssessmentWindow, username: str, no
     now = now or datetime.now(timezone.utc)
     _, closes_s = effective_window(test, window, username)
     closes = datetime.fromisoformat(closes_s)
+    # Legacy fallback — see is_window_open's comment above; same caveat
+    # applies here.
     if closes.tzinfo is None:
         closes = closes.replace(tzinfo=timezone.utc)
     return now > closes

@@ -13,6 +13,12 @@
 #   - gunicorn 21.2: production WSGI server for hosted deployments (Linux
 #     only — local Windows dev keeps using `python review_app.py`)
 #   - pytest 7.4: tests/ collection
+#   - tzdata: zoneinfo.ZoneInfo (used by deploy/migrate_window_times_to_utc.py)
+#     needs an IANA tz database. Linux/macOS normally have one on the system
+#     already, but Windows does not ship one at all — without this package
+#     ZoneInfo("America/New_York") raises ZoneInfoNotFoundError on a fresh
+#     Windows install. Harmless everywhere else, so it's unconditional here
+#     rather than a Windows-only marker.
 #
 # playwright is dev-only (cookie refresh for download_event.py --reauth) —
 # see requirements-dev.txt. It's never imported by review_app.py at runtime,
@@ -53,3 +59,4 @@ genanki>=0.13
 # Test-only — kept here so a single `pip install -r requirements.txt` covers
 # everything a contributor needs.
 pytest>=7.4
+tzdata>=2024.1

@@ -780,4 +780,32 @@ Note: this is the CURRENT season.`;
   toast(`Deleted ${label}.`, "ok");
   return true;
 };
+
+// ---- local-time display -------------------------------------------------
+// Windows/overrides are stored as absolute UTC instants (see assessments.py's
+// is_window_open/is_window_past and spec.md). Jinja can't know the viewer's
+// zone, so templates render the raw ISO string as a data-iso attribute (with
+// the ISO text itself as a JS-unavailable fallback) and this hydrates it into
+// the viewer's own local clock, including the zone abbreviation so a coach
+// can tell which clock they're reading.
+window.formatLocalDT = function(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium", timeStyle: "short", timeZoneName: "short",
+    }).format(d);
+  } catch (e) {
+    return d.toLocaleString();
+  }
+};
+window.hydrateLocalTimes = function(root){
+  (root || document).querySelectorAll("[data-iso]").forEach(function(el){
+    const iso = el.getAttribute("data-iso");
+    const formatted = window.formatLocalDT(iso);
+    if(formatted) el.textContent = formatted;
+  });
+};
+document.addEventListener("DOMContentLoaded", function(){ window.hydrateLocalTimes(); });
 """

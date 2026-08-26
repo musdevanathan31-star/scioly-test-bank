@@ -679,6 +679,18 @@ Do this when "`df -h` for disk headroom" above stops being reassuring — moving
 
 Repeat per-instance — `DATA_ROOT` is set in each instance's own `.env`, so e.g. NCMS and CHS can have entirely independent data locations (or share one, if you point both at the same mount and their slugs don't collide).
 
+### Migrating stored assessment window times to UTC (one-time, per existing instance)
+
+Assessment `opens_at`/`closes_at` (in `assessment_windows.json`, and every per-student makeup override under `assessments.json`) are now stored as absolute UTC instants — see [spec.md](spec.md) for why a naive wall-clock value was ambiguous and had been silently read as UTC. The browser now converts local → UTC at entry time, but any row written before that fix is still naive local text sitting in these two files. Run [`deploy/migrate_window_times_to_utc.py`](deploy/migrate_window_times_to_utc.py) **once** on each existing instance to rewrite those rows in place:
+
+```
+python -c "import zoneinfo" # confirm zoneinfo works — Windows dev boxes need the "tzdata" pip package, already in requirements.txt
+python deploy/migrate_window_times_to_utc.py --tz America/New_York --dry-run   # review the before -> after list first
+python deploy/migrate_window_times_to_utc.py --tz America/New_York            # then apply it
+```
+
+Pass `--tz` as the IANA zone name your coaches were actually entering times in (find it via `timedatectl` on the server, or just ask). It uses a real zone via `zoneinfo.ZoneInfo`, not a fixed offset, so a window that spans a DST change converts correctly on both sides. It's idempotent (a value that already carries an offset/`Z` is left untouched — safe to re-run) and backs up each file it edits to `<file>.bak` before writing. A brand-new instance with no pre-existing windows has nothing to migrate.
+
 ### Measuring server capacity (load testing)
 
 "How many students can be logged in and taking a test at once" isn't computable from CPU/RAM specs — the ceiling depends on write-contention behavior under load, not raw compute — so the only reliable way to know it on a given box is to measure it directly against the real answer-save endpoint.

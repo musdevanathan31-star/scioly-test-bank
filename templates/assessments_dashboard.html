@@ -110,7 +110,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
   <div class="window-card" data-window-id="{{ w.window_id }}">
     <div class="hdr">
       <h3>{{ w.label or (w.opens_at[:10]) }}</h3>
-      <span class="range">{{ w.opens_at|replace("T", " ") }} → {{ w.closes_at|replace("T", " ") }}</span>
+      <span class="range"><span class="local-dt" data-iso="{{ w.opens_at }}">{{ w.opens_at|replace("T", " ") }}</span> → <span class="local-dt" data-iso="{{ w.closes_at }}">{{ w.closes_at|replace("T", " ") }}</span></span>
       {% if current_user.role == "coach" and hard_delete_enabled() %}
       <button class="ghost purge-window-btn" data-window="{{ w.window_id }}"
               data-label="{{ w.label or w.opens_at[:10] }}" style="color:var(--bad);margin-left:auto"
@@ -190,7 +190,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       {% for username, ov in et.assessment.overrides|dictsort %}
       <div class="mk-granted">
         <b>{{ username }}</b>
-        <span>{{ ov.opens_at|replace("T", " ") }} &rarr; {{ ov.closes_at|replace("T", " ") }}</span>
+        <span><span class="local-dt" data-iso="{{ ov.opens_at }}">{{ ov.opens_at|replace("T", " ") }}</span> &rarr; <span class="local-dt" data-iso="{{ ov.closes_at }}">{{ ov.closes_at|replace("T", " ") }}</span></span>
         {% if ov.reason %}<span class="muted">{{ ov.reason }}</span>{% endif %}
         <span class="muted">by {{ ov.granted_by or "?" }}</span>
         {% if current_user.role == "coach" %}
@@ -289,10 +289,22 @@ if(opensEl){
 
   document.getElementById("nw_submit").addEventListener("click", async () => {
     const label = document.getElementById("nw_label").value.trim();
-    const opens_at = opensEl.value;
-    const closes_at = document.getElementById("nw_closes").value;
-    const event_slugs = [...document.querySelectorAll("#nw_events input:checked")].map(c => c.value);
     const msgEl = document.getElementById("nw_msg");
+    // datetime-local inputs hold naive wall-clock text ("2026-08-26T18:00")
+    // meaning the coach's own local time — convert to an absolute UTC
+    // instant here, in the browser, so storage is unambiguous. new Date()
+    // applies the browser's real zone rules (DST-correct automatically);
+    // do NOT compute a fixed offset by hand.
+    const opensDate = opensEl.value ? new Date(opensEl.value) : null;
+    const closesDate = document.getElementById("nw_closes").value ? new Date(document.getElementById("nw_closes").value) : null;
+    if(!opensEl.value || !closesDate || !opensDate || isNaN(opensDate.getTime()) || isNaN(closesDate.getTime())){
+      msgEl.style.display = ""; msgEl.className = "msg err";
+      msgEl.textContent = "Enter a valid opening and closing time.";
+      return;
+    }
+    const opens_at = opensDate.toISOString();
+    const closes_at = closesDate.toISOString();
+    const event_slugs = [...document.querySelectorAll("#nw_events input:checked")].map(c => c.value);
     const r = await fetch(`${APP_ROOT}/api/assessment-windows`, {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({season_id: {{ (selected.season_id if selected else None)|tojson }},
@@ -438,10 +450,18 @@ document.getElementById("mk_save").addEventListener("click", async () => {
   const err = document.getElementById("mk_err");
   const fail = m => { err.textContent = m; err.style.display = ""; };
   if(!mkPicked.size) return fail("Pick at least one student.");
-  const opens = document.getElementById("mk_opens").value;
-  const closes = document.getElementById("mk_closes").value;
-  if(!opens || !closes) return fail("Both an opening and a closing time are required.");
-  if(opens >= closes) return fail("The window must open before it closes.");
+  const opensRaw = document.getElementById("mk_opens").value;
+  const closesRaw = document.getElementById("mk_closes").value;
+  if(!opensRaw || !closesRaw) return fail("Both an opening and a closing time are required.");
+  // Convert local wall-clock -> absolute UTC instant in the browser, same
+  // as the new-window form above — new Date() applies the browser's real
+  // zone rules, so this is DST-correct automatically.
+  const opensDate = new Date(opensRaw);
+  const closesDate = new Date(closesRaw);
+  if(isNaN(opensDate.getTime()) || isNaN(closesDate.getTime())) return fail("Enter a valid opening and closing time.");
+  if(opensDate >= closesDate) return fail("The window must open before it closes.");
+  const opens = opensDate.toISOString();
+  const closes = closesDate.toISOString();
   err.style.display = "none";
 
   const r = await fetch(`${APP_ROOT}/api/assessments/${makeupTestId}/overrides`, {
