@@ -25,6 +25,14 @@
   background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
   box-shadow:0 6px 16px rgba(0,0,0,.25);min-width:270px;z-index:60;padding:4px 0}
 .toolbar-menu.on{display:block}
+/* The toolbar's own menus sit at the right end of the bar (after .grow), so
+   a panel anchored left:0 opens rightward off the edge of the window and
+   forces a horizontal scrollbar on the whole page. Anchor those to the
+   right so they open inward instead. Not applied to .toolbar-menu globally:
+   the selection bar's "Assign to context" menu uses the same class but sits
+   at the LEFT of the contextual slot, where right-anchoring would misplace
+   it. */
+.toolbar-menu.align-right{left:auto;right:0}
 .toolbar-menu button{display:block;width:100%;text-align:left;padding:8px 14px;
   border:none;border-radius:0;background:transparent;color:var(--fg)}
 .toolbar-menu button:hover{background:var(--hover)}
@@ -509,7 +517,7 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   <div class="toolbar-group">
     <div class="toolbar-menu-wrap" id="addMenuWrap">
       <button id="addMenuBtn" class="primary" title="Add a question, matching question, shared context, or blank card">+ Add ▾</button>
-      <div id="addMenu" class="toolbar-menu">
+      <div id="addMenu" class="toolbar-menu align-right">
         <button id="addRegion" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">
           ▭ Add question from region
           <span class="menu-desc">Drag a rectangle on the page; the region is OCR'd into a new question. Shift-drag to span the next page too.</span>
@@ -532,7 +540,7 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   <div class="toolbar-group">
     <div class="toolbar-menu-wrap" id="toolsMenuWrap">
       <button id="toolsMenuBtn" title="Validate answers, OCR, swap test/key, collapse/expand cards, or group questions into a shared context">Tools ▾</button>
-      <div id="toolsMenu" class="toolbar-menu">
+      <div id="toolsMenu" class="toolbar-menu align-right">
         <button id="validatePage" title="Send every question on this page to Haiku for answer validation (~$0.003/question)">
           ✓ Validate page
           <span class="menu-desc">Send every question on this page to Haiku for answer validation (~$0.003/question).</span>
@@ -569,7 +577,7 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   <div class="toolbar-group">
     <div class="toolbar-menu-wrap" id="overflowMenuWrap">
       <button id="overflowMenuBtn" title="More actions">⋯</button>
-      <div id="overflowMenu" class="toolbar-menu">
+      <div id="overflowMenu" class="toolbar-menu align-right">
         <button id="delAllQ" class="quiet-danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">
           🗑 Delete all
           <span class="menu-desc">Deletes every question on this PDF. Use before rebuilding from regions — survives Save/Reprocess via the annotations system.</span>
