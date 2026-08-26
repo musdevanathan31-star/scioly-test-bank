@@ -2268,6 +2268,32 @@ def _effective_pdf_meta(pdf: Path, state: dict) -> dict:
             "division": division}
 
 
+# ---------------------------------------------------------------------------
+# Answer-key base-count ambiguity rule
+# ---------------------------------------------------------------------------
+# Shared by process_pair() (decides whether to apply a key answer to a
+# question) and review_app.py's answer-boxes endpoint (decides whether to
+# draw a box as "applied" or "not applied — ambiguous"). Keeping this in one
+# place means the UI can never show a state process_pair itself wouldn't
+# produce -- see the docstring above process_pair's own use of these for the
+# full rationale (section-restarted numbering).
+
+def answer_base(number) -> str:
+    """"12b" -> "12"; "12" -> "12". Strips a trailing letter-suffix so a
+    dedup-suffixed duplicate ("12b") is judged against the same base as the
+    original ("12")."""
+    return re.sub(r"[a-z]+$", "", str(number))
+
+
+def answer_base_counts(numbers) -> dict[str, int]:
+    """{base: how many of `numbers` share that base}. A base with count > 1
+    is ambiguous -- see answer_base()'s docstring."""
+    counts: dict[str, int] = defaultdict(int)
+    for n in numbers:
+        counts[answer_base(n)] += 1
+    return counts
+
+
 def process_pair(test_pdf: Path, key_pdf: Path | None,
                  state: dict, use_vision: bool,
                  should_cancel: Callable[[], bool] = lambda: False,
@@ -2450,15 +2476,12 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
     # restarted run and BOTH are skipped — the bare one is no less ambiguous
     # than its suffixed sibling, which is why this keys on the base rather
     # than just skipping suffixed numbers.
-    _base = lambda n: re.sub(r"[a-z]+$", "", str(n))
-    base_counts: dict[str, int] = defaultdict(int)
-    for q in questions:
-        base_counts[_base(q["number"])] += 1
+    base_counts = answer_base_counts(q["number"] for q in questions)
     ambiguous = 0
     for q in questions:
         if q.get("qtype") == "matching":
             continue   # pairs already populated by extract_matching_answers; answer stays ""
-        if base_counts[_base(q["number"])] > 1:
+        if base_counts[answer_base(q["number"])] > 1:
             ambiguous += 1
             continue
         q["answer"] = answers.get(q["number"], "")

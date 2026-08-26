@@ -2536,6 +2536,89 @@ def api_question_bboxes(event_slug, pdfname, pno):
     return jsonify({"boxes": out, "page_height_pt": page_h})
 
 
+@app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/answer-boxes")
+def api_answer_bboxes(event_slug, pdfname, pno):
+    """
+    The answer-key counterpart to api_question_bboxes above: on-the-fly
+    bounding boxes for every answer-key LINE on a given page of the KEY PDF
+    (not the test PDF -- answers live in a separate document).
+
+    Returns: { "boxes": [{ "number", "answer", "x0","y0","x1","y1",
+                            "applied" }, ...],
+               "page_height_pt": float }
+
+    Walks text lines the same way api_question_bboxes does (get_text("dict")
+    per-line bboxes, not get_text("blocks") -- the block-level view merges
+    lines PyMuPDF groups together) and matches each against
+    build_question_bank.ANS_LINE, the same pattern extract_answers() uses.
+
+    Only pages bqb._is_key_page() accepts are walked, so these boxes agree
+    with what the extraction pipeline actually reads a key answer from --
+    not a stray numbered list on a cover or instructions page.
+
+    `applied` mirrors process_pair()'s base-count ambiguity rule exactly (via
+    the shared bqb.answer_base()/answer_base_counts() helpers, not a
+    reimplementation): False when this number's base occurs more than once
+    among this PDF's own extracted questions, meaning process_pair skipped
+    applying it -- section-restarted numbering made it ambiguous which
+    question the key line belonged to.
+    """
+    _select_event(event_slug)
+    key_path = _key_path(bqb.BASE_DIR / pdfname)
+    if not key_path:
+        abort(404, "No key PDF")
+    doc = fitz.open(str(key_path))
+    if pno < 1 or pno > doc.page_count:
+        abort(404)
+    page = doc[pno - 1]
+    page_h = float(page.rect.height)
+
+    # Same page-qualification check extract_answers() itself applies -- skip
+    # pages the pipeline wouldn't have read an answer from in the first
+    # place. Full page text, not normalize_unicode()'d -- process_pair's key
+    # branch doesn't normalize the key's page texts either.
+    if not bqb._is_key_page(page.get_text("text")):
+        return jsonify({"boxes": [], "page_height_pt": page_h})
+
+    lines: list[dict] = []
+    for blk in page.get_text("dict").get("blocks", []):
+        if blk.get("type") != 0:    # 0 = text, 1 = image
+            continue
+        for line in blk.get("lines", []):
+            bbox = line.get("bbox") or [0, 0, 0, 0]
+            x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+            txt = "".join(s.get("text", "") for s in line.get("spans", []))
+            stripped = txt.strip()
+            if not stripped:
+                continue
+            lines.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": stripped})
+
+    state = bqb._load_state()
+    questions = state.get("questions", {}).get(pdfname, [])
+    base_counts = bqb.answer_base_counts(q["number"] for q in questions)
+
+    out: list[dict] = []
+    for ln in lines:
+        m = bqb.ANS_LINE.match(ln["text"])
+        if not m:
+            continue
+        number, ans_text = m.group(1), m.group(2).strip()
+        if not ans_text:
+            continue
+        applied = base_counts[bqb.answer_base(number)] <= 1
+        out.append({
+            "number":  number,
+            "answer":  ans_text,
+            "x0":      ln["x0"],
+            "y0":      ln["y0"],
+            "x1":      ln["x1"],
+            "y1":      ln["y1"],
+            "applied": applied,
+        })
+
+    return jsonify({"boxes": out, "page_height_pt": page_h})
+
+
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/outline")
 def api_pdf_outline(event_slug, pdfname):
     """PyMuPDF-extracted outline (TOC) if the PDF has one."""

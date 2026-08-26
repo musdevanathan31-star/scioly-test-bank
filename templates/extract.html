@@ -1593,6 +1593,7 @@ function applyHandleDrag(rect, handle, dx, dy){
 
 let QBOX_VISIBLE = localStorage.getItem("qboxes_visible") === "1";
 let _qboxCache = {};   // page->{boxes, page_height_pt}
+let _ansboxCache = {}; // page->{boxes, page_height_pt} -- answer-key boxes, separate cache
 
 function setQBoxButtonState(){
   const b = document.getElementById("qboxToggleBtn");
@@ -1616,7 +1617,8 @@ async function drawQuestionBoxes(){
   const root = document.getElementById("qboxOverlays");
   if(!root) return;
   if(target === "key"){
-    root.innerHTML = ""; return;
+    await drawAnswerBoxes(root);
+    return;
   }
   const img = document.getElementById("pageImg");
   if(!img || !img.naturalWidth){ return; }
@@ -1770,6 +1772,86 @@ async function drawQuestionBoxes(){
       startBoxResize(boxEl, handleEl.dataset.handle, e.clientX, e.clientY, sx, sy);
     });
     handleEl.addEventListener("click", e => e.stopPropagation());
+  });
+}
+
+// Answer-key counterpart to drawQuestionBoxes() above -- drawn instead of
+// question boxes when the Key PDF target is active (see the branch at the
+// top of drawQuestionBoxes). Reuses the same .q-bbox CSS (P-06's
+// accent/warning/neutral roles) and the same ▢ toggle/localStorage
+// preference; no second toggle, no new color roles.
+async function drawAnswerBoxes(root){
+  // Unlike question boxes (always drawn; only the "unmatched" diagnostic
+  // layer is gated), answer boxes are gated by the toggle entirely -- with
+  // it off, the Key PDF pane shows no boxes at all, same as before this
+  // feature existed.
+  if(!QBOX_VISIBLE){ root.innerHTML = ""; return; }
+  const img = document.getElementById("pageImg");
+  if(!img || !img.naturalWidth){ return; }
+
+  // Same stale-call guard as drawQuestionBoxes: a fast page/target flip can
+  // fire this twice, and the slower fetch must not clobber a faster one's
+  // already-rendered result.
+  const pageForThisCall = curPage;
+
+  let payload = _ansboxCache[pageForThisCall];
+  if(!payload){
+    try {
+      const r = await fetch(`${API}/pdf/${PDF}/page/${pageForThisCall}/answer-boxes`);
+      payload = await r.json();
+      _ansboxCache[pageForThisCall] = payload;
+    } catch(err){ return; }
+    if(curPage !== pageForThisCall || target !== "key") return;
+  }
+
+  const ppx = 120 / 72;
+  const sx = img.clientWidth / img.naturalWidth;
+  const sy = img.clientHeight / img.naturalHeight;
+
+  const focusedQ = STATE.questions.find(q => q._id === focusedId);
+
+  root.innerHTML = (payload.boxes || []).map(b => {
+    // accent: the answer belonging to the currently-focused question.
+    // warning: a key line whose number was found but NOT applied because
+    // it's ambiguous (mirrors process_pair's base-count rule exactly --
+    // see api_answer_bboxes in review_app.py). neutral: every other
+    // applied answer line. Same three roles/classes .q-bbox already uses
+    // for question boxes -- no new CSS.
+    const isFocused = focusedQ && String(focusedQ.number) === String(b.number);
+    const cls = isFocused ? "focused" : (!b.applied ? "unmatched" : "");
+    const left = Math.round(b.x0 * ppx * sx);
+    const top  = Math.round(b.y0 * ppx * sy);
+    const w    = Math.max(8, Math.round((b.x1 - b.x0) * ppx * sx));
+    const h    = Math.max(8, Math.round((b.y1 - b.y0) * ppx * sy));
+    const title = !b.applied
+      ? `not applied — #${b.number} is ambiguous (a section-restarted duplicate of this number exists among the extracted questions), so the key's ${b.number} was skipped`
+      : `Q${b.number}: ${b.answer}`;
+    return `<div class="q-bbox ${cls}" data-ansnum="${esc(b.number)}"
+       style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"
+       title="${esc(title)}">
+       <div class="bb-label">Q${b.number}${!b.applied ? ' ⚠' : ''}</div>
+    </div>`;
+  }).join("");
+
+  // Click an answer box to focus the question it belongs to in the list --
+  // mirrors drawQuestionBoxes' click-a-qbox behavior, just without also
+  // moving the PDF pane (the box's own page is on the KEY pdf, not
+  // necessarily where that question starts on the TEST pdf).
+  root.querySelectorAll(".q-bbox[data-ansnum]").forEach(el => {
+    el.addEventListener("click", () => {
+      const num = el.dataset.ansnum;
+      const q = STATE.questions.find(x => String(x.number) === num);
+      if(!q){
+        toast(`Question #${num} not in the extracted set for this test.`, "warn");
+        return;
+      }
+      focusQuestion(q._id);
+      renderCards();
+      setTimeout(() => {
+        const card = document.querySelector(".q-card.focused");
+        if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
+      }, 30);
+    });
   });
 }
 

@@ -417,6 +417,7 @@ First-time bootstrap: `python auth.py --create-coach` (interactive CLI) creates 
 | `GET /event/<slug>/api/export.apkg` | Anki deck (genanki), one card per question — flashcard format has no slot for a shared passage, so context grouping doesn't apply here. Requires `pip install genanki`. |
 | `GET /event/<slug>/api/pdf/<pdf>/outline` | PyMuPDF-extracted PDF outline (`doc.get_toc()`) for the extract-page left drawer (`#outlineDrawer`, opened by `☰`), which since Phase 2b (2026-08) also holds page thumbnails unconditionally — the frontend hides the outline section entirely when this returns empty, which is most test PDFs (13 of 14 sampled in this repo have no TOC). Returns `[{level, title, page}]`. |
 | `GET /event/<slug>/api/pdf/<pdf>/page/<n>/qboxes` | Per-page bounding boxes for every question whose text starts on this page. Computed on demand from PyMuPDF text blocks: each `Q_START` match anchors a box that spans down to the next anchor (or page bottom), widened to the leftmost/rightmost edges of the text blocks within that vertical slice. Returns `{boxes: [{number, x0, y0, x1, y1}], page_height_pt}` in PDF points; the frontend scales to image pixels using the same 120 DPI factor as region-extract. |
+| `GET /event/<slug>/api/pdf/<pdf>/page/<n>/answer-boxes` | Per-page bounding boxes for every answer-key LINE on this page **of the KEY PDF**, not the test PDF. 404s if this PDF has no key (`_key_path()` finds neither a converted `_key.pdf` nor a `_key.docx`/`.doc` sibling to convert on the fly). Only walks pages `bqb._is_key_page()` accepts — same gate `extract_answers()` itself applies, so the boxes never outline a stray numbered list on a cover/instructions page. Returns `{boxes: [{number, answer, x0, y0, x1, y1, applied}], page_height_pt}` in PDF points, same units/scaling convention as `/qboxes`. See "Answer bounding boxes" below. |
 | `POST /event/<slug>/api/generate-similar` | Seed-based question generation. Body: `{seed_text, seed_topic, n}`. Wraps `qgen.generate_questions` with the seed as both source material and "do not duplicate" anchor. |
 | `PATCH /api/events/<slug>` | Edit an event's name/topics/foci/wiki_page in place. Refuses true built-ins per `is_builtin()` — none ship by default; see §12. |
 | `POST /event/<slug>/api/upload-test-pdf` | Multipart upload of a test file (`test_file`, required, `.pdf`/`.docx`/`.doc`) + answer key (`key_file`, optional, same formats) + a figures/supplementary document (`supplementary_file`, optional, same formats — shares the test's exact stem prefix so `_supplementary_docs()` (§9b) discovers it automatically; never fed to `process_pair`, pure storage/browsing material). Normalizes filenames to the `{filename_prefix}_*_test.<ext>` glob `_list_test_pdfs` expects (de-duped with a numeric suffix), saves siblings `_key.<ext>`/`_figures.<ext>` if provided, then enqueues a job (§16b) that converts any non-PDF to PDF first (§11e) and runs `process_pair` on the test+key only, returning `{ok, pdf_name, has_key, supplementary_name, job_id}` — `pdf_name`/`supplementary_name` are already the post-conversion `.pdf` names even though conversion hasn't run yet (deterministic from `doc_convert`'s naming), so the frontend's progress UI doesn't need to special-case Word uploads. The file save itself is synchronous, only conversion+extraction is queued. |
@@ -550,7 +551,60 @@ loud:
   `localStorage`. This toggle now controls only the warning/diagnostic
   layer (default **off**) — ordinary question boxes always render so
   click-to-focus keeps working without an extra step.
-- Key PDF mode hides bboxes (key PDFs aren't question-numbered the same way).
+- Key PDF mode draws answer boxes instead of question boxes — see next section.
+
+### Answer bounding boxes (`/answer-boxes`)
+
+Same on-demand, no-storage approach as `/qboxes` above, aimed at the separate
+key PDF instead: answers are scraped from a different document than the one
+the question boxes outline, and where each answer came from was previously
+invisible — this makes it visible, and doubles as a way to see *why* a given
+key line was deliberately not applied.
+
+Algorithm: walk every text LINE on the page the same way `/qboxes` does
+(`page.get_text("dict")`, not `get_text("blocks")` — see that section's
+reasoning), match each line's text against `build_question_bank.ANS_LINE`
+(the same pattern `extract_answers()` uses), and skip the whole page unless
+`bqb._is_key_page(page.get_text("text"))` accepts it — the identical
+qualification `extract_answers()`/`extract_matching_answers()` apply, so
+these boxes can never claim an answer came from a page the pipeline itself
+wouldn't have read.
+
+`applied` mirrors `process_pair()`'s base-count ambiguity rule exactly,
+through two small shared helpers in `build_question_bank.py` rather than a
+second copy of the rule:
+
+```python
+def answer_base(number) -> str:            # "12b" -> "12"
+    return re.sub(r"[a-z]+$", "", str(number))
+
+def answer_base_counts(numbers) -> dict[str, int]:
+    ...   # {base: how many of `numbers` share it}
+```
+
+`process_pair()` calls these when deciding whether to apply a key answer to
+a question; `api_answer_bboxes()` calls the *same* functions, over that
+PDF's own extracted question numbers (`bqb._load_state()["questions"][pdfname]`),
+to decide `applied` for each key line. A number's box is `applied: false`
+exactly when `process_pair()` would have skipped it — its base occurs more
+than once among this PDF's questions (a section-restarted paper deduped to
+`12`/`12b`), so pinning the key's line to one of them over the others would
+be a guess, and empty beats wrong.
+
+UI behavior — reuses `/qboxes`' exact three-role hierarchy and CSS classes
+(no new colors, no second toggle):
+- **Neutral**: every applied answer line (the ordinary case).
+- **Accent**: the answer belonging to the currently-focused question.
+- **Warning/diagnostic**: `applied: false` lines — a key line the pipeline
+  found but didn't apply. Hovering shows why (e.g. "#12 and #12b both exist,
+  so the key's 12 is ambiguous").
+- Only drawn when both the **Key PDF** target is active AND the ▢ toggle is
+  on (unlike `/qboxes`, where neutral/accent boxes always render and only
+  the warning layer is gated) — with the toggle off, Key PDF mode shows no
+  boxes at all.
+- Click a box → focuses that question in the list (same jump-to-question
+  payoff as `/qboxes`), without moving the PDF pane — the box's own page is
+  on the key PDF, not necessarily where that question starts on the test PDF.
 
 ### Editable question bounding boxes
 
