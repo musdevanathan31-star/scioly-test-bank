@@ -2285,6 +2285,23 @@ function cardHTML(q){
   </div>`;
 }
 
+// KaTeX wrapper, matching the one browse.html and sources.html each define.
+// This page called renderMath() from the compare modal without defining it,
+// so ⇄ Compare threw "ReferenceError: renderMath is not defined" — the modal
+// opened (that happens on the previous line) but the handler aborted before
+// typesetting, so equations stayed as raw $...$ and the console filled with
+// errors. KaTeX itself was loaded fine; only this local wrapper was missing.
+function renderMath(el){
+  if(!el) return;
+  if(typeof renderMathInElement === "function"){
+    try{
+      renderMathInElement(el, {
+        delimiters:[{left:"$$", right:"$$", display:true},
+                    {left:"$",  right:"$",  display:false}],
+        throwOnError:false});
+    } catch(e){ /* tolerate — a bad expression must not break the modal */ }
+  }
+}
 function esc(s){ return (s||"").toString()
   .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;"); }
 

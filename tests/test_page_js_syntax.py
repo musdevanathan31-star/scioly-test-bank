@@ -63,6 +63,20 @@ def rendered_pages(tmp_path_factory):
     # throws on the elements that are no longer there.
     auth.create_user("vol1", "password123", "volunteer", events=[slug])
     bqb.set_event(slug)
+    # A real (tiny) PDF on disk, because the extract page resolves the file
+    # before it renders — without one the route 404s and the sweep below
+    # silently skips it. That is exactly what used to happen: the extract
+    # page was never in `paths`, so the largest inline-JS surface in the app
+    # (~3,300 lines, and the file most edits land in) was never syntax
+    # checked despite this suite being treated as the gate for it.
+    import fitz
+    _doc = fitz.open()
+    for _n in range(2):
+        _pg = _doc.new_page()
+        _pg.insert_text((72, 72), f"1. Sample question on page {_n + 1}")
+    _doc.save(str(bqb.EVENT.base_dir / "s_test.pdf"))
+    _doc.close()
+
     with bqb._state_transaction() as st:
         st.setdefault("questions", {})["s_test.pdf"] = [
             {"number": "1", "text": "Q", "answer": "A", "qtype": "frq",
@@ -82,6 +96,7 @@ def rendered_pages(tmp_path_factory):
                    "/archive", "/archive/map",
                    f"/event/{slug}/", f"/event/{slug}/browse", f"/event/{slug}/sources",
                    f"/event/{slug}/quiz", f"/event/{slug}/jobs", f"/event/{slug}/scan",
+                   f"/event/{slug}/extract/s_test.pdf",
                    f"/assessments/{a.assessment_id}/build",
                    f"/assessments/{a.assessment_id}/grade"],
         "stu1": ["/my-assessments", "/scores", "/settings"],
@@ -116,7 +131,25 @@ def test_every_page_was_reachable(rendered_pages):
     pages, _tmp = rendered_pages
     # If a page 404s or 500s it silently drops out of the sweep, which would
     # make this file quietly stop covering it.
-    assert len(pages) >= 25, sorted(pages)
+    assert len(pages) >= 26, sorted(pages)
+
+
+def test_the_extract_page_is_actually_covered(rendered_pages):
+    """Named explicitly because it is the biggest inline-JS surface in the
+    app and the one most edits land in, yet it was absent from the sweep
+    entirely until now — the route needs a real PDF on disk to render, and
+    the collector skips anything that doesn't return 200, so its absence
+    was invisible. A bare count assertion would not have caught that.
+    """
+    pages, _tmp = rendered_pages
+    key = next((k for k in pages if "/extract/" in k), None)
+    assert key, f"extract page missing from the sweep: {sorted(pages)}"
+    html = pages[key]
+    scripts = _INLINE_SCRIPT.findall(html)
+    assert scripts, "extract page rendered but carried no inline <script>"
+    assert sum(len(s) for s in scripts) > 20000, (
+        "extract page's inline JS is suspiciously small — did it render a "
+        "login redirect or an error page instead of the real page?")
 
 
 def test_no_page_has_a_javascript_syntax_error(rendered_pages):
