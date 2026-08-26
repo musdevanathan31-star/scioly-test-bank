@@ -4391,8 +4391,29 @@ def api_delete_question(event_slug, bucket, num):
 
 def _find_question(state: dict, bucket: str, num: str) -> tuple[dict | None, list]:
     """Return (question_dict, bucket_list) for the (bucket, num) pair, or
-    (None, []) when missing."""
-    bucket_qs = state.get("questions", {}).get(bucket) or []
+    (None, []) when missing.
+
+    A bucket is a PDF filename, and some of them legitimately contain `+`
+    (e.g. a scraped `..._ssss-utf-8u+6211u+662f_test.pdf`). The frontend
+    sends it correctly percent-encoded as `%2B`, but a proxy in front of the
+    app can decode the path twice — `%2B` -> `+` -> ` ` — applying the
+    query-string rule that `+` means space to a path, where it doesn't. The
+    request then arrives naming a bucket that has spaces where the real one
+    has plus signs, and every lookup 404s with "question not found" for that
+    one PDF while every other PDF works. Reproduced directly: the same
+    request succeeds with `%2B` and with a literal `+`, and 404s only in the
+    space-substituted form.
+
+    Retrying space->`+` recovers that case. It can only ever turn a miss
+    into a hit on an existing bucket, so it costs nothing when the path
+    arrived intact, and it is deliberately one-directional — a bucket whose
+    real name contains a space is still found by the exact match first.
+    """
+    buckets = state.get("questions", {})
+    bucket_qs = buckets.get(bucket)
+    if bucket_qs is None and " " in bucket:
+        bucket_qs = buckets.get(bucket.replace(" ", "+"))
+    bucket_qs = bucket_qs or []
     for q in bucket_qs:
         if str(q.get("number")) == str(num):
             return q, bucket_qs
