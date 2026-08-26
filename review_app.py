@@ -1919,8 +1919,16 @@ def api_take_assessment(assessment_id):
             m.pop("pairs", None)
             clean["matching"] = m
         sanitized.append(clean)
+    # The student's OWN deadline, not the class-wide one. This drives the
+    # countdown in assessment_take.html, which calls submitTest(true) when
+    # it reaches zero -- so sending window.closes_at here force-submitted
+    # an extended student's test at the original deadline, mid-answer,
+    # even though is_window_open() above had already honoured their
+    # override and would have let them keep working. Every other consumer
+    # of a deadline goes through effective_window(); this one didn't.
+    _, closes_at = assessments.effective_window(test, window, g.user.username)
     return jsonify({
-        "questions": sanitized, "answers": resp.answers, "closes_at": window.closes_at,
+        "questions": sanitized, "answers": resp.answers, "closes_at": closes_at,
         "contexts": test.snapshot_contexts,
     })
 
