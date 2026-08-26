@@ -2434,17 +2434,37 @@ def process_pair(test_pdf: Path, key_pdf: Path | None,
             log.warning("answer-key extraction error: %s", e)
             print(f"    [WARN] key error: {e}")
 
-    # If the test uses section-restarted numbering (any suffixed duplicates),
-    # text-based answer matching is unreliable across sections — skip it.
-    # Empty answer is better than wrong answer.
-    has_dupes = any(re.search(r"[a-z]$", q["number"]) for q in questions)
-    if has_dupes:
-        print(f"    [INFO] multi-section numbering detected — skipping text key match")
-    else:
-        for q in questions:
-            if q.get("qtype") == "matching":
-                continue   # pairs already populated by extract_matching_answers; answer stays ""
-            q["answer"] = answers.get(q["number"], "")
+    # Section-restarted numbering makes a key's "1." ambiguous: a paper whose
+    # sections each restart at 1 gets deduped here to 1 / 1b / 1c, and
+    # extract_answers' own dict collapses the key's repeats the same way — so
+    # matching purely by number could staple a later section's answer onto an
+    # earlier section's question. Empty answer beats wrong answer.
+    #
+    # But that ambiguity is per NUMBER, not per PDF. This used to be an
+    # all-or-nothing guard: one stray duplicate anywhere and the whole
+    # document lost every answer it had. Across this repo's corpus that cost
+    # 28 test PDFs *all* of their answers.
+    #
+    # Judge each number on its own instead. A number is safe exactly when its
+    # base occurs once in this PDF: if a "12b" exists then "12" belongs to a
+    # restarted run and BOTH are skipped — the bare one is no less ambiguous
+    # than its suffixed sibling, which is why this keys on the base rather
+    # than just skipping suffixed numbers.
+    _base = lambda n: re.sub(r"[a-z]+$", "", str(n))
+    base_counts: dict[str, int] = defaultdict(int)
+    for q in questions:
+        base_counts[_base(q["number"])] += 1
+    ambiguous = 0
+    for q in questions:
+        if q.get("qtype") == "matching":
+            continue   # pairs already populated by extract_matching_answers; answer stays ""
+        if base_counts[_base(q["number"])] > 1:
+            ambiguous += 1
+            continue
+        q["answer"] = answers.get(q["number"], "")
+    if ambiguous:
+        print(f"    [INFO] section-restarted numbering — key match skipped for "
+              f"{ambiguous} of {len(questions)} question(s)")
 
     # ---- True/False storage normalization ----
     # Runs after the key-page answer merge above (whichever branch ran) and
