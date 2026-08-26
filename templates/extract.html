@@ -1166,6 +1166,42 @@ function questionCompleteness(q){
   if(!(q.answer || "").toString().trim()) return {complete: false, reason: "no answer"};
   return {complete: true, reason: null};
 }
+// JS port of build_question_bank.question_gradeability() -- the client-side
+// half of the verification gate. The extract page never round-trips a
+// "correct" verdict through the PATCH endpoint that endpoint gates (see
+// api_patch_question in review_app.py); the manual dropdown and the AI
+// Validate result only ever land in local STATE/ANN here, picked up later
+// by Save. So THIS is the only place that can stop an ungradeable question
+// from being marked correct on this page -- ensureGradeableBeforeCorrect()
+// below is called from both.
+//
+// Deliberately STRICTER than questionCompleteness() above, and for the same
+// reason its Python counterpart is stricter than the storage-side
+// completeness check: completeness only asks "is there a non-empty answer",
+// which a prose MCQ answer like "12 volts" satisfies even though no choice
+// a student could pick would ever be graded correct (see _grade_mcq's prose
+// fallback in assessments.py). Do not merge the two -- completeness drives
+// the collapsed-row marker, this drives whether "correct" can be selected.
+function questionGradeabilityJS(q){
+  const qtype = questionType(q);
+  if(qtype === "mcq"){
+    const letters = parseAnswerLettersJS(q.answer, q.choices);
+    if(!letters || !letters.length) return {gradeable: false, reason: "answer isn't one of this question's choices"};
+    return {gradeable: true, reason: null};
+  }
+  if(qtype === "tf"){
+    if(q.answer !== "True" && q.answer !== "False") return {gradeable: false, reason: "no True/False answer recorded"};
+    return {gradeable: true, reason: null};
+  }
+  if(qtype === "matching"){
+    const pairs = (q.matching || {}).pairs || {};
+    if(!Object.keys(pairs).length) return {gradeable: false, reason: "no matching pairs recorded"};
+    return {gradeable: true, reason: null};
+  }
+  // frq
+  if(!(q.answer || "").toString().trim()) return {gradeable: false, reason: "no reference answer recorded"};
+  return {gradeable: true, reason: null};
+}
 function annOverrideQtype(q, newType){
   if(newType === "tf"){
     q.qtype = "tf";
@@ -2478,15 +2514,25 @@ function cardHTML(q){
       ${qtypeSeg("matching", "Matching", "Two-column matching — add rows here, or drag-capture columns from the PDF")}
     </div>`;
   const v = q.validation;
+  // Verification gate (client-side half — see questionGradeabilityJS above).
+  // Computed fresh on every render off the question's current fields, so it
+  // stays right even after an in-place edit to answer/choices/qtype without
+  // needing a change handler to keep it in sync.
+  const grade = questionGradeabilityJS(q);
   // Lets a human set/override the verdict directly, no LLM call — mirrors
   // Browse page's existing manual Validation dropdown (validated_by:
-  // "human") exactly, just reachable from the extract page too now.
+  // "human") exactly, just reachable from the extract page too now. The
+  // "✓ Correct" option is disabled (can't even be selected) when the
+  // question isn't gradeable, same rule build_question_bank.question_gradeability()
+  // enforces server-side for the browse-page dropdown and AI-validate PATCH.
   const markHumanSelect = `<select class="btn-tiny mark-human" title="Set this verdict yourself — no LLM call">
       <option value="" ${!v || !v.status ? "selected" : ""}>(unset)</option>
-      <option value="correct" ${v && v.status==="correct" ? "selected" : ""}>✓ Correct</option>
+      <option value="correct" ${v && v.status==="correct" ? "selected" : ""} ${grade.gradeable ? "" : `disabled title="Can't mark correct: ${esc(grade.reason)}"`}>✓ Correct</option>
       <option value="incorrect" ${v && v.status==="incorrect" ? "selected" : ""}>⚠ Incorrect</option>
       <option value="uncertain" ${v && v.status==="uncertain" ? "selected" : ""}>? Uncertain</option>
     </select>`;
+  const gradeWarning = !grade.gradeable
+    ? `<div class="rationale" style="color:var(--warn)">Can't be marked correct: ${esc(grade.reason)}</div>` : "";
   let validateBar;
   if(v && v.status){
     const cls = v.stale ? "stale" : v.status;
@@ -2507,6 +2553,7 @@ function cardHTML(q){
           ).join("; ")}</div>` : ""}
         ${v.rationale ? `<div class="rationale">${esc(v.rationale)}</div>` : ""}
         ${v.source ? `<div class="src">Source: ${esc(v.source)}</div>` : ""}
+        ${gradeWarning}
       </div>`;
   } else {
     validateBar = `
@@ -2515,6 +2562,7 @@ function cardHTML(q){
         <span class="muted">(LLM checks the answer against the question)</span>
         ${markHumanSelect}
         <span class="muted">or mark it yourself</span>
+        ${gradeWarning}
       </div>`;
   }
   const qPages = questionPages(q);
@@ -3043,6 +3091,19 @@ function bindCardEvents(){
       el.addEventListener("change", () => {
         const q = findQ(id);
         const status = el.value;
+        // Verification gate: the "✓ Correct" <option> is already disabled
+        // when ungradeable (see markHumanSelect above), but that only stops
+        // a mouse/keyboard pick — re-check here too rather than trust the
+        // disabled attribute alone, and revert the control instead of
+        // silently accepting a "correct" that slipped through.
+        if(status === "correct"){
+          const grade = questionGradeabilityJS(q);
+          if(!grade.gradeable){
+            setStatus(`Q#${escHtml(q.number)}: can't mark correct — ${grade.reason}`, "err");
+            renderCards();
+            return;
+          }
+        }
         // Same persistence path the AI-validate result already uses —
         // stored locally + ANN.validations, picked up by the existing
         // Save button and annotation-replay, no separate API call needed.
@@ -3095,6 +3156,33 @@ function updateMathPreview(el, text){
   }
 }
 
+// Applies an AI-validate result to `q`, refusing to let a "correct" verdict
+// stick when the question isn't gradeable — the same rule the manual
+// dropdown enforces (questionGradeabilityJS), just needed here too because
+// the LLM judges whether the TEXT is correct, not whether the answer is
+// letter-shaped, so it can happily say "correct" on a prose-answer MCQ. The
+// AI's own verdict/rationale aren't discarded on a block — the question
+// still needs a human's attention — they're just downgraded to "uncertain"
+// with a note, rather than certifying an ungradeable question. Returns
+// {blocked, reason} so callers can report it.
+function applyValidationResult(q, v){
+  if(v && v.status === "correct"){
+    const grade = questionGradeabilityJS(q);
+    if(!grade.gradeable){
+      q.validation = {
+        ...v, status: "uncertain",
+        rationale: `AI said correct, but blocked: ${grade.reason}.`
+          + (v.rationale ? ` (AI rationale: ${v.rationale})` : ""),
+      };
+      ANN.validations[q.number] = q.validation;
+      return {blocked: true, reason: grade.reason};
+    }
+  }
+  q.validation = v;
+  ANN.validations[q.number] = v;
+  return {blocked: false, reason: null};
+}
+
 async function validateOne(qLocalId){
   const q = findQ(qLocalId);
   if(!q) return;
@@ -3108,10 +3196,13 @@ async function validateOne(qLocalId){
       }),
     });
     const v = await r.json();
-    q.validation = v;
-    ANN.validations[q.number] = v;
+    const {blocked, reason} = applyValidationResult(q, v);
     setDirty(true); renderCards();
-    setStatus(`Q#${q.number}: ${v.status}${v.correct_answer ? ` → ${v.correct_answer}` : ""}`);
+    if(blocked){
+      setStatus(`Q#${q.number}: AI said correct, but blocked — ${reason}. Left as uncertain.`, "err");
+    } else {
+      setStatus(`Q#${q.number}: ${v.status}${v.correct_answer ? ` → ${v.correct_answer}` : ""}`);
+    }
   } catch(err){ setStatus("Validate failed: " + err.message, "err"); }
 }
 
@@ -4143,6 +4234,7 @@ document.getElementById("validatePage").addEventListener("click", async ()=>{
   let done = 0;
   let errs = 0;
   let firstErr = "";
+  let blocked = 0;
   for(const q of list){
     setStatusHtml(`Validating ${done+1}/${list.length}: Q#${escHtml(q.number)}... <span class='spinner'></span>`);
     try{
@@ -4151,8 +4243,10 @@ document.getElementById("validatePage").addEventListener("click", async ()=>{
         body: JSON.stringify({text:q.text, answer:q.answer, choices:q.choices, number:q.number}),
       });
       const v = await r.json();
-      q.validation = v;
-      ANN.validations[q.number] = v;
+      // Same gate as validateOne — a bulk "validate everything on this
+      // page" is exactly the kind of one-click action that can certify a
+      // pile of ungradeable questions at once, same as the qgen bulk import.
+      if(applyValidationResult(q, v).blocked) blocked++;
       setDirty(true);
     } catch(err){
       errs++;
@@ -4165,6 +4259,8 @@ document.getElementById("validatePage").addEventListener("click", async ()=>{
   renderCards();
   if(errs){
     setStatus(`Validated ${done - errs}/${done}; ${errs} failed (first: ${firstErr}). Press Save to persist.`, "warn");
+  } else if(blocked){
+    setStatus(`Validated ${done} question(s); ${blocked} left as uncertain (AI said correct but not gradeable). Press Save to persist.`, "warn");
   } else {
     setStatus(`Validated ${done} question(s). Press Save to persist.`);
   }

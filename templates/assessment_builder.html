@@ -300,10 +300,22 @@ if(publishBtn){
       const j = await r.json();
       msgEl.style.display = "";
       if(j.ok){
+        // Non-blocking backstop: publish still succeeds even when a kept
+        // question isn't gradeable (e.g. an MCQ whose answer isn't one of
+        // its own choices) -- a coach may genuinely intend to grade it by
+        // hand. Warn and name it rather than block, so this doesn't become
+        // a second hard gate on top of the verification-time one.
+        const ungradeable = j.ungradeable || [];
         msgEl.className = "msg ok";
+        // No ".msg.warn" style exists in this app -- borrow the shared
+        // --warn CSS variable directly rather than adding an unstyled class
+        // or a hardcoded color.
+        msgEl.style.color = ungradeable.length ? "var(--warn)" : "";
         msgEl.textContent = `Published ${j.snapshot_count} question(s).`
-          + (j.skipped.length ? ` ${j.skipped.length} kept question(s) were removed from the bank and skipped.` : "");
-        setTimeout(() => location.href = `${APP_ROOT}/assessments`, 1800);
+          + (j.skipped.length ? ` ${j.skipped.length} kept question(s) were removed from the bank and skipped.` : "")
+          + (ungradeable.length ? ` Warning: ${ungradeable.length} published question(s) can't be auto-graded and may need to be scored by hand: `
+              + ungradeable.map(u => `#${u.number} (${u.reason})`).join("; ") + "." : "");
+        setTimeout(() => location.href = `${APP_ROOT}/assessments`, ungradeable.length ? 4500 : 1800);
       } else {
         msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed";
         publishBtn.disabled = false;

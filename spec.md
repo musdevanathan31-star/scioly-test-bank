@@ -213,6 +213,23 @@ A question opts in via its `context_id`; extract.html then renders the context a
 
 ### Validation
 
+**Gradeability gate.** A `"correct"` verdict is refused for a question no grader could ever mark right, at every chokepoint that can set one: the PATCH handler behind both the manual verdict dropdown and the AI-validate result, and the bulk scio.ly "accept validated" import (which silently certifies in a loop, so it is the one that matters most). The rule lives once, in `build_question_bank.question_gradeability(q)`:
+
+| Effective qtype | Gradeable when |
+|---|---|
+| `mcq` | the answer resolves to ≥1 letter that exists among its own choices (`text_utils.parse_answer_letters`) |
+| `tf` | the answer normalizes to exactly `True`/`False` |
+| `matching` | at least one entry in `matching.pairs` |
+| `frq` | a non-empty reference answer (hand-graded, so text suffices) |
+
+Effective qtype is resolved the same way `_snapshot_one_question` resolves it (`qtype`, else `mcq` when choices exist, else `frq`) — gradeability must judge the type the grader will actually apply.
+
+This is **stricter than `questionCompleteness()`** in `extract.html`, which drives the collapsed-row marker: completeness asks "did someone fill in an answer", gradeability asks "can a grader ever mark it right". A prose MCQ answer like `12 volts` passes the first and fails the second. The two are deliberately not merged.
+
+It gates **verification rather than publishing** because the assessment builder's pool filter is "validated correct only" *by default* — so blocking the certification removes ungradeable questions from the default pool without a second gate. `incorrect`/`uncertain` are never blocked; marking a question incorrect is how it gets flagged for repair. Publishing keeps a **non-blocking** warning naming any kept question that isn't gradeable, since a coach may legitimately intend to grade one by hand.
+
+The motivating case: `_grade_mcq`'s prose fallback compares only the first character, so a question answered `"12 volts"` marks every lettered pick wrong and would only ever accept the literal string `"1"`. That fallback is preserved deliberately; this gate keeps such a question from being certified in the first place.
+
 ```jsonc
 {
   "status":         "correct" | "incorrect" | "uncertain" | "unavailable",

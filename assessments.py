@@ -506,6 +506,7 @@ def publish_assessment(assessment_id: str, published_by: str = "") -> dict:
         snapshot: list[dict] = []
         snapshot_contexts: dict[str, dict] = {}
         skipped: list[dict] = []
+        ungradeable: list[dict] = []
         for item in existing.kept:
             bucket, number = item.get("bucket", ""), str(item.get("number", ""))
             bank_q = next((q for q in (questions_by_bucket.get(bucket) or [])
@@ -513,6 +514,21 @@ def publish_assessment(assessment_id: str, published_by: str = "") -> dict:
             if bank_q is None:
                 skipped.append({"bucket": bucket, "number": number})
                 continue
+            # Non-blocking backstop: the real defence is the verification gate
+            # (build_question_bank.question_gradeability, enforced at every
+            # place a question can be marked validation.status="correct" —
+            # see api_patch_question and api_import_generated in review_app.py).
+            # This just warns, deliberately — a coach can legitimately keep a
+            # question they intend to grade by hand (an FRQ with no reference
+            # answer yet, say), and hard-blocking publish over that would be
+            # the wrong trade. Includes a kept question regardless of its
+            # current validation status: an ungradeable question that was
+            # never marked "correct" at all (e.g. added straight to a test
+            # without going through Validate) is just as silently unscoreable
+            # once published, and the coach should hear about it either way.
+            gradeable, reason = bqb.question_gradeability(bank_q)
+            if not gradeable:
+                ungradeable.append({"bucket": bucket, "number": number, "reason": reason})
             entry = _snapshot_one_question(bank_q, bucket, float(item.get("max_points") or 1))
             snapshot.append(entry)
             ctx_id = bank_q.get("context_id")
@@ -530,7 +546,7 @@ def publish_assessment(assessment_id: str, published_by: str = "") -> dict:
             published_at=_now_iso(), published_by=published_by,
         )
         assessments[assessment_id] = updated
-    return {"test": updated, "skipped": skipped}
+    return {"test": updated, "skipped": skipped, "ungradeable": ungradeable}
 
 
 # ---------------------------------------------------------------------------

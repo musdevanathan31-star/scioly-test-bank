@@ -353,6 +353,7 @@ _MC_MARKER_LINE = re.compile(r"^[A-Ea-e][\.\)]$")
 from text_utils import (  # noqa: E402
     strip_points as _strip_points,
     normalize_unicode as _normalize_unicode,
+    parse_answer_letters,
     _POINTS_RE,
 )
 
@@ -482,6 +483,60 @@ def _finalize_tf_answers(questions: list[dict]) -> None:
         if normalized is not None:
             q["answer"] = normalized
         # else: leave q["answer"] untouched.
+
+
+def question_gradeability(q: dict) -> tuple[bool, str]:
+    """Can `q` be graded automatically (mcq/tf/matching) or is it at least
+    hand-gradeable (frq) as currently stored? Returns (True, "") when yes,
+    (False, reason) when no. `reason` is user-facing -- it gets shown to
+    whoever tried to certify the question, so it must name the specific
+    problem rather than just say "invalid".
+
+    This is the single place the gradeability rule lives. Every chokepoint
+    that can mark a question `validation.status == "correct"` (the manual
+    verdict dropdown / AI-validate PATCH handler, and the bulk qgen
+    mark-validated import) must call this and refuse the "correct" verdict
+    when it returns False -- see spec.md for why the gate lives here rather
+    than at publish time.
+
+    Effective qtype resolution mirrors assessments.py's
+    _snapshot_one_question()/_render_question(): `qtype` if set, else "mcq"
+    when there are choices, else "frq". Kept in lockstep deliberately --
+    gradeability must judge the same type the grader/publisher will actually
+    treat the question as.
+
+    Deliberately STRICTER than templates/extract.html's client-side
+    questionCompleteness() (and its JS mirror questionGradeabilityJS()),
+    which only asks "is there a non-empty answer field" and drives the
+    collapsed-row completeness marker / "N of M incomplete" count.
+    Completeness answers "did someone fill in an answer"; gradeability asks
+    "if a student picks/writes something, can the grader ever mark it
+    right". A prose MCQ answer like "12 volts" passes completeness (it's
+    non-empty) but fails gradeability (it isn't one of the question's own
+    choice letters) -- see _grade_mcq's prose fallback in assessments.py,
+    which is exactly the silent mis-grading this function exists to keep
+    away from anything that gets certified 'correct'. Do not merge the two
+    checks -- one gates a UI marker, the other gates verification.
+    """
+    qtype = q.get("qtype") or ("mcq" if q.get("choices") else "frq")
+    if qtype == "mcq":
+        letters = parse_answer_letters(q.get("answer"), q.get("choices"))
+        if not letters:
+            return False, "answer isn't one of this question's choices"
+        return True, ""
+    if qtype == "tf":
+        if _normalize_tf_answer(q.get("answer")) is None:
+            return False, "no True/False answer recorded"
+        return True, ""
+    if qtype == "matching":
+        pairs = (q.get("matching") or {}).get("pairs") or {}
+        if not pairs:
+            return False, "no matching pairs recorded"
+        return True, ""
+    # frq (or any other/unrecognized qtype -- same fallback assessments.py uses)
+    if not (q.get("answer") or "").strip():
+        return False, "no reference answer recorded"
+    return True, ""
 
 
 def split_choices_by_lines(raw: str) -> tuple[str, list[dict]]:

@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import copy
 import json
 import hashlib
 import uuid
@@ -1558,7 +1559,7 @@ def api_publish_assessment(assessment_id):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "snapshot_count": len(result["test"].snapshot or []),
-                    "skipped": result["skipped"]})
+                    "skipped": result["skipped"], "ungradeable": result.get("ungradeable", [])})
 
 
 @app.route("/assessments/<assessment_id>/go-live", methods=["POST"])
@@ -4346,6 +4347,71 @@ def api_all_questions(event_slug):
 _VALIDATION_STATUSES = {"correct", "incorrect", "uncertain", "unavailable"}
 
 
+def _apply_question_field_edits(q: dict, data: dict) -> list[str]:
+    """Mutates `q` in place per a PATCH body's field edits (text/topic/focus/
+    answer/choices/matching/qtype/image_descriptions), returns the list of
+    field names touched. Factored out of api_patch_question so the same
+    exact field-resolution rules can be run twice for a status="correct"
+    request: once on a scratch copy (to decide gradeability against the
+    record as this request would leave it, before anything is persisted),
+    and once for real inside the transaction. Never touches `validation`
+    itself — that's applied by the caller, after this returns."""
+    edited_fields: list[str] = []
+    for k in ("text", "topic", "focus", "answer"):
+        if k in data:
+            q[k] = (data[k] or "").strip()
+            edited_fields.append(k)
+    if "choices" in data and isinstance(data["choices"], list):
+        q["choices"] = [{"letter": (c.get("letter") or "").upper()[:1],
+                         "text": (c.get("text") or "").strip()}
+                        for c in data["choices"]
+                        if (c.get("text") or "").strip()]
+        for i, c in enumerate(q["choices"]):
+            c["letter"] = chr(ord("A") + i)
+        edited_fields.append("choices")
+    if "matching" in data:
+        m = data["matching"]
+        if m is None:
+            q.pop("matching", None)
+            q.pop("qtype", None)
+        elif isinstance(m, dict):
+            q["matching"] = {
+                "left":  [{"label": str(it.get("label") or ""),
+                           "text": (it.get("text") or "").strip(),
+                           "image": it.get("image") or None}
+                          for it in (m.get("left") or [])],
+                "right": [{"label": str(it.get("label") or ""),
+                           "text": (it.get("text") or "").strip(),
+                           "image": it.get("image") or None}
+                          for it in (m.get("right") or [])],
+                "pairs": {str(k): str(v) for k, v in (m.get("pairs") or {}).items()},
+            }
+            q["qtype"] = "matching"
+        edited_fields.append("matching")
+        edited_fields.append("qtype")
+    elif "qtype" in data:
+        new_qtype = (data["qtype"] or "").strip() or None
+        if new_qtype == "tf":
+            q["qtype"] = "tf"
+            q["choices"] = []  # tf storage is always choices: []
+            edited_fields.append("choices")
+            edited_fields.append("qtype")
+        elif new_qtype is None:
+            q.pop("qtype", None)
+            edited_fields.append("qtype")
+        elif new_qtype in _VALID_QTYPES:
+            q["qtype"] = new_qtype
+            edited_fields.append("qtype")
+        # else: not a recognized qtype — ignored, not persisted (see
+        # _VALID_QTYPES).
+    if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
+        cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
+                   if str(d or "").strip()}
+        q["image_descriptions"] = cleaned
+        edited_fields.append("image_descriptions")
+    return edited_fields
+
+
 @app.route("/event/<event_slug>/api/q/<bucket>/<num>", methods=["PATCH"])
 def api_patch_question(event_slug, bucket, num):
     """Apply a single-field edit to one question, without going through the
@@ -4362,6 +4428,25 @@ def api_patch_question(event_slug, bucket, num):
         status = data["validation"].get("status")
         if status is not None and status not in _VALIDATION_STATUSES:
             return jsonify({"error": f"invalid validation status: {status!r}"}), 400
+        if status == "correct":
+            # Gradeability gate (spec.md "Verification gate"): refuse to
+            # certify a question a grader could never mark right. Must be
+            # judged against the record as THIS request would leave it — an
+            # answer/choices/qtype edit can ride along in the same PATCH body
+            # as the verdict — so peek the current record, replay the same
+            # field edits onto a scratch copy, and check that. Done before
+            # the transaction opens for the same true-no-op reason as the
+            # status-shape check above.
+            peek_state = bqb._load_state()
+            peek_qs = peek_state.get("questions", {}).get(bucket) or []
+            peek_q = next((x for x in peek_qs if str(x.get("number")) == str(num)), None)
+            if peek_q is None:
+                return jsonify({"error": f"question #{num} not in {bucket}"}), 404
+            preview = copy.deepcopy(peek_q)
+            _apply_question_field_edits(preview, data)
+            gradeable, reason = bqb.question_gradeability(preview)
+            if not gradeable:
+                return jsonify({"error": f"cannot mark correct: {reason}"}), 400
     with bqb._state_transaction() as state:
         bucket_qs = state.setdefault("questions", {}).get(bucket)
         if bucket_qs is None:
@@ -4370,61 +4455,7 @@ def api_patch_question(event_slug, bucket, num):
         if not q:
             return jsonify({"error": f"question #{num} not in {bucket}"}), 404
 
-        edited_fields: list[str] = []
-
-        # Apply edits
-        for k in ("text", "topic", "focus", "answer"):
-            if k in data:
-                q[k] = (data[k] or "").strip()
-                edited_fields.append(k)
-        if "choices" in data and isinstance(data["choices"], list):
-            q["choices"] = [{"letter": (c.get("letter") or "").upper()[:1],
-                             "text": (c.get("text") or "").strip()}
-                            for c in data["choices"]
-                            if (c.get("text") or "").strip()]
-            for i, c in enumerate(q["choices"]):
-                c["letter"] = chr(ord("A") + i)
-            edited_fields.append("choices")
-        if "matching" in data:
-            m = data["matching"]
-            if m is None:
-                q.pop("matching", None)
-                q.pop("qtype", None)
-            elif isinstance(m, dict):
-                q["matching"] = {
-                    "left":  [{"label": str(it.get("label") or ""),
-                               "text": (it.get("text") or "").strip(),
-                               "image": it.get("image") or None}
-                              for it in (m.get("left") or [])],
-                    "right": [{"label": str(it.get("label") or ""),
-                               "text": (it.get("text") or "").strip(),
-                               "image": it.get("image") or None}
-                              for it in (m.get("right") or [])],
-                    "pairs": {str(k): str(v) for k, v in (m.get("pairs") or {}).items()},
-                }
-                q["qtype"] = "matching"
-            edited_fields.append("matching")
-            edited_fields.append("qtype")
-        elif "qtype" in data:
-            new_qtype = (data["qtype"] or "").strip() or None
-            if new_qtype == "tf":
-                q["qtype"] = "tf"
-                q["choices"] = []  # tf storage is always choices: []
-                edited_fields.append("choices")
-                edited_fields.append("qtype")
-            elif new_qtype is None:
-                q.pop("qtype", None)
-                edited_fields.append("qtype")
-            elif new_qtype in _VALID_QTYPES:
-                q["qtype"] = new_qtype
-                edited_fields.append("qtype")
-            # else: not a recognized qtype — ignored, not persisted (see
-            # _VALID_QTYPES).
-        if "image_descriptions" in data and isinstance(data["image_descriptions"], dict):
-            cleaned = {str(fn): str(d).strip() for fn, d in data["image_descriptions"].items()
-                       if str(d or "").strip()}
-            q["image_descriptions"] = cleaned
-            edited_fields.append("image_descriptions")
+        edited_fields = _apply_question_field_edits(q, data)
         if "validation" in data:
             v = data["validation"]
             if v is None:
@@ -5867,6 +5898,7 @@ def api_import_generated(event_slug):
         rejected_invalid = 0
         accepted_this_batch: list[dict] = []
         added_questions: list[dict] = []
+        skipped_validation_ungradeable: list[dict] = []
 
         for cand in raw_candidates:
             if not isinstance(cand, dict):
@@ -5917,16 +5949,30 @@ def api_import_generated(event_slug):
             }
             q = qgen.candidate_to_question(normalized, str(next_num), "Imported")
             if mark_validated:
-                q["validation"] = {
-                    "status":               "correct",
-                    "correct_answer":       None,
-                    "rationale":            normalized["rationale"] or "Marked validated on import.",
-                    "source":               "Imported (manually marked validated)",
-                    "validated_at":         datetime.now().isoformat(timespec="seconds"),
-                    "model":                "import",
-                    "text_at_validation":   q["text"][:300],
-                    "answer_at_validation": q["answer"],
-                }
+                # Gradeability gate (build_question_bank.question_gradeability):
+                # this is the fastest way to certify a whole pile of questions
+                # in one click, so it's the chokepoint that matters most --
+                # importing a prose-answer MCQ here and stamping it "correct"
+                # is exactly how one of the 23 ungradeable questions in the
+                # bank got certified in the first place. The question is
+                # still imported either way (its content isn't the problem,
+                # the correctness claim is) -- it's just left unvalidated
+                # instead, and named in the response so the caller can see
+                # what didn't get auto-certified.
+                gradeable, reason = bqb.question_gradeability(q)
+                if gradeable:
+                    q["validation"] = {
+                        "status":               "correct",
+                        "correct_answer":       None,
+                        "rationale":            normalized["rationale"] or "Marked validated on import.",
+                        "source":               "Imported (manually marked validated)",
+                        "validated_at":         datetime.now().isoformat(timespec="seconds"),
+                        "model":                "import",
+                        "text_at_validation":   q["text"][:300],
+                        "answer_at_validation": q["answer"],
+                    }
+                else:
+                    skipped_validation_ungradeable.append({"number": q["number"], "reason": reason})
             bucket.append(q)
             accepted_this_batch.append(normalized)
             added_questions.append(q)
@@ -5946,6 +5992,7 @@ def api_import_generated(event_slug):
         "repaired": repaired,
         "rejected_duplicates": rejected_duplicates,
         "rejected_invalid": rejected_invalid,
+        "skipped_validation_ungradeable": skipped_validation_ungradeable,
         "bucket": cache_key,
         "bucket_total": len(bucket),
         "questions": [dict(q, _bucket=cache_key) for q in added_questions],

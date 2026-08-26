@@ -1079,6 +1079,14 @@ document.getElementById("btn_import").addEventListener("click", async () => {
       if(j.rejected_duplicates) parts.push(`${j.rejected_duplicates} duplicates rejected`);
       if(j.rejected_invalid)    parts.push(`${j.rejected_invalid} invalid`);
       if(validated)             parts.push("marked validated");
+      // Some imported questions can't be certified "correct" even when the
+      // "validated" checkbox was on -- e.g. a prose MCQ answer that isn't
+      // one of its own choice letters. They're still imported, just left
+      // unvalidated; name them so it's not a silent gap.
+      const skipped = j.skipped_validation_ungradeable || [];
+      if(skipped.length){
+        parts.push(`${skipped.length} not gradeable, kept unvalidated (#${skipped.map(s => s.number).join(", #")})`);
+      }
       stEl.textContent = parts.join(" · ");
       if(j.added > 0){
         toast(`Imported ${j.added} questions into ${j.bucket}.`, "ok");
