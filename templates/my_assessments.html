@@ -28,7 +28,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
     <div class="test-row">
       <div class="info">
         <span class="ev">{{ entry.event_slug }}</span>
-        <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }} — closes <span class="local-dt" data-iso="{{ entry.window.closes_at }}">{{ entry.window.closes_at|replace("T", " ") }}</span></span>
+        <span class="when">{{ entry.window.label or entry.opens_at[:10] }} — closes <span class="local-dt" data-iso="{{ entry.closes_at }}">{{ entry.closes_at|replace("T", " ") }}</span>{% if entry.is_override %} <span class="muted" title="your coach set a separate window for you">(your window)</span>{% endif %}</span>
       </div>
       {% if entry.assessment.kind == "build" %}
       {# No Take button: a build event has nothing to sit down and answer.
@@ -51,7 +51,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
     <div class="test-row">
       <div class="info">
         <span class="ev">{{ entry.event_slug }}</span>
-        <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }} — opens <span class="local-dt" data-iso="{{ entry.window.opens_at }}">{{ entry.window.opens_at|replace("T", " ") }}</span></span>
+        <span class="when">{{ entry.window.label or entry.opens_at[:10] }} — opens <span class="local-dt" data-iso="{{ entry.opens_at }}">{{ entry.opens_at|replace("T", " ") }}</span>{% if entry.is_override %} <span class="muted" title="your coach set a separate window for you">(your window)</span>{% endif %}</span>
       </div>
       {% if entry.assessment.kind == "build" %}
       {# "not yet open" is exam language — it implies a window you sit down
@@ -71,7 +71,7 @@ section h2{margin:0 0 10px 0;font-size:14px}
     <div class="test-row">
       <div class="info">
         <span class="ev">{{ entry.event_slug }}</span>
-        <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }}</span>
+        <span class="when">{{ entry.window.label or entry.opens_at[:10] }}</span>
       </div>
       {% if entry.response and entry.response.released %}
       <a href="{{ url_for('assessment_results_page', assessment_id=entry.assessment.assessment_id) }}"><button>View results</button></a>

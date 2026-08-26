@@ -598,6 +598,8 @@ When your coach records and releases your result, **View results** shows:
 
 Until your coach releases scores, your result isn't visible — not on the page and not through a direct API call.
 
+If your coach has given you a separate window (a makeup or an extension), every time you see is **yours**, not the class's — the assessment list, the countdown on the test itself, and the open/close times all show your own window, and the list marks it "(your window)" so it's clear why it differs from a classmate's.
+
 ### Taking a test
 
 Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.

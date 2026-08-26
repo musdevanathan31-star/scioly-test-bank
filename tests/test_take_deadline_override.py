@@ -135,3 +135,62 @@ def test_an_override_for_someone_else_does_not_affect_this_student(env):
 
     j = client("stu_a").get(f"/api/my-assessments/{aid}/take").get_json()
     assert j["closes_at"] == class_closes, "another student's override leaked"
+
+
+# ---------------------------------------------------------------------------
+# The listings must agree with the take page. A student holding an override
+# seeing the class-wide time on their assessment list, while the test page
+# counts down to a different one, is the same defect wearing a milder face.
+# ---------------------------------------------------------------------------
+
+def test_the_json_listing_reports_the_students_own_window(env):
+    review_app, assessments, aid, client, class_closes, extended, opens = env
+    _grant_override(assessments, aid, "stu_a", opens, extended)
+
+    entries = client("stu_a").get("/api/my-assessments").get_json()["assessments"]
+    mine = next(e for e in entries if e["assessment_id"] == aid)
+    assert mine["closes_at"] == extended
+    assert mine["closes_at"] != class_closes
+    assert mine["opens_at"] == opens
+
+
+def test_the_html_listing_reports_the_students_own_window(env):
+    review_app, assessments, aid, client, class_closes, extended, opens = env
+    _grant_override(assessments, aid, "stu_a", opens, extended)
+
+    html = client("stu_a").get("/my-assessments").get_data(as_text=True)
+    assert extended in html, "listing did not show the student's own deadline"
+    assert class_closes not in html, "listing still showed the class deadline"
+
+
+def test_listing_and_take_page_agree(env):
+    """The actual requirement: one student, one deadline, wherever they
+    look at it."""
+    review_app, assessments, aid, client, class_closes, extended, opens = env
+    _grant_override(assessments, aid, "stu_a", opens, extended)
+    c = client("stu_a")
+
+    listed = next(e for e in c.get("/api/my-assessments").get_json()["assessments"]
+                  if e["assessment_id"] == aid)["closes_at"]
+    taken = c.get(f"/api/my-assessments/{aid}/take").get_json()["closes_at"]
+    assert listed == taken == extended
+
+
+def test_a_student_without_an_override_still_sees_the_class_window(env):
+    review_app, assessments, aid, client, class_closes, extended, opens = env
+    c = client("stu_a")
+    listed = next(e for e in c.get("/api/my-assessments").get_json()["assessments"]
+                  if e["assessment_id"] == aid)["closes_at"]
+    taken = c.get(f"/api/my-assessments/{aid}/take").get_json()["closes_at"]
+    assert listed == taken == class_closes
+
+
+def test_another_students_override_does_not_change_this_listing(env):
+    review_app, assessments, aid, client, class_closes, extended, opens = env
+    import auth
+    auth.create_user("stu_b", "password123", "student")
+    _grant_override(assessments, aid, "stu_b", opens, extended)
+
+    entries = client("stu_a").get("/api/my-assessments").get_json()["assessments"]
+    mine = next(e for e in entries if e["assessment_id"] == aid)
+    assert mine["closes_at"] == class_closes

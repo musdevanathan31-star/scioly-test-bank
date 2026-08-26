@@ -1764,7 +1764,15 @@ def my_assessments_page():
                     if t is None or t.status not in _MY_ASSESSMENT_STATUSES[kind]:
                         continue
                     resp = assessments.get_response(t.assessment_id, g.user.username)
-                    entry = {"assessment": t, "window": w, "event_slug": slug, "response": resp}
+                    # The student's OWN window, not the class-wide one: a
+                    # makeup override is an independent clock (see
+                    # effective_window), so a student holding one must see
+                    # their times here, on the take page, and in the API
+                    # alike -- otherwise the list contradicts the countdown.
+                    e_opens, e_closes = assessments.effective_window(t, w, g.user.username)
+                    entry = {"assessment": t, "window": w, "event_slug": slug, "response": resp,
+                             "opens_at": e_opens, "closes_at": e_closes,
+                             "is_override": g.user.username in (t.overrides or {})}
                     bucket = _my_assessment_bucket(t, w, resp, g.user.username)
                     {"upcoming": upcoming, "current": current, "past": past}[bucket].append(entry)
     return render_template("my_assessments.html", upcoming=upcoming, current=current, past=past,
@@ -1885,7 +1893,11 @@ def api_my_assessments():
                     out.append({
                         "assessment_id": t.assessment_id, "event_slug": slug, "window_label": w.label,
                         "kind": kind,
-                        "opens_at": w.opens_at, "closes_at": w.closes_at, "bucket": bucket,
+                        # Effective, not class-wide -- same reason as the
+                        # HTML listing above.
+                        **dict(zip(("opens_at", "closes_at"),
+                                   assessments.effective_window(t, w, g.user.username))),
+                        "bucket": bucket,
                         "response_status": resp.status if resp else None,
                         # Never a score, even after release — only whether
                         # one has been released. The result (earned/possible)
