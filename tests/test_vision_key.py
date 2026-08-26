@@ -113,6 +113,14 @@ def test_key_never_reaches_index_json_or_log_file(env):
     bqb, jobs, review_app, slug = env
 
     def target(should_cancel, on_progress):
+        # Resolve the module the way jobs.py's worker does — from
+        # sys.modules at call time, not the object this test captured.
+        # The fixture is module-scoped and reloads build_question_bank;
+        # if any LATER test module reloads it too, the worker binds the
+        # vision key on the NEW module while a closure over the old one
+        # reads an unset ContextVar. That is the documented reload race,
+        # and it made these assertions fail under full-suite load only.
+        import build_question_bank as bqb
         # Deliberately do NOT print the key itself here -- that would just be
         # testing our own test bug, not the app. Print only a boolean so we
         # can still confirm the ContextVar was actually bound to something.
@@ -240,6 +248,7 @@ def test_two_jobs_with_different_keys_each_use_their_own_key(env, monkeypatch):
 
     def make_target(label):
         def target(should_cancel, on_progress):
+            import build_question_bank as bqb   # see note above
             client = bqb._get_client()
             results[label] = client.key
             return {}
@@ -295,6 +304,7 @@ def test_no_per_user_key_falls_back_to_env_key(env, monkeypatch):
     seen = []
 
     def target(should_cancel, on_progress):
+        import build_question_bank as bqb   # resolve at call time; see note above
         seen.append(bqb._get_client())
         return {}
 
@@ -310,6 +320,7 @@ def test_neither_key_present_vision_unavailable(env, monkeypatch):
     seen = []
 
     def target(should_cancel, on_progress):
+        import build_question_bank as bqb   # resolve at call time; see note above
         seen.append(bqb._vision_available())
         return {}
 
@@ -325,6 +336,7 @@ def test_vision_available_true_with_only_per_user_key(env, monkeypatch):
     seen = []
 
     def target(should_cancel, on_progress):
+        import build_question_bank as bqb   # resolve at call time; see note above
         seen.append(bqb._vision_available())
         return {}
 

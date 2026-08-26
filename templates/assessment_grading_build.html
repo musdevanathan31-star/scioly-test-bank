@@ -133,7 +133,18 @@ function updateProgress(complete){
 function renderRubricEditor(){
   const root = document.getElementById("rubric_list");
   if(!RUBRIC.length){
-    root.innerHTML = '<p class="muted">No rubric lines yet — either add some below, or leave this empty and just record one score per student.</p>';
+    // The "just one score per student" case is the common one, so offer it
+    // as a single click rather than leaving the coach to work out that an
+    // empty rubric plus an override is how you do it. Seeding one scored
+    // line also means the max lives on the assessment, where it belongs —
+    // it is a property of the event, not of each participant.
+    root.innerHTML = `<p class="muted">No rubric lines yet.
+      <button type="button" class="ghost" id="seed_simple_btn">Use a single score</button>
+      for one mark per student, or add lines below to score parts separately.</p>`;
+    document.getElementById("seed_simple_btn").addEventListener("click", () => {
+      RUBRIC.push({id: uid(), kind: "scored", label: "Score", max_points: 100});
+      renderRubricEditor();
+    });
     return;
   }
   root.innerHTML = RUBRIC.map((line, i) => `
@@ -311,19 +322,17 @@ async function saveRow(row){
   const comment = row.querySelector(".comment-input").value;
 
   const body = {rubric_values, comment};
-  if(override !== null){
-    body.override = override;
-    if(!scoredLines.length){
-      // No-rubric ("single score per student") path — the override IS the
-      // score, and needs an explicit max since there are no scored lines
-      // to derive one from.
-      const maxStr = prompt("This assessment has no rubric — what's the max possible score?", "100");
-      const max = parseFloat(maxStr);
-      if(!maxStr || isNaN(max) || max <= 0) return toast("A positive max points value is required.", "err");
-      body.override_max = max;
-    }
-  } else if(!scoredLines.length){
-    return toast("This assessment has no scored rubric lines — enter an override score.", "err");
+  if(override !== null) body.override = override;
+  if(!scoredLines.length){
+    // Deliberately no prompt() here. This runs per student row on every
+    // save, so asking for the max points that way meant one blocking
+    // browser dialog per participant, each re-asking the same question —
+    // and browsers start suppressing repeated dialogs. Worse, the max is a
+    // property of the assessment, not of a participant, so per-row answers
+    // could disagree. Set a rubric line instead (the editor offers a
+    // one-click "Use a single score" for exactly this case) and the max
+    // comes from there.
+    return toast("Set a rubric first — use “Use a single score” for one mark per student.", "err");
   }
 
   const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/build-grading/${encodeURIComponent(username)}`, {
