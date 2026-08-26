@@ -553,6 +553,42 @@ def test_apply_annotations_added_question_defaults_qtype_to_frq():
 
 
 # ---------------------------------------------------------------------------
+# apply_annotations threading "difficulty" through field_overrides -- the
+# one override field whose "clear" state must pop the key entirely (unrated
+# is absence, not a stored 0/None) rather than assign the sentinel value.
+# ---------------------------------------------------------------------------
+
+def test_apply_annotations_difficulty_override_sets_value():
+    questions = [{"number": "3", "topic": "Other / General", "text": "Q",
+                  "choices": [], "answer": "", "images": []}]
+    ann = {"field_overrides": {"3": {"difficulty": 0.7}}}
+    out = bqb.apply_annotations(questions, ann)
+    assert out[0]["difficulty"] == 0.7
+
+
+def test_apply_annotations_difficulty_override_none_clears_field_entirely():
+    # A question that already carries a scraped/extracted difficulty, then
+    # the reviewer picks "(unrated)" on the extract-page card -- the field
+    # override arrives as {"difficulty": None} and must pop the key, not
+    # leave it set to None.
+    questions = [{"number": "3", "topic": "Other / General", "text": "Q",
+                  "choices": [], "answer": "", "images": [], "difficulty": 0.4}]
+    ann = {"field_overrides": {"3": {"difficulty": None}}}
+    out = bqb.apply_annotations(questions, ann)
+    assert "difficulty" not in out[0]
+
+
+def test_apply_annotations_no_difficulty_override_leaves_question_untouched():
+    # Additive-only: a question with no difficulty and no override for it
+    # must behave exactly as before -- no "difficulty" key appears.
+    questions = [{"number": "3", "topic": "Other / General", "text": "Q",
+                  "choices": [], "answer": "", "images": []}]
+    out = bqb.apply_annotations(questions, {"field_overrides": {"3": {"topic": "Circuits"}}})
+    assert "difficulty" not in out[0]
+    assert out[0]["topic"] == "Circuits"
+
+
+# ---------------------------------------------------------------------------
 # Markdown export renders a matching question's two columns + answer key
 # instead of silently dropping it (Part 1.3 export audit)
 # ---------------------------------------------------------------------------

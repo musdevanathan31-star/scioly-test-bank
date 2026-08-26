@@ -137,6 +137,36 @@ Switching type is undo-able like any other destructive edit here — **↶ Undo*
 
 A True/False question behaves like MCQ everywhere else in the app: it auto-grades on a season assessment (no manual grading needed), shows up in Browse under its own **T/F** filter/badge, and exports to markdown/CSV/PDF/Anki like any other type — just with no lettered choices to print.
 
+### Rating a question's difficulty
+
+Every question card's Identity row (next to topic/focus) has a **Difficulty**
+picker: `(unrated) · Easy · Medium · Hard · Very Hard`. Pick a band to rate
+the question; pick `(unrated)` to clear the rating entirely — unrated is a
+distinct state, not "counts as Easy."
+
+Questions pulled in via **Pull practice questions from scio.ly** (below)
+often arrive **pre-rated** — scio.ly tracks its own difficulty for a chunk of
+its bank, and a scraped question that has one shows up already labeled (a
+scraped `0.4` shows as *Medium* without you touching it). PDF-extracted and
+hand-written questions have no equivalent source, so they start unrated —
+rate them yourself as you review.
+
+The bands aren't evenly-spaced quartiles: most real questions cluster on the
+easier end of the scale, so an even split would mislabel most of the bank
+"Easy." Roughly: **Easy** = clearly the easiest quarter, **Medium** = the
+broad middle, **Hard**/**Very Hard** = split the harder end in half. If
+you're unsure which band a question belongs in, err toward the middle
+(Medium/Hard) rather than the extremes.
+
+The rating shows up two places once set:
+- **Browse** — a **Difficulty** filter (Any/Easy/Medium/Hard/Very
+  Hard/Unrated) and two sort options (easiest first / hardest first,
+  unrated always sorts to the end regardless of direction — absence isn't a
+  low score).
+- **Prepare assessment** — a difficulty filter on the question pool, so you
+  can compose a test with a deliberate mix of easy and hard questions
+  instead of eyeballing it.
+
 ### Grouping questions around a shared diagram
 
 Not every group of related questions is a reading passage — a Circuit Lab resistor-network diagram with two sub-questions ("equivalent resistance with S1 closed, R1=1Ω/R2=10Ω" then "same but R1=10Ω/R2=1Ω") is a group just as much as a Disease Detectives outbreak case study, just with a figure instead of a paragraph as the shared material. The app calls this general mechanism a **context**, not a "case study" — case studies are one example of it, not the general name.
@@ -214,7 +244,7 @@ the same-looking pattern can mean different things in different tests.
 ### Browsing, searching, and bulk-editing the whole bank
 
 **Browse questions** (from any event's page) is the event-wide view: every question, across every PDF/source, on one filterable/sortable page.
-- Filter by topic, focus, source, bucket, validation status, question type (MCQ / FRQ / Matching / True-False), has-image; the search box is hotkeyed to `/`.
+- Filter by topic, focus, source, bucket, validation status, question type (MCQ / FRQ / Matching / True-False), has-image, difficulty (Easy/Medium/Hard/Very Hard/Unrated); the search box is hotkeyed to `/`. Sort by difficulty (easiest/hardest first) is available too — unrated questions always sort last, regardless of direction.
 - **Every card is directly editable** — topic, focus, stem, choices, and answer are live fields right on the card; edits autosave about 600ms after you stop typing, no Save button. **↺ Undo** reverts a card's last autosaved batch of edits.
 - **🤖 AI Validate** persists a Haiku verdict immediately; the **Validation** dropdown next to it lets you set or override the status yourself — whichever happens most recently wins, so you can always correct a wrong AI verdict (or a stale human one).
 - **✨ Generate similar** / **🤖 Generate diagram** are available per-card too, seeded from that specific question.
@@ -320,7 +350,7 @@ The Assessments dashboard's **⬇ Test** and **⬇ Key** buttons download the pa
 On the **Tests** dashboard, pick the season, then:
 1. Expand **+ New assessment window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create.
 2. For each event row, click the **Assign…** button to open a picker — it lists every coach plus every volunteer who has bank-edit access to that specific event, check off who should prepare it, and **Save**. Only people with bank access to that event (or any coach) are offered here.
-3. That coach or volunteer clicks **Prepare** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching/True-False default to 1 pt). Autosaves as you go.
+3. That coach or volunteer clicks **Prepare** on the row — opens the test builder: filter/search the validated question pool exactly like Browse, including the difficulty filter (Easy/Medium/Hard/Very Hard/Unrated) — this is where a difficulty rating earns its keep, letting you compose a test with a deliberate mix instead of eyeballing it. Check questions to add them to the **Kept** list (persists across re-filtering), or click **🎲 Select N at random** to pull random *validated-correct* questions, repeatable to top up the kept set. Set a max-points value on any FRQ row (MCQ/matching/True-False default to 1 pt). Autosaves as you go.
 4. When the kept set looks right, click **Publish** — this freezes (snapshots) the exact question content into the test, so later bank edits/deletions never change a test that's already been prepared.
 5. Back on the Assessments dashboard, the row now shows "published." Click **Go live** to make it visible to rostered students as upcoming/current (they still can't see questions until the window opens). Need to fix something after going live? **Un-publish** reverts it to "preparing" — only works before the window opens and before any student has saved an answer.
 

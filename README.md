@@ -214,7 +214,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `texts.py` | Scrapes the scioly.org wiki for an event into markdown; converts user-supplied source PDFs to markdown |
 | `doc_convert.py` | Normalizes `.docx`/`.doc` test/key files to PDF via headless LibreOffice (`soffice`) so the rest of the pipeline only ever deals with PDFs |
 | `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
-| `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape |
+| `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape, including scio.ly's own `difficulty` rating when present |
 | `review_app.py` | Flask review UI — single server, multi-event, with a Generate page (sources + LLM generation) per event |
 | `common_ui.py` | Shared CSS/JS (design tokens, modal/badge/toolbar components, `confirmModal()`, job-progress modal) — imported by both `review_app.py` and `admin_app.py` so the two Flask processes render an identical look without duplicating the stylesheet |
 | `jobs.py` | Background-job queue for long-running operations (reprocess, scio.ly scrape/download, LLM generation, wiki scrape) — see "Background jobs" below |
@@ -243,7 +243,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
    - Spatial image association → each circuit diagram is attached to the question it sits closest to on the page
    - (Optional) Haiku vision pass to OCR image-only PDFs and to refine image-to-question assignments when the heuristic is ambiguous
 
-3. **Browse** (`/event/<slug>/browse`) — an event-wide question explorer that aggregates every question across every bucket (PDF-extracted, LLM-generated, scio.ly-scraped) into one searchable, filterable view. Filter by topic, focus, source, **bucket**, validation status, question type (MCQ / FRQ / **Matching** / **True-False**), has-image; sort by Q#, topic, source, length, or validation. Filter state is persisted in the URL, so reload and back-button work and links are shareable. Search box is hotkeyed to `/`; image lightbox on click; sidebar shows live counts of topics/sources/validation.
+3. **Browse** (`/event/<slug>/browse`) — an event-wide question explorer that aggregates every question across every bucket (PDF-extracted, LLM-generated, scio.ly-scraped) into one searchable, filterable view. Filter by topic, focus, source, **bucket**, validation status, question type (MCQ / FRQ / **Matching** / **True-False**), has-image, **difficulty** (Easy/Medium/Hard/Very Hard/Unrated); sort by Q#, topic, source, length, validation, or difficulty (easiest/hardest first — unrated always sorts last, regardless of direction). Filter state is persisted in the URL, so reload and back-button work and links are shareable. Search box is hotkeyed to `/`; image lightbox on click; sidebar shows live counts of topics/sources/validation.
 
    **Every card is directly editable, no Edit click required** — Topic, Focus, Stem, Choices, and Answer are live fields right on the card (topic select keeps the deterministic colour-hash background so it's still recognisable at a glance). Changes autosave ~600ms after you stop typing (no Save button) and a small status line shows "Saving…" → "Saved HH:MM:SS". An **"↺ Undo"** button appears after each autosave and reverts that question's fields back to what they were just before your most recent batch of edits (single-level — a *new* edit replaces the undo point). Every card also shows **"Last edited by `<user>` · `<timestamp>`"**, stamped server-side from the logged-in session on every save (never client-supplied).
 
@@ -283,7 +283,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
    - **Two-layer dedup**:
      1. *Exact* — scio.ly's question UUIDs are tracked so re-scraping the same event never re-imports a question already in the scio.ly bucket.
      2. *Fuzzy* — every candidate's stem is compared (Jaccard on word-3-grams, threshold 0.4) against every question already in the bank, regardless of which bucket they came from (PDF-extracted, LLM-generated, prior scio.ly scrapes). Matches are auto-rejected and shown in a collapsible "rejected as duplicates" section with the matched bank question's text and source for visual verification.
-   - Accepted questions land in a synthetic PDF bucket `_scioly_<event>.pdf` with `source: "scio.ly · <tournament name>"` and their full validation verdict.
+   - Accepted questions land in a synthetic PDF bucket `_scioly_<event>.pdf` with `source: "scio.ly · <tournament name>"` and their full validation verdict. scio.ly tracks its own per-question difficulty (a 0.0-1.0 float, same scale the app's own **Difficulty** rating uses) — when a scraped question has one it arrives already rated, no extra step needed. PDF-extracted and hand-written questions have no equivalent source and start unrated.
    - Polite rate-limit: ~2 req/s, and you can only scrape one event at a time per session.
 
    ### Shared textbooks (generate from one chapter, reusable across every event)

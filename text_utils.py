@@ -80,6 +80,51 @@ def parse_answer_letters(answer, choices) -> set[str]:
     return {p.upper() for p in parts if p.upper() in valid_letters}
 
 
+# Difficulty band mapping. `difficulty` is stored as a float in 0.0-1.0
+# (scio.ly's own scale -- see spec.md for why a float rather than named
+# tiers), but the UI works with named bands. Thresholds are deliberately
+# skewed rather than even quartiles: scio.ly's observed distribution
+# clusters at 0.2-0.5, so an even split would label most real questions
+# "Easy". Mirrored exactly in common_ui.py's COMMON_JS (DIFFICULTY_BANDS /
+# difficultyBand() / difficultyValueForBand()) -- keep both in lockstep;
+# tests/test_difficulty_band_js.py checks they agree.
+#   Easy       value <= 0.3        represented as 0.3
+#   Medium     0.3  < value <= 0.5 represented as 0.5
+#   Hard       0.5  < value <= 0.7 represented as 0.7
+#   Very Hard  value >  0.7        represented as 0.9
+DIFFICULTY_BANDS = (
+    ("Easy", 0.3, 0.3),
+    ("Medium", 0.5, 0.5),
+    ("Hard", 0.7, 0.7),
+    ("Very Hard", None, 0.9),
+)
+
+
+def difficulty_band(value) -> str | None:
+    """Map a stored `difficulty` float onto its named band. `None` (or any
+    unparseable value) means unrated and returns `None` -- never "Easy".
+    Unrated is a distinct state, not a low value."""
+    if value is None or value == "":
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    for name, upper, _rep in DIFFICULTY_BANDS:
+        if upper is None or v <= upper:
+            return name
+    return "Very Hard"  # unreachable (last band's upper is None)
+
+
+def difficulty_value_for_band(band: str | None) -> float | None:
+    """Band name -> the representative float a picker writes. Unknown/None
+    band -> None (unrated)."""
+    for name, _upper, rep in DIFFICULTY_BANDS:
+        if name == band:
+            return rep
+    return None
+
+
 def strip_points(s: str) -> str:
     """Remove parenthetical point-value markers like '(2 points)' from text.
 

@@ -2347,7 +2347,10 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
       {
         "field_overrides": {qnum: {text?, choices?, answer?, topic?, page?,
                                     validation?, lastEditedBy?, lastEditedDateTime?,
-                                    qtype?, matching?}},
+                                    qtype?, matching?, difficulty?}},
+                                   # difficulty: float in 0.0-1.0, or null to clear
+                                   # back to unrated (pops the key rather than
+                                   # storing None -- see the loop below).
         "added":           [full question dicts],
         "deleted":         [qnum, ...],
         "image_overrides": {
@@ -2404,9 +2407,19 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
             for k in ("text", "choices", "answer", "topic", "focus", "page",
                       "extra_pages", "context_id", "image_descriptions",
                       "lastEditedBy", "lastEditedDateTime", "validation",
-                      "qtype", "matching"):
+                      "qtype", "matching", "difficulty"):
                 if k in ov:
-                    q[k] = ov[k]
+                    # "difficulty" is the one override field with a
+                    # meaningful "clear" state: unrated is the *absence*
+                    # of the key, not a value like 0. The extract-page
+                    # picker sends `null` to clear, so pop rather than
+                    # store a literal None (which would round-trip through
+                    # JSON as present-but-null and confuse anything that
+                    # checks `"difficulty" in q`).
+                    if k == "difficulty" and ov[k] is None:
+                        q.pop("difficulty", None)
+                    else:
+                        q[k] = ov[k]
 
     # 4. Image overrides
     img_ov = ann.get("image_overrides") or {}

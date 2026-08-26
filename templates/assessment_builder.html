@@ -45,6 +45,14 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
           <option value="matching">Matching</option>
           <option value="tf">True/False</option>
         </select>
+        <select id="f_difficulty">
+          <option value="">(any difficulty)</option>
+          <option value="Easy">Easy</option>
+          <option value="Medium">Medium</option>
+          <option value="Hard">Hard</option>
+          <option value="Very Hard">Very Hard</option>
+          <option value="unrated">Unrated</option>
+        </select>
         <label class="muted" style="font-size:12px"><input type="checkbox" id="f_correct_only" checked> validated correct only</label>
         <label class="muted" style="font-size:12px"
                title="Questions already kept or published on another assessment in this season. On by default so a question isn't unknowingly set twice to the same students in one year.">
@@ -134,6 +142,7 @@ function filteredPool(){
   const search = document.getElementById("f_search").value.trim().toLowerCase();
   const topic = document.getElementById("f_topic").value;
   const type = document.getElementById("f_type").value;
+  const difficulty = document.getElementById("f_difficulty").value;
   const correctOnly = document.getElementById("f_correct_only").checked;
   const keptKeys = new Set(KEPT.map(keptKey));
   const hideUsed = document.getElementById("f_hide_used").checked;
@@ -143,6 +152,10 @@ function filteredPool(){
     if(correctOnly && q._validation_status !== "correct") return false;
     if(topic && q.topic !== topic) return false;
     if(type && questionTypeOf(q) !== type) return false;
+    if(difficulty){
+      const band = difficultyBand(q.difficulty);
+      if(difficulty === "unrated" ? band !== null : band !== difficulty) return false;
+    }
     if(search && !(q.text||"").toLowerCase().includes(search)) return false;
     return true;
   });
@@ -245,7 +258,7 @@ async function flushSave(){
   }
 }
 
-["f_search","f_topic","f_type","f_correct_only","f_hide_used"].forEach(id => {
+["f_search","f_topic","f_type","f_difficulty","f_correct_only","f_hide_used"].forEach(id => {
   document.getElementById(id).addEventListener("input", renderPool);
   document.getElementById(id).addEventListener("change", renderPool);
 });

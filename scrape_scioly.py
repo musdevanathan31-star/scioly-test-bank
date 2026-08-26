@@ -139,7 +139,7 @@ def _normalize(raw: dict, source_prefix: str = "scio.ly",
     division   = (raw.get("division") or "").strip()
     source     = f"{source_prefix} · {tournament}" if tournament else source_prefix
 
-    return {
+    q = {
         "number":      raw.get("base52") or (raw.get("id") or "")[:8],
         "topic":       topic,
         "focus":       focus,
@@ -151,10 +151,25 @@ def _normalize(raw: dict, source_prefix: str = "scio.ly",
         "year":        "",
         "division":    division,
         "page":        1,
-        # provenance fields — used by the dedup check on re-scrape
+        # provenance field — used by the dedup check on re-scrape
         "_scioly_id":         raw.get("id"),
-        "_scioly_difficulty": raw.get("difficulty"),
     }
+    # scio.ly's own "difficulty" is already a 0.0-1.0 float, one decimal
+    # place, the same scale review_app's difficulty band picker uses --
+    # promote it straight onto the real `difficulty` field with no
+    # conversion (lossless round-trip). No dedicated "_scioly_difficulty"
+    # provenance field: it would just duplicate this value under a
+    # different name for no benefit, since it needs no reconciliation
+    # against a differently-scaled local value the way `_scioly_id` does
+    # against dedup. Additive only -- a raw record with no difficulty
+    # leaves the key absent (unrated), not set to None.
+    raw_difficulty = raw.get("difficulty")
+    if raw_difficulty is not None:
+        try:
+            q["difficulty"] = float(raw_difficulty)
+        except (TypeError, ValueError):
+            pass
+    return q
 
 
 def scrape_questions(

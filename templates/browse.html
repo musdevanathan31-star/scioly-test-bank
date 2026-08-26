@@ -232,6 +232,17 @@ header{background:#fff;border-bottom:1px solid var(--line)}
       </select>
     </section>
     <section>
+      <h3>Difficulty</h3>
+      <select id="f_difficulty">
+        <option value="">Any</option>
+        <option value="Easy">Easy</option>
+        <option value="Medium">Medium</option>
+        <option value="Hard">Hard</option>
+        <option value="Very Hard">Very Hard</option>
+        <option value="unrated">Unrated</option>
+      </select>
+    </section>
+    <section>
       <h3>Misc</h3>
       <select id="f_image">
         <option value="">Any (image or not)</option>
@@ -267,6 +278,8 @@ header{background:#fff;border-bottom:1px solid var(--line)}
           <option value="length-desc">Length (longest first)</option>
           <option value="length-asc">Length (shortest first)</option>
           <option value="edited">Recently edited first</option>
+          <option value="difficulty-asc">Difficulty (easiest first)</option>
+          <option value="difficulty-desc">Difficulty (hardest first)</option>
         </select>
       </div>
     </div>
@@ -378,6 +391,7 @@ async function load(){
   setVal("f_validation", p.get("validation") || "");
   setVal("f_type", p.get("type") || "");
   setVal("f_image", p.get("image") || "");
+  setVal("f_difficulty", p.get("difficulty") || "");
   setVal("f_sort", p.get("sort") || "bucket-num");
   // Topic distribution mini-chart
   const tc = document.getElementById("topic_chart");
@@ -424,6 +438,7 @@ function rerender(){
   const fv = document.getElementById("f_validation").value;
   const fy = document.getElementById("f_type").value;
   const fi = document.getElementById("f_image").value;
+  const fd = document.getElementById("f_difficulty").value;
 
   // Persist filter state in the URL so reload + back-button works and
   // links are shareable.
@@ -431,7 +446,7 @@ function rerender(){
   const setP = (k,v) => { if(v) params.set(k,v); };
   setP("search", sv); setP("topic", ft); setP("focus", ff);
   setP("source", fs); setP("bucket", fb); setP("validation", fv);
-  setP("type", fy); setP("image", fi);
+  setP("type", fy); setP("image", fi); setP("difficulty", fd);
   const sortBy = document.getElementById("f_sort").value;
   if(sortBy !== "bucket-num") params.set("sort", sortBy);
   const newUrl = location.pathname + (params.toString() ? "?" + params : "");
@@ -452,6 +467,10 @@ function rerender(){
     if(fy === "tf" && !q._is_tf) return false;
     if(fi === "yes" && !q._has_image) return false;
     if(fi === "no"  &&  q._has_image) return false;
+    if(fd){
+      const band = difficultyBand(q.difficulty);
+      if(fd === "unrated" ? band !== null : band !== fd) return false;
+    }
     if(recent){
       if(!q._edited_at) return false;
       const ts = Date.parse(q._edited_at);
@@ -479,6 +498,22 @@ function rerender(){
     "length-asc":   (a,b) => (a.text||"").length - (b.text||"").length,
     "bucket-num":   (a,b) => (a._bucket||"").localeCompare(b._bucket||"") || numKey(a)-numKey(b),
     "edited":       (a,b) => (Date.parse(b._edited_at)||0) - (Date.parse(a._edited_at)||0),
+    // Unrated always sorts last regardless of direction -- absence isn't a
+    // low value, so it shouldn't win "easiest first" either.
+    "difficulty-asc":  (a,b) => {
+      const av = a.difficulty, bv = b.difficulty;
+      if(av == null && bv == null) return 0;
+      if(av == null) return 1;
+      if(bv == null) return -1;
+      return av - bv;
+    },
+    "difficulty-desc": (a,b) => {
+      const av = a.difficulty, bv = b.difficulty;
+      if(av == null && bv == null) return 0;
+      if(av == null) return 1;
+      if(bv == null) return -1;
+      return bv - av;
+    },
   };
   FILTERED.sort(sorters[sortBy] || sorters["bucket-num"]);
 
@@ -491,6 +526,7 @@ function rerender(){
   if(fv) activeFilters.push(`status: ${esc(fv)}`);
   if(fy) activeFilters.push(`type: ${esc(fy.toUpperCase())}`);
   if(fi) activeFilters.push(`image: ${esc(fi)}`);
+  if(fd) activeFilters.push(`difficulty: ${esc(fd)}`);
   const sumEl = document.getElementById("summary");
   sumEl.innerHTML = `Showing <b>${FILTERED.length}</b> of <b>${DATA.stats.total}</b> question(s)`
     + (activeFilters.length
@@ -1513,7 +1549,7 @@ function downloadBlob(content, mime, filename){
 }
 
 // Wire all filter controls
-["f_search","f_topic","f_focus","f_source","f_bucket","f_validation","f_type","f_image","f_sort","f_recent"]
+["f_search","f_topic","f_focus","f_source","f_bucket","f_validation","f_type","f_image","f_difficulty","f_sort","f_recent"]
   .forEach(id => {
     const el = document.getElementById(id);
     if(!el) return;
@@ -1521,7 +1557,7 @@ function downloadBlob(content, mime, filename){
   });
 
 document.getElementById("clear_all").addEventListener("click", () => {
-  ["f_search","f_topic","f_focus","f_source","f_bucket","f_validation","f_type","f_image"]
+  ["f_search","f_topic","f_focus","f_source","f_bucket","f_validation","f_type","f_image","f_difficulty"]
     .forEach(id => { const el = document.getElementById(id); if(el) el.value = ""; });
   rerender();
 });
@@ -1540,7 +1576,7 @@ document.addEventListener("click", e => {
   if(e.target.dataset.clearFilter !== undefined){
     const txt = e.target.textContent;
     const map = {search:"f_search", topic:"f_topic", focus:"f_focus", source:"f_source",
-                 status:"f_validation", type:"f_type", image:"f_image"};
+                 status:"f_validation", type:"f_type", image:"f_image", difficulty:"f_difficulty"};
     const key = (txt.split(":")[0] || "").trim();
     const id = map[key];
     if(id){ const el = document.getElementById(id); if(el){ el.value = ""; rerender(); } }

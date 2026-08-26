@@ -90,6 +90,7 @@
 .q-card .q-num{flex:0 0 70px}
 .q-card .topic{flex:1 1 160px;min-width:0}
 .q-card .focus{flex:0 1 130px;min-width:0;background:#f0f7ff}
+.q-card .difficulty{flex:0 1 120px;min-width:0;background:var(--bg-alt)}
 .q-card .lbl{flex:0 0 60px;font-weight:600;color:#555;font-size:12px}
 .q-card .images{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .q-card .imgbox{position:relative}
@@ -802,7 +803,7 @@ let extraFoci   = [];         // user-added foci, persisted via questions
 
 // User annotations — persisted to .qbank_state.json so reprocessing replays them.
 let ANN = {
-  field_overrides: {},        // qnum -> { text?, choices?, answer?, topic?, page?, context_id? }
+  field_overrides: {},        // qnum -> { text?, choices?, answer?, topic?, page?, context_id?, difficulty? }
   added: [],                  // user-added questions (full dicts)
   deleted: [],                // qnums removed
   image_overrides: { assignments: {}, detached: [] },
@@ -2197,6 +2198,16 @@ function cardHTML(q){
       .concat([`<option value="__NEW_FOCUS__">+ New focus...</option>`]);
     focusSelect = `<select class="focus" data-edit="focus" title="Focus">${fopts.join("")}</select>`;
   }
+  // Difficulty band picker — shows the band for the stored float (a scraped
+  // scio.ly value like 0.4 displays as "Medium" without the user touching
+  // it). Picking a band writes its representative float via annOverride;
+  // picking "(unrated)" clears the field entirely, not to 0 -- unrated is
+  // absence, not a low value.
+  const curBand = difficultyBand(q.difficulty);
+  const difficultyOpts = ["", "Easy", "Medium", "Hard", "Very Hard"].map(b =>
+    `<option value="${esc(b)}" ${b === (curBand || "") ? "selected" : ""}>${b ? esc(b) : "(unrated)"}</option>`
+  ).join("");
+  const difficultySelect = `<select class="difficulty" data-edit="difficulty" title="Difficulty">${difficultyOpts}</select>`;
   // Question-type segmented control (P-01) — always visible, first thing
   // in the Content zone. questionType() infers mcq/frq for the (common)
   // case of no explicit qtype, so existing questions show the right
@@ -2316,6 +2327,7 @@ function cardHTML(q){
       <input type="text" class="q-num" data-edit="number" value="${esc(q.number)}" placeholder="#">
       <select class="topic" data-edit="topic">${topicOpts}</select>
       ${focusSelect}
+      ${difficultySelect}
       ${multiPageBadge}
       ${spanPrevBtn}
       ${spanNextBtn}
@@ -2582,6 +2594,19 @@ function bindCardEvents(){
           }
           annOverride(q.number, "context_id", el.value || "");
           renderCards();
+        } else if(key === "difficulty"){
+          // Empty selection = unrated: delete the key rather than storing
+          // 0/None, and send annOverride(...,"difficulty",null) so
+          // apply_annotations() pops the key on reprocess too (see its
+          // "difficulty" special-case).
+          const band = el.value;
+          if(band){
+            q.difficulty = difficultyValueForBand(band);
+            annOverride(q.number, "difficulty", q.difficulty);
+          } else {
+            delete q.difficulty;
+            annOverride(q.number, "difficulty", null);
+          }
         } else {
           q[key] = el.value;
           annOverride(q.number, key, el.value);

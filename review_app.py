@@ -2635,6 +2635,14 @@ def api_save(event_slug, pdfname):
             clean_q["qtype"] = qtype
         if qtype == "matching" and q.get("matching") is not None:
             clean_q["matching"] = q.get("matching")
+        # difficulty: additive, optional. Absent/None means unrated -- don't
+        # set the key at all (matches apply_annotations' "clear pops the
+        # key" semantics rather than storing a literal None).
+        if q.get("difficulty") is not None:
+            try:
+                clean_q["difficulty"] = float(q.get("difficulty"))
+            except (TypeError, ValueError):
+                pass
         # Optional multi-page span list
         extra = q.get("extra_pages")
         if extra:
@@ -6101,6 +6109,15 @@ def api_scioly_accept(event_slug):
                 "page":     1,
                 "_scioly_id": cand.get("_scioly_id"),
             }
+            # Additive: only set when the scraped candidate actually carries
+            # one (a re-scrape from before this field existed, or a
+            # candidate the LLM/manual path added, has none -- stays unrated).
+            cand_difficulty = cand.get("difficulty")
+            if cand_difficulty is not None:
+                try:
+                    q["difficulty"] = float(cand_difficulty)
+                except (TypeError, ValueError):
+                    pass
             v = cand.get("validation")
             if v:
                 q["validation"] = v

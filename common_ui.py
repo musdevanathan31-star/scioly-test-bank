@@ -232,6 +232,36 @@ a{color:var(--accent);text-decoration:none}
 #  - confirmModal(msg, opts?) — Promise-based replacement for window.confirm()
 #  - hardDelete(kind, ident, label) — preview-then-confirm permanent delete
 COMMON_JS = r"""
+// ---- difficulty band mapping -------------------------------------------
+// Mirrors text_utils.difficulty_band()/text_utils.difficulty_value_for_band()
+// exactly (same thresholds, same order) -- see tests/test_difficulty_band_js.py
+// for the Python/JS parity check. Keep both copies in lockstep; this is the
+// only place the band thresholds live on the JS side.
+//   Easy       value <= 0.3        represented as 0.3
+//   Medium     0.3  < value <= 0.5 represented as 0.5
+//   Hard       0.5  < value <= 0.7 represented as 0.7
+//   Very Hard  value >  0.7        represented as 0.9
+// A missing/unparseable value returns null ("unrated") -- never "Easy".
+const DIFFICULTY_BANDS = [
+  ["Easy",      0.3, 0.3],
+  ["Medium",    0.5, 0.5],
+  ["Hard",      0.7, 0.7],
+  ["Very Hard", null, 0.9],
+];
+function difficultyBand(value){
+  if(value === null || value === undefined || value === "") return null;
+  const v = Number(value);
+  if(Number.isNaN(v)) return null;
+  for(const [name, upper] of DIFFICULTY_BANDS){
+    if(upper === null || v <= upper) return name;
+  }
+  return "Very Hard";
+}
+function difficultyValueForBand(band){
+  const found = DIFFICULTY_BANDS.find(([name]) => name === band);
+  return found ? found[2] : null;
+}
+
 // ---- toast / history ---------------------------------------------------
 (function(){
   if(document.getElementById("toast-host")) return;
