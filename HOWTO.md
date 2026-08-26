@@ -73,7 +73,7 @@ This is a manual "Refresh" page, not a background watcher — revisit it after d
 
 ### Reviewing a PDF page-by-page
 
-Click a PDF's name from the event page (or **Review by PDF**) to open the review page — the PDF on one side, extracted question cards on the other. The question pane opens with every question collapsed to a one-line row **except the one in focus**, which expands into the full card described below — see "The question list: collapsed rows and one expanded card" for what each row shows.
+Click a PDF's name from the event page (or **Review by PDF**) to open the review page — the PDF on one side, extracted question cards on the other. To get back, click the **event name** at the left of the review page's title (e.g. the "Circuit Lab" in "Circuit Lab · circuitlab_2020_….pdf") — it links to that event's list of test PDFs. The question pane opens with every question collapsed to a one-line row **except the one in focus**, which expands into the full card described below — see "The question list: collapsed rows and one expanded card" for what each row shows.
 
 **Where the controls live.** The top toolbar keeps only what you reach for constantly — **Go to Q**, plus two menus and an overflow:
 - **+ Add ▾** — the four ways to add a question: **+ Add question from region**, **+ Add matching question**, **+ Add context from region**, **+ Add blank**.
