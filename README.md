@@ -411,6 +411,8 @@ The review page's **Reprocess ▾** menu offers three modes:
 
 (Manual mode itself is instant — it just empties the question list — but the other two re-run extraction, which is where the background-job system below kicks in.)
 
+A PDF extracted before the image-association fix (a resource-dictionary xref reported by `page.get_images()` on every page but only actually drawn on some of them) may have duplicate image files attached to the wrong question — **Reprocess** it once to clear that up; a fresh extraction saves each image only on the page it's genuinely drawn on.
+
 ## Background jobs
 
 The server this app runs on is intentionally underpowered, and several operations — PDF extraction with vision OCR, scio.ly scraping/downloading, LLM question generation, wiki scraping — can take anywhere from seconds to several minutes. Those run as **background jobs** (`jobs.py`) instead of blocking your browser:

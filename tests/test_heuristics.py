@@ -570,3 +570,123 @@ def test_render_matching_block_empty_shell_is_noop():
     lines: list[str] = []
     bqb._render_matching_block(lines, {"left": [], "right": [], "pairs": {}})
     assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# extract_questions() — the answer-key latch requires real corroboration,
+# not just a KEY_INDICATORS phrase appearing anywhere on the page (see the
+# fix comment in extract_questions() for the full rationale).
+# ---------------------------------------------------------------------------
+
+def test_extract_questions_instructions_mentioning_answer_sheet_do_not_latch():
+    # "answer sheet" is test-instruction language ("record your answers on
+    # the answer sheet provided"), not evidence of an actual key page. It is
+    # no longer even in KEY_INDICATORS, so this must never end extraction.
+    pages = [
+        "Please record your answers on the answer sheet provided.\n"
+        "1. This is a real question with plenty of substantive text here.",
+        "2. A second real question that also has enough substantive text.",
+    ]
+    qs = bqb.extract_questions(pages, source="src", year="2027", division="B")
+    assert [q["number"] for q in qs] == ["1", "2"]
+
+
+def test_extract_questions_key_phrase_without_structural_evidence_does_not_latch():
+    # A KEY_INDICATORS phrase ("solutions") shows up mid-document inside a
+    # sentence, but the page it's on doesn't structurally look like a key
+    # (no run of short "N. <answer>" lines) — must not latch.
+    pages = [
+        "1. A real question with plenty of substantive text right here.",
+        "The solutions to some of these derivations are shown above in "
+        "the appendix for reference.\n"
+        "2. Another real question with plenty of substantive text here.",
+        "3. A third real question with plenty of substantive text here too.",
+    ]
+    qs = bqb.extract_questions(pages, source="src", year="2027", division="B")
+    assert [q["number"] for q in qs] == ["1", "2", "3"]
+
+
+def test_extract_questions_genuine_key_page_mid_document_still_latches():
+    # A genuine key page (KEY_INDICATORS phrase + several short numbered
+    # lines) appearing after page 1 must still end extraction.
+    pages = [
+        "1. A real question with plenty of substantive text right here.",
+        "Answer Key\n1. B\n2. C\n3. A\n4. D\n5. B",
+        "6. This question lives after the key page and must be dropped.",
+    ]
+    qs = bqb.extract_questions(pages, source="src", year="2027", division="B")
+    assert [q["number"] for q in qs] == ["1"]
+
+
+def test_extract_questions_latch_never_fires_on_page_one():
+    # Page 1 looks exactly like a key page (KEY_INDICATORS phrase + several
+    # short numbered lines) — an answer key never opens a test PDF, so this
+    # must not latch, and real content on later pages must still come out.
+    pages = [
+        "Answer Key\n1. B\n2. C\n3. A\n4. D\n5. B",
+        "10. A real question living on page two with substantive text here.",
+    ]
+    qs = bqb.extract_questions(pages, source="src", year="2027", division="B")
+    assert [q["number"] for q in qs] == ["10"]
+
+
+# ---------------------------------------------------------------------------
+# associate_images() — a resource-dictionary xref that get_images() reports
+# on a page but that was never actually drawn there (get_image_rects()
+# returns []) must not be saved for that page.
+# ---------------------------------------------------------------------------
+
+class _FakeRect:
+    def __init__(self, y0: float) -> None:
+        self.y0 = y0
+
+
+class _FakePage:
+    """Minimal stand-in for fitz.Page covering only what associate_images()
+    touches when there are no text blocks and use_vision=False."""
+
+    def __init__(self, rects: list) -> None:
+        self._rects = rects
+
+    def get_images(self, full: bool = True):
+        return [(4242, 0, 0, 0, 0, 0, 0, 0, 0, 0)]
+
+    def get_image_rects(self, xref: int):
+        return self._rects
+
+    def get_text(self, kind: str):
+        return []
+
+
+def test_associate_images_skips_xref_not_actually_drawn_on_page():
+    calls: list[int] = []
+
+    def fake_save_image(doc, xref, src_slug, pno, idx):
+        calls.append(xref)
+        return f"img_{xref}.png"
+
+    orig = bqb._save_image
+    bqb._save_image = fake_save_image
+    try:
+        page = _FakePage(rects=[])   # declared but never drawn on this page
+        bqb.associate_images([page], [], "src", False, {})
+    finally:
+        bqb._save_image = orig
+    assert calls == []
+
+
+def test_associate_images_saves_xref_actually_drawn_on_page():
+    calls: list[int] = []
+
+    def fake_save_image(doc, xref, src_slug, pno, idx):
+        calls.append(xref)
+        return f"img_{xref}.png"
+
+    orig = bqb._save_image
+    bqb._save_image = fake_save_image
+    try:
+        page = _FakePage(rects=[_FakeRect(y0=10.0)])   # actually drawn here
+        bqb.associate_images([page], [], "src", False, {})
+    finally:
+        bqb._save_image = orig
+    assert calls == [4242]

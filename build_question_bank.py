@@ -329,9 +329,14 @@ _INLINE_Q_START = re.compile(
 # Answer-key lines: "1. B", "1) 42 Ω"
 ANS_LINE = re.compile(r"^(\d{1,3})[\.\)]\s*(.+)$")
 
+# "answer sheet" and "point value" were dropped: both are phrases that
+# appear routinely in a *test's own instructions* ("record your answers on
+# the answer sheet", "each question's point value is shown") rather than
+# being evidence that the current page IS an answer key. Keeping them here
+# caused the one-way latch below to fire on page 1 of several real tests,
+# discarding the whole document.
 KEY_INDICATORS = frozenset([
-    "answer key", "answer sheet", "solutions", "key:", "answers:",
-    "point value",
+    "answer key", "solutions", "key:", "answers:",
 ])
 
 NOISE_PREFIXES = ("©", "science olympiad", "page ", "name:", "team:", "school:")
@@ -802,18 +807,30 @@ def _is_cover_page(text: str) -> bool:
     return short_page or form_like
 
 
-def _is_key_page(text: str) -> bool:
-    """True if the block of text looks like an answer key page."""
-    t = text.lower()
-    if any(ind in t for ind in KEY_INDICATORS):
-        return True
-    # Key pages have many SHORT numbered lines; question pages have long ones.
+def _is_key_page_structural(text: str) -> bool:
+    """Structural signal that a page reads like an answer key, independent
+    of any KEY_INDICATORS phrase match: many SHORT numbered lines
+    ("1. B", "2. 42 Ω"), where genuine question pages instead have long,
+    substantive text after each numbered line.
+
+    Split out of _is_key_page() so callers that need corroboration
+    *independent* of a KEY_INDICATORS phrase (see the one-way latch in
+    extract_questions()) have something to check that isn't automatically
+    satisfied by the same phrase that triggered them in the first place."""
     # Only count lines where the answer portion is brief (< 60 chars).
     short_ans = sum(
         1 for ln in text.split("\n")
         if (m := ANS_LINE.match(ln.strip())) and len(m.group(2).strip()) < 60
     )
     return short_ans >= 5
+
+
+def _is_key_page(text: str) -> bool:
+    """True if the block of text looks like an answer key page."""
+    t = text.lower()
+    if any(ind in t for ind in KEY_INDICATORS):
+        return True
+    return _is_key_page_structural(text)
 
 
 def _section_suffix(n: int) -> str:
@@ -892,7 +909,7 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
         cur_num = None
         cur_lines.clear()
 
-    for page_text in pages:
+    for pno, page_text in enumerate(pages, 1):
         if in_key:
             break
         if not page_text.strip():
@@ -906,9 +923,29 @@ def extract_questions(pages: list[str], source: str, year: str, division: str) -
                 continue
             low = line.lower()
             if any(ind in low for ind in KEY_INDICATORS):
-                flush()
-                in_key = True
-                break
+                # A single sentence containing a key phrase is not enough
+                # evidence to discard the rest of the document — that
+                # phrase routinely shows up in a test's own instructions
+                # ("solutions are given with proper sig figs"). Require
+                # two more things before latching:
+                #   1. Not page 1 — an answer key never opens a test PDF,
+                #      so a page-1 hit is always an instructions sentence.
+                #   2. The page as a whole is structurally key-shaped
+                #      (many short "N. <answer>" lines). We deliberately
+                #      check _is_key_page_structural(), NOT _is_key_page():
+                #      _is_key_page() itself starts by checking
+                #      KEY_INDICATORS, and the same phrase that just
+                #      matched `line` is by construction present in
+                #      page_text too — so _is_key_page(page_text) would
+                #      trivially re-match and always return True, giving
+                #      no real corroboration at all.
+                if pno > 1 and _is_key_page_structural(page_text):
+                    flush()
+                    in_key = True
+                    break
+                # Otherwise: keep going. Fall through so this line is
+                # still processed normally (e.g. absorbed as body text of
+                # the question currently being accumulated).
             if _is_noise(line):
                 continue
             # Some PDFs (notably 2-column layouts) collapse multiple questions
@@ -1948,6 +1985,20 @@ def associate_images(doc: fitz.Document, questions: list[dict],
             if xref in seen:
                 continue
             seen.add(xref)
+            # Some PDFs declare images in a resource dictionary inherited by
+            # every page, so get_images() reports xrefs that were never
+            # actually drawn on this particular page. get_image_rects()
+            # reflects real placement, so skip anything not actually drawn
+            # here — otherwise the same image gets saved once per page it's
+            # merely *declared* on, producing dozens of duplicate files and
+            # (via the y0=inf fallback below) misattaching them all to the
+            # last question on the page.
+            try:
+                rects = page.get_image_rects(xref)
+            except Exception:
+                rects = []
+            if not rects:
+                continue
             fname = _save_image(doc, xref, src_slug, pno, idx)
             if fname:
                 page_imgs.append((xref, idx, fname))
@@ -1971,6 +2022,11 @@ def associate_images(doc: fitz.Document, questions: list[dict],
                     if ln:
                         items.append({"kind": "text", "y": block[1], "text": ln})
 
+        # Every xref in page_imgs already passed the get_image_rects() guard
+        # above (non-empty rects on this page), so the float("inf") fallback
+        # here only guards against get_image_rects() raising on the second
+        # call (e.g. a transient PyMuPDF error) — kept for defensiveness,
+        # but it is no longer reachable via "declared but not drawn" images.
         img_y: list[tuple[float, int, str]] = []   # (y0, list_idx, fname)
         for list_idx, (xref, _, fname) in enumerate(page_imgs):
             try:
