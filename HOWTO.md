@@ -185,6 +185,32 @@ have this exact shape (2+ choices, sharing a figure) turn out to be genuine
 multiple-choice questions with long declarative choices, so only a human
 reviewing the actual text should decide to split one.
 
+### Removing leftover point-value markers ("🧹 Remove point markers…")
+
+Source PDFs often leave a point-value marker sitting in the extracted text —
+`(2 points)`, `[1]`, a trailing `(6)` — that isn't part of the question
+itself. On the extract page's **Tools ▾** menu, **Remove point markers…**
+opens a find-and-replace-style tool for cleaning these up, scoped to **only
+the PDF currently open** — there's no "all PDFs" option, on purpose, since
+the same-looking pattern can mean different things in different tests.
+
+1. Pick a pattern: **worded point values** (`(2 points)`, `[3 pts]`,
+   fractions like `½ point`), **bare bracketed number** (`[1]`), **trailing
+   bare parenthesised number** (`(6)` — only when it's the very last thing in
+   a field), or a **custom regex** of your own.
+2. Click **Find matches**. The tool scans every question's stem and every
+   choice's text on this PDF and lists what it found.
+3. Review the preview — each row shows the question number, which field
+   matched, and a before/after of the text. Untick anything you don't want
+   touched (the bare forms are genuinely ambiguous: `[1]` can be a citation
+   or a labelled circuit node, and a trailing `(6)` can be part of a formula
+   or an answer value, so nothing is removed automatically).
+4. Click **Remove selected**. Only the ticked matches are stripped, extra
+   spaces left behind are collapsed, and the edits are saved the same way
+   any other manual edit is — they survive Save and Reprocess.
+5. One **↶ Undo** (or Ctrl+Z) reverts the whole batch, not just the last
+   question.
+
 ### Browsing, searching, and bulk-editing the whole bank
 
 **Browse questions** (from any event's page) is the event-wide view: every question, across every PDF/source, on one filterable/sortable page.

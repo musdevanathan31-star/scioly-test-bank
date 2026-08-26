@@ -539,6 +539,11 @@ details.q-zone .zone-body{padding:2px 10px 10px}
           🔗 Group questions on this page
           <span class="menu-desc">Selects every question on this page so you can bulk-assign them to a shared context. (Or tick individual rows yourself — the checkbox on every row works too.)</span>
         </button>
+        <div class="menu-div"></div>
+        <button id="removePointMarkers" title="Find leftover point-value markers like '(2 points)' or '[1]' across every question in this PDF, preview the changes, and remove only the ones you approve.">
+          🧹 Remove point markers…
+          <span class="menu-desc">Find leftover point-value markers ('(2 points)', '[1]', trailing '(6)') across this PDF's questions, preview what would change, and remove only what you approve. Scoped to this PDF only.</span>
+        </button>
       </div>
     </div>
   </div>
@@ -574,6 +579,56 @@ details.q-zone .zone-body{padding:2px 10px 10px}
       <button onclick="closeCmp()" title="Close the side-by-side compare modal">✕ Close</button>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" id="cmpGrid"></div>
+  </div>
+</div>
+
+<!-- Remove point markers (Tools ▾): find/preview/apply, same modal idiom as
+     snapshotsModal above. Scoped to STATE.questions -- the questions of the
+     PDF this extract page already has open -- with no control anywhere in
+     here to widen that to "all PDFs in this event"; that's deliberate, see
+     findPointsMatchesInQuestion / applyPointsRemoval below. -->
+<div id="pointsModal" class="modal-backdrop">
+  <div class="modal-box" style="width:720px;max-height:85vh;display:flex;flex-direction:column">
+    <div class="hdr">
+      <h3>Remove point markers <span class="muted" style="font-weight:400">· {{ pdf_name }}</span></h3>
+      <button onclick="closePointsModal()" title="Close (changes already applied are kept)">✕ Close</button>
+    </div>
+    <p class="muted" style="font-size:12px;margin:0 0 8px 0">
+      Scans this PDF's questions only — stem and every choice — for leftover point-value markers left over from the source paper.
+      Find first, review what would change, untick anything you want to keep, then apply. One undo (Ctrl+Z) reverts the whole batch.
+    </p>
+    <div id="pointsPresetRow" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="radio" name="pointsPreset" value="worded" checked>
+        Worded point values — <code>(2 points)</code>, <code>[3 pts]</code>, fractions like <code>½ point</code>
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="radio" name="pointsPreset" value="bare_bracket">
+        Bare bracketed number — <code>[1]</code>, <code>[10]</code>, <code>[2.5]</code>
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="radio" name="pointsPreset" value="bare_paren_trailing">
+        Trailing bare parenthesised number — <code>(6)</code> at the very end of a field only
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="radio" name="pointsPreset" value="custom">
+        Custom regex
+        <input type="text" id="pointsCustomRegex" placeholder="e.g. \[\s*\d+\s*\]" disabled
+               style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font:inherit;font-size:12px;font-family:ui-monospace,monospace">
+      </label>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <button class="primary btn-tiny" id="pointsFindBtn" onclick="findPointMarkers()">🔎 Find matches</button>
+      <span class="muted" id="pointsCustomErr" style="font-size:12px;color:var(--bad);display:none"></span>
+    </div>
+    <div id="pointsResultsWrap" style="flex:1;overflow-y:auto;min-height:0">
+      <p class="muted" id="pointsEmptyState" style="font-size:13px">Choose a pattern and click "Find matches" to preview.</p>
+      <div id="pointsResultsList"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--line-soft)">
+      <span class="muted" id="pointsSummary" style="font-size:12px"></span>
+      <button class="primary" id="pointsApplyBtn" onclick="applyPointsRemoval()" disabled>Remove selected</button>
+    </div>
   </div>
 </div>
 
@@ -705,6 +760,11 @@ details.q-zone .zone-body{padding:2px 10px 10px}
 <script>
 const PDF = "{{ pdf_name }}";
 const EVENT_SLUG = "{{ event_slug }}";
+// Regex *source text* for text_utils._POINTS_RE, rendered from the server so
+// the "Remove point markers" tool's worded-form preset (Tools ▾) can build the
+// exact same pattern client-side instead of a hand-copied duplicate that
+// could silently drift from the Python source of truth. See findPointsMatchesInQuestion.
+const POINTS_RE_SOURCE = {{ points_re_source|tojson }};
 const API = `${APP_ROOT}/event/${EVENT_SLUG}/api`;
 const IMG_BASE = `${APP_ROOT}/event/${EVENT_SLUG}/images`;
 let STATE = { questions: [], page_count: 1, topics: [], vision_available: false, has_key: false };
@@ -906,6 +966,73 @@ function nextGroupQuestionNumbers(baseNumber, count, existingNumbers){
     code++;
     if(!existing.has(candidate)) out.push(candidate);
   }
+  return out;
+}
+
+// ---- "Remove point markers" tool (Tools ▾) — pure, testable pieces ------
+// Bulk find/preview/remove for leftover point-value markers ("(2 points)",
+// "[1]", trailing "(6)") across every question of the PDF currently open on
+// this page. Three built-in presets plus a user-supplied custom regex.
+//
+// The worded-form preset's pattern text is passed in by the caller
+// (POINTS_RE_SOURCE, a global rendered from text_utils._POINTS_RE.pattern —
+// see the <script> preamble) rather than retyped here, so this can never
+// drift from what text_utils.strip_points() does server-side. The other two
+// presets have no equivalent in text_utils at all: the bare forms ("[1]",
+// trailing "(6)") are genuinely ambiguous — a bracket can be a citation or a
+// labelled node, a trailing "(6)" can be part of a formula or answer — so
+// they only ever exist behind this preview-first UI, never auto-applied.
+function pointsPresetRegex(presetId, wordedSource, customSource){
+  let source, flags;
+  if(presetId === "worded"){
+    source = wordedSource; flags = "gi";
+  } else if(presetId === "bare_bracket"){
+    // "[1]", "[10]", "[2.5]" -- not "[abc]" (a citation-style bracket).
+    source = "\\[\\s*\\d+(?:\\.\\d+)?\\s*\\]"; flags = "gi";
+  } else if(presetId === "bare_paren_trailing"){
+    // Anchored to the end of the field only -- an unanchored "(6)" would eat
+    // parts of a formula or answer value sitting mid-string.
+    source = "\\s*\\(\\s*\\d+(?:\\.\\d+)?\\s*\\)\\s*$"; flags = "i";
+  } else if(presetId === "custom"){
+    source = customSource || ""; flags = "gi";
+  } else {
+    return null;
+  }
+  try {
+    return new RegExp(source, flags);
+  } catch(e){
+    return null; // invalid custom regex -- caller shows a message, never throws
+  }
+}
+
+// Collapses the double-(or-more)-space a removed marker leaves behind, then
+// trims. Deliberately narrower than text_utils's own "\s+" collapse -- this
+// only tidies horizontal space runs so it can't flatten a meaningful line
+// break inside a stem or choice.
+function tidyPointsWhitespace(s){
+  return (s || "").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+// Scans one question's stem and every choice's text for regex matches.
+// Returns [{field, idx, label, before, after}, ...] -- field/idx mirror
+// annOverride's own field names ("text" for the stem, "choices" with a
+// choice index) so applying a match is a direct annOverride(q.number, field,
+// ...) call with no re-derivation. idx is -1 for the stem.
+function findPointsMatchesInQuestion(q, regex){
+  const out = [];
+  if(!regex) return out;
+  const scan = (field, idx, label, text) => {
+    if(!text) return;
+    regex.lastIndex = 0;
+    const stripped = text.replace(regex, "");
+    regex.lastIndex = 0;
+    if(stripped === text) return; // no match in this field
+    out.push({field, idx, label, before: text, after: tidyPointsWhitespace(stripped)});
+  };
+  scan("text", -1, "Stem", q.text || "");
+  (q.choices || []).forEach((c, i) => {
+    scan("choices", i, `Choice ${c.letter || String.fromCharCode(65 + i)}`, c.text || "");
+  });
   return out;
 }
 
@@ -3946,6 +4073,144 @@ document.getElementById("snapshotsModal").addEventListener("click", async e => {
 document.addEventListener("keydown", e => {
   if(e.key === "Escape" && document.getElementById("snapshotsModal").classList.contains("on")){
     closeSnapshotsModal();
+  }
+});
+
+// ---- "Remove point markers" modal (Tools ▾) ----------------------------
+// DOM/STATE wiring on top of the pure functions above (pointsPresetRegex,
+// findPointsMatchesInQuestion, tidyPointsWhitespace). Scoped entirely to
+// STATE.questions -- the questions of the PDF this page already has open --
+// on purpose: there is no "all PDFs in this event" option anywhere here.
+//
+// _pointsMatches/_pointsChecked live outside the DOM because renderCards()
+// (and even this modal's own re-render on "Find") rewrites innerHTML
+// wholesale -- checkbox ticks would be lost if they only lived in the DOM.
+let _pointsMatches = [];   // [{qnum, field, idx, label, before, after}, ...]
+let _pointsChecked = [];   // parallel boolean array
+
+function openPointsModal(){
+  _pointsMatches = [];
+  _pointsChecked = [];
+  document.getElementById("pointsCustomErr").style.display = "none";
+  document.getElementById("pointsApplyBtn").disabled = true;
+  document.getElementById("pointsSummary").textContent = "";
+  document.getElementById("pointsResultsList").innerHTML = "";
+  document.getElementById("pointsEmptyState").style.display = "";
+  document.getElementById("pointsModal").classList.add("on");
+}
+function closePointsModal(){
+  document.getElementById("pointsModal").classList.remove("on");
+}
+window.openPointsModal = openPointsModal;
+window.closePointsModal = closePointsModal;
+
+function _pointsSelectedPreset(){
+  const el = document.querySelector('input[name="pointsPreset"]:checked');
+  return el ? el.value : "worded";
+}
+
+function findPointMarkers(){
+  const errEl = document.getElementById("pointsCustomErr");
+  errEl.style.display = "none";
+  const presetId = _pointsSelectedPreset();
+  const customSource = document.getElementById("pointsCustomRegex").value;
+  const regex = pointsPresetRegex(presetId, POINTS_RE_SOURCE, customSource);
+  if(!regex){
+    errEl.textContent = presetId === "custom"
+      ? "That custom regex won't compile — check the syntax and try again."
+      : "Couldn't build that pattern.";
+    errEl.style.display = "";
+    document.getElementById("pointsResultsList").innerHTML = "";
+    document.getElementById("pointsEmptyState").style.display = "";
+    document.getElementById("pointsApplyBtn").disabled = true;
+    _pointsMatches = []; _pointsChecked = [];
+    return;
+  }
+  _pointsMatches = [];
+  STATE.questions.forEach(q => {
+    findPointsMatchesInQuestion(q, regex).forEach(m => {
+      _pointsMatches.push({qnum: q.number, ...m});
+    });
+  });
+  _pointsChecked = _pointsMatches.map(() => true);
+  _renderPointsResults();
+}
+
+function _renderPointsResults(){
+  const listEl = document.getElementById("pointsResultsList");
+  const emptyEl = document.getElementById("pointsEmptyState");
+  const summaryEl = document.getElementById("pointsSummary");
+  const applyBtn = document.getElementById("pointsApplyBtn");
+  if(!_pointsMatches.length){
+    listEl.innerHTML = "";
+    emptyEl.textContent = "No matches found on this PDF for that pattern.";
+    emptyEl.style.display = "";
+    summaryEl.textContent = "";
+    applyBtn.disabled = true;
+    return;
+  }
+  emptyEl.style.display = "none";
+  listEl.innerHTML = _pointsMatches.map((m, i) => `
+    <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line-soft);align-items:flex-start">
+      <input type="checkbox" data-points-idx="${i}" ${_pointsChecked[i] ? "checked" : ""} style="margin-top:3px">
+      <div style="flex:1;min-width:0;font-size:12px">
+        <div class="muted" style="margin-bottom:2px">Q#${esc(m.qnum)} — ${esc(m.label)}</div>
+        <div style="color:var(--bad);text-decoration:line-through;word-break:break-word">${esc(m.before)}</div>
+        <div style="color:var(--ok);word-break:break-word">${esc(m.after)}</div>
+      </div>
+    </div>`).join("");
+  const n = _pointsChecked.filter(Boolean).length;
+  summaryEl.textContent = `${n} of ${_pointsMatches.length} match(es) selected`;
+  applyBtn.disabled = n === 0;
+}
+document.getElementById("pointsResultsList").addEventListener("change", e => {
+  const idx = e.target.dataset.pointsIdx;
+  if(idx === undefined) return;
+  _pointsChecked[Number(idx)] = e.target.checked;
+  const n = _pointsChecked.filter(Boolean).length;
+  document.getElementById("pointsSummary").textContent = `${n} of ${_pointsMatches.length} match(es) selected`;
+  document.getElementById("pointsApplyBtn").disabled = n === 0;
+});
+
+function applyPointsRemoval(){
+  const toApply = _pointsMatches.filter((m, i) => _pointsChecked[i]);
+  if(!toApply.length) return;
+  _undoSnapshot(`remove point markers (${toApply.length} match(es))`);
+  let touched = 0;
+  toApply.forEach(m => {
+    const q = STATE.questions.find(x => String(x.number) === String(m.qnum));
+    if(!q) return;
+    if(m.field === "text"){
+      q.text = m.after;
+      annOverride(q.number, "text", q.text);
+    } else if(m.field === "choices" && q.choices && q.choices[m.idx]){
+      q.choices[m.idx].text = m.after;
+      annOverride(q.number, "choices", q.choices);
+    }
+    touched++;
+  });
+  setDirty(true);
+  renderCards();
+  closePointsModal();
+  setStatus(`Removed ${touched} point marker${touched === 1 ? "" : "s"} across ${new Set(toApply.map(m => m.qnum)).size} question(s). Ctrl+Z to undo the whole batch.`, "ok");
+}
+window.findPointMarkers = findPointMarkers;
+window.applyPointsRemoval = applyPointsRemoval;
+
+document.getElementById("removePointMarkers").addEventListener("click", () => {
+  openPointsModal();
+});
+document.querySelectorAll('input[name="pointsPreset"]').forEach(el => {
+  el.addEventListener("change", () => {
+    document.getElementById("pointsCustomRegex").disabled = _pointsSelectedPreset() !== "custom";
+  });
+});
+document.getElementById("pointsModal").addEventListener("click", e => {
+  if(e.target.id === "pointsModal") closePointsModal();
+});
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape" && document.getElementById("pointsModal").classList.contains("on")){
+    closePointsModal();
   }
 });
 

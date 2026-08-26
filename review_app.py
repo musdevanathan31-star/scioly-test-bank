@@ -59,6 +59,7 @@ from build_question_bank import (  # noqa: E402
     process_pair, apply_annotations,
 )
 from events import EVENTS, get_event, add_custom_event, is_builtin, DATA_ROOT, relative_data_path  # noqa: E402
+import text_utils  # noqa: E402
 import texts as texts_mod  # noqa: E402
 import qgen  # noqa: E402
 import scrape_scioly  # noqa: E402
@@ -2352,7 +2353,13 @@ def extract_pdf(event_slug, pdfname):
     return render_template("extract.html",
                             pdf_name=pdfname,
                             event_slug=event_slug,
-                            event_name=bqb.EVENT.name)
+                            event_name=bqb.EVENT.name,
+                            # Source text (not a compiled RegExp) for the "Remove
+                            # point markers" tool's worded-form preset, so the
+                            # client-side preview reuses the exact same pattern
+                            # text_utils.strip_points() applies server-side
+                            # instead of a hand-copied duplicate that could drift.
+                            points_re_source=text_utils._POINTS_RE.pattern)
 
 
 @app.route("/event/<event_slug>/review/<pdfname>")
