@@ -3996,9 +3996,19 @@ def api_images(event_slug, pdfname):
         for fn in q.get("images") or []:
             used.setdefault(fn, []).append(q.get("number", ""))
     src_prefix = pdfname.replace("_test.pdf", "").replace(".pdf", "")
+    # Both sides get hyphens folded to underscores. The pipeline's own
+    # extracted images are already fully underscored (they go through
+    # bqb._slug), but images added from the review page keep the source
+    # PDF's punctuation verbatim — _slug_image_name embeds the bucket name,
+    # so a manual pick off `..._ssss-avdestroyer_test.pdf` lands on disk as
+    # `..._ssss-avdestroyer_test_q5_pick_<hash>.png`. Normalising only the
+    # needle meant those never matched, so every manually picked, uploaded
+    # or generated image was missing from the bay — and therefore couldn't
+    # be re-used on another question, which is the whole point of the bay.
+    needle = src_prefix.lower().replace("-", "_")
     all_imgs: list[str] = []
     for img in bqb.IMAGE_DIR.iterdir():
-        if src_prefix.lower().replace("-", "_") in img.name.lower():
+        if needle in img.name.lower().replace("-", "_"):
             all_imgs.append(img.name)
     all_imgs.sort()
     return jsonify({"images": all_imgs, "used_by": used})
