@@ -588,6 +588,36 @@ def test_apply_annotations_no_difficulty_override_leaves_question_untouched():
     assert out[0]["topic"] == "Circuits"
 
 
+def test_apply_annotations_bbox_override_does_not_disturb_field_override_replay():
+    # bbox_overrides (extract.html's editable question-bbox feature) is a
+    # presentation-only annotation key -- it records where the user resized a
+    # question's bounding box so the rectangle can be redrawn, but it isn't
+    # itself replayed into the question dict. The corrected text/choices from
+    # a resize ride on the ordinary field_overrides mechanism instead, so a
+    # question carrying both a bbox_overrides entry AND a field_overrides
+    # entry must still get the field_overrides replayed exactly as if
+    # bbox_overrides weren't present.
+    questions = [{"number": "5", "topic": "Other / General",
+                  "text": "stale stem swallowed a heading",
+                  "choices": [{"letter": "A", "text": "old"}],
+                  "answer": "", "images": []}]
+    ann = {
+        "field_overrides": {
+            "5": {"text": "corrected stem", "choices": [{"letter": "A", "text": "new"}]},
+        },
+        "bbox_overrides": {
+            "5": {"page": 2, "x0": 50.0, "y0": 100.0, "x1": 500.0, "y1": 220.0},
+        },
+    }
+    out = bqb.apply_annotations(questions, ann)
+    assert out[0]["text"] == "corrected stem"
+    assert out[0]["choices"] == [{"letter": "A", "text": "new"}]
+    # bbox_overrides itself is not a per-question field -- nothing about it
+    # should leak onto the question dict.
+    assert "bbox_overrides" not in out[0]
+    assert "x0" not in out[0]
+
+
 # ---------------------------------------------------------------------------
 # Markdown export renders a matching question's two columns + answer key
 # instead of silently dropping it (Part 1.3 export audit)

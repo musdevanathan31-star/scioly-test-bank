@@ -401,6 +401,24 @@ details.q-zone .zone-body{padding:2px 10px 10px}
 .q-card.sel-picked{background:var(--hover);box-shadow:inset 0 0 0 1px var(--muted)}
 .q-card.sel-active{cursor:pointer}
 .sel-check{flex:0 0 auto;width:16px;height:16px;cursor:pointer}
+/* Resize handles — the focused question's box only (P-06: accent is "what
+   you're working on right now", the same role .q-bbox.focused already
+   carries, so handles never introduce a fourth color). Eight handles (4
+   corners + 4 edge midpoints) so every edge and corner is draggable, per
+   "resize the rectangle" being the user's own phrasing. */
+.q-bbox-handle{position:absolute;width:10px;height:10px;
+  background:var(--accent);border:1.5px solid var(--bg-card);
+  border-radius:2px;pointer-events:auto;z-index:5}
+.q-bbox-handle.h-n,.q-bbox-handle.h-s{left:50%;margin-left:-5px;cursor:ns-resize}
+.q-bbox-handle.h-e,.q-bbox-handle.h-w{top:50%;margin-top:-5px;cursor:ew-resize}
+.q-bbox-handle.h-n{top:-5px}
+.q-bbox-handle.h-s{bottom:-5px}
+.q-bbox-handle.h-e{right:-5px}
+.q-bbox-handle.h-w{left:-5px}
+.q-bbox-handle.h-ne{top:-5px;right:-5px;cursor:nesw-resize}
+.q-bbox-handle.h-nw{top:-5px;left:-5px;cursor:nwse-resize}
+.q-bbox-handle.h-se{bottom:-5px;right:-5px;cursor:nwse-resize}
+.q-bbox-handle.h-sw{bottom:-5px;left:-5px;cursor:nesw-resize}
 /* "Question groups in this PDF" always-visible roster panel */
 .cases-panel{margin-bottom:14px;border:1px solid #d8b75c;border-radius:6px;
   background:#fffdf5}
@@ -810,6 +828,15 @@ let ANN = {
   regions: [],                // provenance: [{number, field, page, target, x,y,w,h,dpi}]
   validations: {},            // qnum -> {status, correct_answer, rationale, source, ...}
   contexts: [],               // shared context blocks: [{id, text, images:[], pages:[]}]
+  // Manually-resized question boxes (editable-bbox feature). qnum -> {page,
+  // x0,y0,x1,y1} in PDF points, same units api_question_bboxes returns.
+  // Presentation-only: drawQuestionBoxes() prefers this over the
+  // server-derived box for that question so the adjustment survives
+  // re-renders/page turns/reloads. The re-extracted TEXT from a resize is
+  // NOT stored here -- it rides on field_overrides (above) so it survives a
+  // Reprocess the same way every other manual edit does; apply_annotations
+  // never reads this key.
+  bbox_overrides: {},
 };
 let nextContextId = 1;
 
@@ -1452,6 +1479,74 @@ function renderThumbStrip(){
 // couldn't extract into a question), which defaults OFF. Same button, same
 // function, same persisted localStorage key — just a narrower, more useful
 // thing for it to control.
+// ---- Editable question bounding boxes: pure geometry helpers ------------
+// Everything below is deliberately side-effect-free (no DOM, no ANN, no
+// fetch) so it can be extracted and unit-tested under Node the same way
+// tests/test_points_removal_js.py exercises pointsPresetRegex() etc. Every
+// rect here is the shape {x0,y0,x1,y1} -- the same shape api_question_bboxes
+// returns and ANN.bbox_overrides stores, in PDF points unless noted.
+
+// A drag can start from any corner/edge, so the pointer that ends up at
+// (x1,y1) isn't necessarily the bottom-right one -- e.g. dragging the TOP
+// edge down past the bottom edge inverts y0/y1. Normalize before using the
+// rect for anything (clamping, degeneracy checks, or display) so "negative
+// width/height" is never a state the rest of the code has to handle.
+function normalizeRect(rect){
+  return {
+    x0: Math.min(rect.x0, rect.x1),
+    y0: Math.min(rect.y0, rect.y1),
+    x1: Math.max(rect.x0, rect.x1),
+    y1: Math.max(rect.y0, rect.y1),
+  };
+}
+
+// Clamp a (normalized) rect's edges into [0,pageW] x [0,pageH]. Clamping
+// each coordinate independently can't reorder x0/x1 or y0/y1 (clamp is
+// monotonic), so a normalized rect stays normalized after this.
+function clampRectToPage(rect, pageW, pageH){
+  return {
+    x0: Math.min(Math.max(rect.x0, 0), pageW),
+    y0: Math.min(Math.max(rect.y0, 0), pageH),
+    x1: Math.min(Math.max(rect.x1, 0), pageW),
+    y1: Math.min(Math.max(rect.y1, 0), pageH),
+  };
+}
+
+// PDF points -> natural image pixels at `dpi` (matches the backend's
+// `f = 72.0/dpi` convention in reverse -- see spec.md "Region-coordinate
+// convention").
+function ptsToPx(rect, dpi){
+  const s = dpi / 72;
+  return { x0: rect.x0 * s, y0: rect.y0 * s, x1: rect.x1 * s, y1: rect.y1 * s };
+}
+function pxToPts(rect, dpi){
+  const s = 72 / dpi;
+  return { x0: rect.x0 * s, y0: rect.y0 * s, x1: rect.x1 * s, y1: rect.y1 * s };
+}
+
+// Too small to be a usable region (either dimension under `minSize`, same
+// units as `rect` -- pass points when checking a bbox_overrides candidate).
+// Guards against a click-without-drag or a collapsed handle drag reaching
+// the server as a degenerate extract-region request.
+function isDegenerateRect(rect, minSize){
+  const r = normalizeRect(rect);
+  return (r.x1 - r.x0) < minSize || (r.y1 - r.y0) < minSize;
+}
+
+// Apply one resize-handle's drag delta (dx,dy, same units as `rect`) to a
+// rect. `handle` is one of n/s/e/w/ne/nw/se/sw. Deliberately does NOT
+// normalize or clamp -- a drag that pushes past the opposite edge is a
+// perfectly normal in-progress drag, not yet an error; callers normalize
+// (and clamp, and check degeneracy) once, on release.
+function applyHandleDrag(rect, handle, dx, dy){
+  const out = {...rect};
+  if(handle.includes("n")) out.y0 += dy;
+  if(handle.includes("s")) out.y1 += dy;
+  if(handle.includes("w")) out.x0 += dx;
+  if(handle.includes("e")) out.x1 += dx;
+  return out;
+}
+
 let QBOX_VISIBLE = localStorage.getItem("qboxes_visible") === "1";
 let _qboxCache = {};   // page->{boxes, page_height_pt}
 
@@ -1522,6 +1617,12 @@ async function drawQuestionBoxes(){
   // takes priority while a drag is pending).
   const selecting = selectionActive() && !picking;
 
+  // Page bounds in points -- needed to clamp a resize drag to the page.
+  // The page image always renders at 120 DPI (see ppx above), so its
+  // natural pixel size converts back to points the same way any bbox does.
+  const pageWPts = img.naturalWidth / ppx;
+  const pageHPts = payload.page_height_pt;
+
   root.innerHTML = (payload.boxes || []).map(b => {
     // Mark focused (matches the currently-focused question) or unmatched
     // (Q_START fired in the PDF but no question with this number exists in
@@ -1536,27 +1637,46 @@ async function drawQuestionBoxes(){
     // isn't clickable to anything useful, so skip rendering it entirely
     // rather than showing a dead neutral box.
     if(unmatched && !QBOX_VISIBLE) return "";
-    const left = Math.round(b.x0 * ppx * sx);
-    const top  = Math.round(b.y0 * ppx * sy);
-    const w    = Math.max(8, Math.round((b.x1 - b.x0) * ppx * sx));
-    const h    = Math.max(8, Math.round((b.y1 - b.y0) * ppx * sy));
+    // A manually-resized box (editable-bbox feature) wins over the
+    // server-derived one for this question, so the adjustment survives
+    // re-renders/page turns/reloads — but only if it was made on THIS page;
+    // a stale override for a question that no longer starts here is
+    // ignored rather than misplaced.
+    const ov = ANN.bbox_overrides[b.number];
+    const eff = (ov && ov.page === pageForThisCall)
+      ? { x0: ov.x0, y0: ov.y0, x1: ov.x1, y1: ov.y1 } : b;
+    const left = Math.round(eff.x0 * ppx * sx);
+    const top  = Math.round(eff.y0 * ppx * sy);
+    const w    = Math.max(8, Math.round((eff.x1 - eff.x0) * ppx * sx));
+    const h    = Math.max(8, Math.round((eff.y1 - eff.y0) * ppx * sy));
     // Natural-pixel rect (120 DPI, no zoom scaling) — the same coordinate
     // space performCapture()/extract-region expect.
-    const natx = Math.round(b.x0 * ppx);
-    const naty = Math.round(b.y0 * ppx);
-    const natw = Math.max(8, Math.round((b.x1 - b.x0) * ppx));
-    const nath = Math.max(8, Math.round((b.y1 - b.y0) * ppx));
+    const natx = Math.round(eff.x0 * ppx);
+    const naty = Math.round(eff.y0 * ppx);
+    const natw = Math.max(8, Math.round((eff.x1 - eff.x0) * ppx));
+    const nath = Math.max(8, Math.round((eff.y1 - eff.y0) * ppx));
     const isSelected = selecting && SELECTED_QNUMS.has(b.number);
     const cls = (isFocused ? "focused" : (unmatched ? "unmatched" : ""))
               + (picking ? " pickable" : "")
               + (selecting ? " sel-target" : "") + (isSelected ? " sel-picked" : "");
     const pickHint = picking ? " — click to capture this exact region"
                     : selecting ? " — click to select for context assignment" : "";
+    // Resize handles: focused box only, and only in the ordinary click/edit
+    // mode — mid-capture and mid-selection the box is already a click
+    // target for something else, so handles would fight that gesture.
+    const showHandles = isFocused && !picking && !selecting;
+    const handlesHTML = showHandles
+      ? ["n","s","e","w","ne","nw","se","sw"].map(h =>
+          `<div class="q-bbox-handle h-${h}" data-handle="${h}"></div>`).join("")
+      : "";
     return `<div class="q-bbox ${cls}" data-qnum="${b.number}"
        data-natx="${natx}" data-naty="${naty}" data-natw="${natw}" data-nath="${nath}"
+       data-x0="${eff.x0}" data-y0="${eff.y0}" data-x1="${eff.x1}" data-y1="${eff.y1}"
+       data-pagew-pt="${pageWPts}" data-pageh-pt="${pageHPts}"
        style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"
        title="Q${b.number} on page ${pageForThisCall}${unmatched ? ' (no matching question in extracted set!)' : ''}${pickHint}">
        <div class="bb-label">Q${b.number}${unmatched ? ' ⚠' : ''}</div>
+       ${handlesHTML}
     </div>`;
   }).join("");
 
@@ -1594,6 +1714,138 @@ async function drawQuestionBoxes(){
       }, 30);
     });
   });
+
+  // Resize-handle drag start. Mousemove/mouseup are bound once, globally
+  // (see startBoxResize below) rather than per-draw, since drawQuestionBoxes
+  // re-renders (and thus re-binds click listeners) far more often than a
+  // drag is actually in progress.
+  root.querySelectorAll(".q-bbox-handle").forEach(handleEl => {
+    handleEl.addEventListener("mousedown", e => {
+      e.preventDefault(); e.stopPropagation();
+      const boxEl = handleEl.closest(".q-bbox");
+      startBoxResize(boxEl, handleEl.dataset.handle, e.clientX, e.clientY, sx, sy);
+    });
+    handleEl.addEventListener("click", e => e.stopPropagation());
+  });
+}
+
+// ---- Editable question bounding boxes: drag interaction ------------------
+// Minimum acceptable box dimension, in PDF points, for a resize to commit —
+// below this a drag is treated as accidental (a click that barely moved, or
+// a handle dragged past its opposite edge back to nothing) rather than a
+// deliberate "make the region tiny" edit, and is rejected instead of being
+// sent to the server. Roughly 10px at the page's 120 DPI render.
+const MIN_BBOX_PTS = 6;
+
+let _bboxResize = null;   // {qnum, handle, boxEl, startRect, startClientX/Y, sx, sy, pageWPts, pageHPts}
+
+function startBoxResize(boxEl, handle, clientX, clientY, sx, sy){
+  _bboxResize = {
+    qnum: boxEl.dataset.qnum,
+    handle,
+    boxEl,
+    startRect: {
+      x0: parseFloat(boxEl.dataset.x0), y0: parseFloat(boxEl.dataset.y0),
+      x1: parseFloat(boxEl.dataset.x1), y1: parseFloat(boxEl.dataset.y1),
+    },
+    startClientX: clientX, startClientY: clientY,
+    sx, sy,
+    pageWPts: parseFloat(boxEl.dataset.pagewPt), pageHPts: parseFloat(boxEl.dataset.pagehPt),
+  };
+}
+
+// Live rect for a drag state `r` at mouse position `e`: total mouse delta
+// (in CSS/display pixels) converted back through the zoom scale factor and
+// the 120 DPI render factor into PDF points, applied to the handle being
+// dragged, then normalized + clamped so the result never comes out inverted
+// or off-page. Takes `r` explicitly (rather than reading `_bboxResize`
+// directly) so mouseup can call it after already clearing that state, which
+// keeps a stray mousemove firing mid-commit from mutating anything.
+function _liveResizeRectFor(r, e){
+  const dxPx = (e.clientX - r.startClientX) / r.sx;
+  const dyPx = (e.clientY - r.startClientY) / r.sy;
+  const dxPts = dxPx * (72 / 120);
+  const dyPts = dyPx * (72 / 120);
+  const dragged = applyHandleDrag(r.startRect, r.handle, dxPts, dyPts);
+  return clampRectToPage(normalizeRect(dragged), r.pageWPts, r.pageHPts);
+}
+
+document.addEventListener("mousemove", e => {
+  if(!_bboxResize) return;
+  const live = _liveResizeRectFor(_bboxResize, e);
+  const px = ptsToPx(live, 120);
+  _bboxResize.boxEl.style.left   = Math.round(px.x0 * _bboxResize.sx) + "px";
+  _bboxResize.boxEl.style.top    = Math.round(px.y0 * _bboxResize.sy) + "px";
+  _bboxResize.boxEl.style.width  = Math.max(8, Math.round((px.x1 - px.x0) * _bboxResize.sx)) + "px";
+  _bboxResize.boxEl.style.height = Math.max(8, Math.round((px.y1 - px.y0) * _bboxResize.sy)) + "px";
+});
+
+document.addEventListener("mouseup", async e => {
+  if(!_bboxResize) return;
+  const r = _bboxResize;
+  _bboxResize = null;
+  const final = _liveResizeRectFor(r, e);
+  if(isDegenerateRect(final, MIN_BBOX_PTS)){
+    setStatus("Resize too small — ignored.", "warn");
+    drawQuestionBoxes();   // snap back to the last committed box
+    return;
+  }
+  await commitBoxResize(r.qnum, final);
+});
+
+// Commit a resized box: save the new rect, re-extract that region (stem +
+// choices, same call the capture buttons use), and apply the result. A
+// single undo snapshot covers box + text + choices together so one Ctrl+Z
+// reverts the whole adjustment.
+async function commitBoxResize(qnum, rectPts){
+  _undoSnapshot(`resize Q#${qnum} bounding box`);
+  ANN.bbox_overrides[qnum] = { page: curPage, x0: rectPts.x0, y0: rectPts.y0,
+                                x1: rectPts.x1, y1: rectPts.y1 };
+  setDirty(true);
+  drawQuestionBoxes();   // paint the committed box immediately
+  setStatusHtml(`Re-extracting Q#${qnum} from the resized region... <span class='spinner'></span>`);
+
+  const px = ptsToPx(rectPts, 120);
+  let r;
+  try {
+    r = await fetch(`${API}/pdf/${PDF}/page/${curPage}/extract-region`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        x: px.x0, y: px.y0, w: px.x1 - px.x0, h: px.y1 - px.y0,
+        dpi: 120, target, parse_choices: true,
+      }),
+    });
+  } catch(err){
+    setStatus(`Box resized, but re-extract failed: ${err.message}`, "err");
+    return;
+  }
+  if(!r.ok){
+    setStatus(`Box resized, but re-extract failed: HTTP ${r.status}`, "err");
+    return;
+  }
+  const j = await r.json();
+  // Same page/number matching the click-to-focus handler above uses.
+  let q = STATE.questions.find(x => String(x.number) === String(qnum) && (x.page || 1) === curPage);
+  if(!q) q = STATE.questions.find(x => String(x.number) === String(qnum));
+  if(!q){
+    setStatus(`Box resized, but Q#${qnum} is no longer in the extracted set.`, "warn");
+    return;
+  }
+  // Replacing choices as well as the stem is intentional (not a bug): a
+  // resized region re-reads the WHOLE question, not just the stem, since
+  // the reported problem (a section heading bleeding into a question) can
+  // just as easily land inside what used to be the choices. This does
+  // discard any manual choice edits already on this question — the
+  // _undoSnapshot() above is what makes that safe to do without asking.
+  const stem = (j.stem !== undefined) ? j.stem : (j.text || "");
+  q.text = stem;
+  annOverride(q.number, "text", stem);
+  q.choices = j.choices || [];
+  annOverride(q.number, "choices", q.choices);
+  annUpdateAdded(q.number, q);
+  renderCards();
+  drawQuestionBoxes();
+  setStatus(`Resized Q#${qnum}'s box and re-read its stem/choices from the new region.`, "ok");
 }
 
 // ---- persisted region overlays (show every drag-rectangle captured before) ----
@@ -1648,6 +1900,7 @@ async function load(){
       regions:         STATE.annotations.regions || [],
       validations:     STATE.annotations.validations || {},
       contexts:        STATE.annotations.contexts || [],
+      bbox_overrides:  STATE.annotations.bbox_overrides || {},
     };
     // Resume the id counter past anything we loaded so new contexts get fresh ids.
     (ANN.contexts || []).forEach(c => {
@@ -4273,7 +4526,7 @@ async function runReprocess(mode){
     curPage = 1; selectedImage = null; focusedId = null; setDirty(false);
     ANN = { field_overrides:{}, added:[], deleted:[],
             image_overrides:{assignments:{}, detached:[]}, regions:[],
-            validations:{}, contexts:[] };
+            validations:{}, contexts:[], bbox_overrides:{} };
     await load();
   }
 

@@ -178,11 +178,16 @@ User edits, replayed on top of pipeline output every time `process_pair` runs. S
       "captured_at": "ISO-8601" }
   ],
   "validations": { "<qnum>": Validation },
-  "contexts": [ Context, ... ]          // shared context blocks captured on this PDF
+  "contexts": [ Context, ... ],         // shared context blocks captured on this PDF
+  "bbox_overrides": {                   // manually-resized question boxes (extract.html)
+    "5": { "page": 3, "x0": 50.0, "y0": 80.0, "x1": 560.0, "y1": 210.0 }
+  }
 }
 ```
 
 `field_overrides` and the `"added"` question-defaults logic both thread `qtype`/`matching` through alongside every other field — editing a matching question's items/pairs (or per-cell images) in extract.html or browse.html always overrides both fields together, so a saved edit survives even if a later reprocess's auto-detection pass doesn't re-flag the same question as a matching candidate.
+
+`bbox_overrides` is presentation-only, like `regions` — `apply_annotations` never reads it, and it carries no question text. It exists solely so extract.html can redraw a manually-resized question box (in PDF points, the same units `/qboxes` returns) across re-renders, page turns, and reloads instead of losing the adjustment back to the server-derived box the moment the page recomputes it. The corrected stem/choices a resize produces are NOT stored here — they go through the ordinary `field_overrides[qnum]` path (`annOverride(qnum, "text", …)` / `annOverride(qnum, "choices", …)`) so they replay on reprocess exactly like any other manual text edit. See "Editable question bounding boxes" under §9 for the full mechanism.
 
 ### Context
 
@@ -494,12 +499,13 @@ Math extraction re-renders that same `pdf_rect` at 240 DPI for vision clarity be
 
 Derived on-demand from PyMuPDF text blocks rather than stored at extraction time, so this works on any PDF in the bank without rerunning the pipeline.
 
-Algorithm:
-1. `page.get_text("blocks")` returns `(x0, y0, x1, y1, text, block_no, type)` tuples.
-2. Filter to text blocks (type 0) and sort by `y0`.
-3. For each block, inspect the first non-blank line — if `Q_START` matches, record an anchor `(y0, qnum, block)`.
-4. For each consecutive pair of anchors, compute the bbox spanning from `anchor[i].y0` to `anchor[i+1].y0` (or page height for the last one), widened to the leftmost/rightmost edges of every text block inside that vertical slice.
-5. Return PDF-point coords; the frontend scales to displayed image pixels.
+Algorithm (walks text LINEs, not blocks — a block-level version of this used to inspect only the first non-blank line of each PyMuPDF block, which missed questions the block-grouping merged together, e.g. circuit_lab p3 where Q5-Q8 share blocks because of tight line spacing):
+1. `page.get_text("dict")` returns nested blocks → lines → spans; walk every text block (type 0) and every line inside it, recording each line's own bbox and joined text.
+2. Sort all lines by `(y0, x0)`. Any line whose text matches `Q_START` becomes an anchor `(y0, qnum, line)`.
+3. For each consecutive pair of anchors, compute the bbox spanning from `anchor[i].y0` to `anchor[i+1].y0` (or page height for the last one), widened to the leftmost/rightmost edges of every LINE whose top (`y0`) falls inside that vertical slice.
+4. Return PDF-point coords; the frontend scales to displayed image pixels.
+
+**This is exactly why a section heading (or a footer, or the start of an unrelated table) can end up inside a question**: anything sitting between one question's anchor and the next anchor's `y0` falls into the *previous* question's slice, box and text alike — `extract_questions` accumulates the question's text the same anchor-to-next-anchor way, so a wrong box and wrong extracted text share one root cause. See "Editable question bounding boxes" below for the fix.
 
 UI behavior — a three-role signal hierarchy (P-06), all drawn from the shared
 CSS variables (`var(--accent)`, `var(--warn)`, `var(--muted)`/`var(--line)`)
@@ -528,6 +534,16 @@ loud:
   layer (default **off**) — ordinary question boxes always render so
   click-to-focus keeps working without an extra step.
 - Key PDF mode hides bboxes (key PDFs aren't question-numbered the same way).
+
+### Editable question bounding boxes
+
+Boxes are derived on-demand (see above) and never stored, so there was nowhere to persist a correction until this feature added `annotations.bbox_overrides` (§4) — a presentation-only annotation key, not a new storage format: no server route changes, `apply_annotations` never reads it, and the corrected text/choices a resize produces ride entirely on the existing `field_overrides` mechanism so they survive a Reprocess the same way any other manual edit does.
+
+- **Resize handles render on the focused question's box only** — the eight handles (four edges, four corners; full resize, not just the bottom edge, since "resize the rectangle" covers pulling in from any side) share the box's `.focused` accent styling (P-06 above); every other box stays untouched, unclickable-for-resize, and doesn't earn a fourth color. Handles are hidden while a capture or a bulk selection is in progress, since the box is already a click target for something else in those modes.
+- **Live preview while dragging**, committed on release: `drawQuestionBoxes()` (`templates/extract.html`) prefers `ANN.bbox_overrides[qnum]` over the server-derived box for that question whenever one exists for the current page, so the adjustment survives the very next redraw (page turn, zoom, reload) instead of the server recomputing the old box on top of it.
+- **On release**: the drag rect is normalized (an inverted drag — e.g. dragging the top edge below the bottom edge — swaps back into `x0<=x1, y0<=y1` order rather than yielding negative width/height) and clamped to the page. A rect that comes out smaller than `MIN_BBOX_PTS` (6 PDF points either dimension — roughly 10px at the page's 120 DPI render) is treated as an accidental drag and never sent to the server; the box just snaps back to its last committed rect.
+- A real resize takes a single `_undoSnapshot()` first (so one Ctrl+Z reverts the box, the stem, and the choices together), stores the new rect into `ANN.bbox_overrides[qnum]`, then POSTs to the same `POST /event/<slug>/api/pdf/<pdf>/page/<n>/extract-region` endpoint the capture buttons already use, with `parse_choices: true` — no new route. The result **replaces the question's stem AND choices**, deliberately: a resized region is a full re-read of what's now inside it, not a text patch, since a bled-in heading can just as easily have landed where a choice used to sit. This does discard any choices manually edited on that question since its last extraction, which is exactly why the undo snapshot isn't optional.
+- Six pure geometry functions do the math and are unit-tested under Node (`tests/test_bbox_resize_js.py`, same extraction-by-brace-matching approach as `tests/test_points_removal_js.py`): `normalizeRect(rect)`, `clampRectToPage(rect, pageW, pageH)`, `ptsToPx(rect, dpi)`/`pxToPts(rect, dpi)` (the frontend's exact inverse of the backend's `f = 72/dpi` region-coordinate convention above), and `isDegenerateRect(rect, minSize)`. `applyHandleDrag(rect, handle, dx, dy)` moves only the edge(s) a given handle (`n/s/e/w/ne/nw/se/sw`) controls and deliberately does not normalize or clamp — an in-progress drag crossing the opposite edge is normal, not yet an error; callers normalize/clamp once, on release.
 
 ### Status-bar lifecycle
 
