@@ -149,6 +149,41 @@ Once linked, the shared context (text and any figures) renders once above the wh
 
 To remove a figure from a context, click the **×** on its thumbnail — this only unlinks it from that context (the underlying PNG stays on disk, since another context or question may still use it).
 
+### Fixing a mis-parsed question group ("⤵ Split into question group")
+
+Some source PDFs label the sub-questions of a shared-context set `a.` `b.`
+`c.` — which reads exactly like MCQ choice markers, so the extractor's
+choice-splitter swallows them as lettered options of one multiple-choice
+question instead of recognizing them as separate, separately-graded
+sub-questions. The tell: the "choices" are full questions in their own
+right (sometimes even carrying their own `(1 point)` marker, which a real
+choice never does), and the question's Answer field is usually empty because
+there's no single answer for the group.
+
+Use this when you spot that shape: open the question, and in its **Choices**
+row (visible once it has 2 or more choices) click **⤵ Split into question
+group**. This:
+- Turns the question's stem (and any attached figure) into a shared context
+  — reusing the question's existing context if it already had one, otherwise
+  creating a new one, exactly like **+ Add context from region** produces.
+- Turns each choice into its own free-response question linked to that
+  context, in choice order, numbered following the extractor's own
+  convention: the first sub-question keeps the original bare number, the
+  rest get letter suffixes (`21`, `21b`, `21c`, …), skipping any suffix
+  already in use elsewhere in the bank.
+- Removes the original mis-parsed question.
+- If the original question had a non-empty answer (unusual for this shape,
+  but possible), that answer is not discarded — it's appended into the new
+  context's text as "(Original answer: …)" and called out in the status
+  message, so you can move it to wherever it actually belongs.
+
+Like every other destructive edit here, this is undo-able — **↶ Undo** (or
+Ctrl+Z) restores the original question and removes the group it produced.
+This action never runs automatically: about a third of the questions that
+have this exact shape (2+ choices, sharing a figure) turn out to be genuine
+multiple-choice questions with long declarative choices, so only a human
+reviewing the actual text should decide to split one.
+
 ### Browsing, searching, and bulk-editing the whole bank
 
 **Browse questions** (from any event's page) is the event-wide view: every question, across every PDF/source, on one filterable/sortable page.

@@ -857,6 +857,41 @@ document.addEventListener("click", e => {
   }
 });
 
+// ---- "Split into question group" helpers (pure, testable) --------------
+// A shared-context question set labels its sub-questions a./b./c., which
+// looks identical to MCQ choice markers -- split_choices() (server-side)
+// swallows them as lettered options instead of separate sub-questions. The
+// card action below (splitQuestionIntoGroup) is the manual undo for that:
+// the user decides per-question, because some real MCQs also happen to have
+// long declarative choices and must not be touched.
+//
+// A choice never carries its own point value -- "(1 point)" trailing a
+// choice's text is a real signal this was a sub-question, not an option --
+// so once a choice becomes its own question that marker is noise and gets
+// stripped. Conservative on purpose: only a trailing parenthesised point
+// marker, mirroring text_utils.strip_points's marker shape but not its
+// mid-string reach.
+function stripTrailingPointMarker(text){
+  return (text || "").replace(/\s*\(\s*[\d.\/]+\s*(?:points?|pts?)\.?\s*\)\s*$/i, "").trim();
+}
+// Extractor numbering convention (verified against real corpus data): the
+// first sub-question keeps the original bare number, later ones get a
+// letter suffix -- 21, 21b, 21c, 21d... never 21a. If a suffix would
+// collide with a number already in use (e.g. an unrelated real "21b"
+// elsewhere in the bank), skip to the next free letter rather than reusing it.
+function nextGroupQuestionNumbers(baseNumber, count, existingNumbers){
+  const base = String(baseNumber);
+  const existing = new Set((existingNumbers || []).map(String));
+  const out = [base];
+  let code = 98; // 'b'
+  while(out.length < count && code <= 122){ // cap at 'z'
+    const candidate = base + String.fromCharCode(code);
+    code++;
+    if(!existing.has(candidate)) out.push(candidate);
+  }
+  return out;
+}
+
 function annAddContext(ctx){
   ANN.contexts = ANN.contexts || [];
   ANN.contexts.push(ctx);
@@ -2132,6 +2167,9 @@ function cardHTML(q){
               title="Drag a rectangle that contains A/B/C/D options; they're split and REPLACE this question's choices. Falls back to line-splitting if option letters were dropped during PDF extraction.">📋 Capture choices</button>
       <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="choicesAppend"
               title="Drag a rectangle containing more options; they're split and ADDED after the existing ones, then re-lettered in order. Use when the choices run across two columns or continue on the next page.">➕ Add choices from page</button>
+      ${(q.choices || []).length >= 2 ? `
+      <button class="ghost btn-tiny" data-act="splitQuestionGroup"
+              title="Use when these 'choices' are really separate sub-questions sharing a stem/figure (e.g. a., b., c. labels mis-read as MCQ options). Splits each choice into its own FRQ linked to a shared context. Undoable (Ctrl+Z).">⤵ Split into question group</button>` : ""}
     </div>
     ${choices}
     <div class="field-row" style="margin-top:6px">
@@ -2400,6 +2438,11 @@ function bindCardEvents(){
           annOverride(q.number, "choices", q.choices);
           annUpdateAdded(q.number, q);
           setDirty(true); renderCards();
+        } else if(act === "splitQuestionGroup"){
+          if(!await confirmModal(
+            `Split Q#${q.number} into ${q.choices.length} separate questions sharing a context? This removes Q#${q.number} and creates ${q.choices.length} new question(s) in its place.`,
+            {confirmLabel: "Split"})) return;
+          splitQuestionIntoGroup(q);
         } else if(act === "addMatchItem"){
           const side = el.dataset.side;
           q.matching = q.matching || {left: [], right: [], pairs: {}};
@@ -3364,6 +3407,67 @@ function finalizeMatchingDraft(){
   annAddQuestion(q);
   setDirty(true); renderCards();
   setStatus(`Captured matching Q#${num} (${draft.left.length} × ${draft.right.length} items). Fix up any mis-split rows and set the correct pairs below.`, "ok");
+}
+
+// Card action: "Split into question group" (see stripTrailingPointMarker /
+// nextGroupQuestionNumbers above for the pure pieces). Converts one
+// mis-parsed MCQ -- whose "choices" are really separately-answerable
+// sub-questions sharing a stem/figure -- into a shared context plus one FRQ
+// per choice. Never invoked automatically; only this explicit per-card
+// action reaches it.
+function splitQuestionIntoGroup(q){
+  if(!q || !(q.choices || []).length || q.choices.length < 2) return;
+  _undoSnapshot(`split Q#${q.number} into a question group`);
+
+  // Resolve the context: reuse an existing link, or create a new one shaped
+  // exactly like the "+ Add context from region" flow's output above
+  // ({id, text, images, pages}). The figure (if any) moves to the context --
+  // it's shared by the whole group, not owned by the first sub-question.
+  let ctxId = q.context_id;
+  let ctx = ctxId ? findContext(ctxId) : null;
+  let hadAnswer = !!(q.answer || "").toString().trim();
+  if(!ctx){
+    ctxId = `ctx_${nextContextId++}`;
+    let ctxText = q.text || "";
+    if(hadAnswer){
+      // Don't silently drop a pre-existing answer -- there's no single
+      // "answer" once this becomes several FRQs, so surface it in the
+      // context text (and again in the status message below) instead.
+      ctxText = (ctxText ? ctxText + "\n\n" : "") + `(Original answer: ${q.answer})`;
+    }
+    ctx = { id: ctxId, text: ctxText, images: (q.images || []).slice(), pages: [q.page || curPage] };
+    annAddContext(ctx);
+  }
+
+  const existingNumbers = STATE.questions.map(x => x.number);
+  const numbers = nextGroupQuestionNumbers(q.number, q.choices.length, existingNumbers);
+  const newQs = q.choices.map((c, i) => ({
+    _id: nextLocalId++,
+    number: numbers[i],
+    topic: q.topic,
+    text: stripTrailingPointMarker(c.text || ""),
+    qtype: "frq",
+    choices: [],
+    answer: "",
+    images: [],
+    context_id: ctxId,
+    source: q.source || "",
+    year: q.year || "",
+    division: q.division || "",
+    page: q.page,
+  }));
+
+  STATE.questions = STATE.questions.filter(x => x._id !== q._id);
+  annDeleteQuestion(q.number);
+  newQs.forEach(nq => { STATE.questions.push(nq); annAddQuestion(nq); });
+
+  if(focusedId === q._id) focusedId = null;
+  focusQuestion(newQs[0]._id);
+  setDirty(true);
+  renderCards();
+  renderImageBay();
+  const answerNote = hadAnswer ? " Original answer kept in the new context's text." : "";
+  setStatus(`Split Q#${q.number} into ${newQs.length} questions sharing context ${ctxId}.${answerNote}`, "ok");
 }
 
 document.getElementById("addRegion").addEventListener("click", ()=>{
