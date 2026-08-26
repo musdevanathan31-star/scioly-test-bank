@@ -586,6 +586,18 @@ Neither number updates instantly; both refresh about every 20 seconds.
 
 A coach creates your account (one-by-one, or in bulk via a CSV upload) and gives you a username/password. Log in at `/login` — you land directly on **My Assessments**, your home page (there's no question bank to manage, so the navigation menu only shows what you can actually use: My Assessments, Scores, Notifications, Settings, Logout). Go to **☰ → Settings → My Account** to change your password whenever you like.
 
+### Build events (bridges, rockets, robots)
+
+Some events are judged on a physical build rather than a written test. A build event appears on My Assessments alongside your other events, but there is **nothing to take** — no questions, no timer, no Take button. It shows as **Build event — scheduled** while it is on the calendar, then **awaiting your coach's score** once the date has passed, and never as "not submitted": there was nothing for you to submit.
+
+When your coach records and releases your result, **View results** shows:
+
+- your **total**, out of the maximum for that event,
+- each **scored** line and what you earned on it, and
+- each **measured** line — mass, load held, flight time — with its unit. Measurements are recorded for the record and are **not** part of your score; the app never turns them into points, because how they convert changes with each season's rules.
+
+Until your coach releases scores, your result isn't visible — not on the page and not through a direct API call.
+
 ### Taking a test
 
 Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.

@@ -1704,6 +1704,45 @@ def _student_assessment_context(assessment_id: str):
     return test, window
 
 
+# A build assessment never reaches "live" (go_live_assessment refuses it —
+# see assessments.py) and status flows preparing -> graded -> released
+# instead (set_build_grade / release_grades). "preparing" is deliberately
+# INCLUDED for kind="build" — that status is exactly "scheduled, not yet
+# graded" for a build event, whereas for an exam "preparing" means the
+# coach hasn't finished building the test yet and must stay hidden. Keep
+# these two tuples in sync with the two docstrings above; an exam's tuple
+# must never change, or every existing "which statuses list" test breaks.
+_MY_ASSESSMENT_STATUSES = {
+    "exam": ("live", "closed", "graded", "released"),
+    "build": ("preparing", "graded", "released"),
+}
+
+
+def _my_assessment_bucket(t: "assessments.Assessment", w: "assessments.AssessmentWindow",
+                          resp: "assessments.Response | None", username: str) -> str:
+    """upcoming/current/past for one assessment as seen by one student.
+
+    An exam buckets around a submission: once the student has submitted (or
+    the window has closed) there is nothing left to do, so it moves to
+    Past. A build assessment never gets a submission — the coach records
+    the result directly — so its "nothing left to do here" signal is the
+    score being released instead. Once neither applies, both kinds fall
+    back to the same window-date check (open now vs. not yet open), so an
+    exam's bucketing is completely unchanged by this shared helper existing."""
+    if t.kind == "exam":
+        done = resp is not None and resp.status != "in_progress"
+    else:
+        done = resp is not None and resp.released
+    if done or assessments.is_window_past(t, w, username):
+        # Already done moves straight to Past even if the class-wide window
+        # is technically still open — nothing left to do, and (for an exam)
+        # the take-page itself blocks re-entry for exactly this reason.
+        return "past"
+    elif assessments.is_window_open(t, w, username):
+        return "current"
+    return "upcoming"
+
+
 @app.route("/my-assessments")
 @student_required
 def my_assessments_page():
@@ -1720,22 +1759,14 @@ def my_assessments_page():
             for slug in w.event_slugs:
                 if slug not in my_events:
                     continue
-                t = assessments.get_assessment_for(w.window_id, slug)
-                if t is None or t.status not in ("live", "closed", "graded", "released"):
-                    continue
-                resp = assessments.get_response(t.assessment_id, g.user.username)
-                entry = {"assessment": t, "window": w, "event_slug": slug, "response": resp}
-                already_submitted = resp is not None and resp.status != "in_progress"
-                if already_submitted or assessments.is_window_past(t, w, g.user.username):
-                    # Already submitted moves straight to Past even if the
-                    # class-wide window is technically still open — nothing
-                    # left to do, and the take-page itself blocks re-entry
-                    # for exactly this reason.
-                    past.append(entry)
-                elif assessments.is_window_open(t, w, g.user.username):
-                    current.append(entry)
-                else:
-                    upcoming.append(entry)
+                for kind in ("exam", "build"):
+                    t = assessments.get_assessment_for(w.window_id, slug, kind=kind)
+                    if t is None or t.status not in _MY_ASSESSMENT_STATUSES[kind]:
+                        continue
+                    resp = assessments.get_response(t.assessment_id, g.user.username)
+                    entry = {"assessment": t, "window": w, "event_slug": slug, "response": resp}
+                    bucket = _my_assessment_bucket(t, w, resp, g.user.username)
+                    {"upcoming": upcoming, "current": current, "past": past}[bucket].append(entry)
     return render_template("my_assessments.html", upcoming=upcoming, current=current, past=past,
                             season=season)
 
@@ -1845,23 +1876,23 @@ def api_my_assessments():
             for slug in w.event_slugs:
                 if slug not in my_events:
                     continue
-                t = assessments.get_assessment_for(w.window_id, slug)
-                if t is None or t.status not in ("live", "closed", "graded", "released"):
-                    continue
-                resp = assessments.get_response(t.assessment_id, g.user.username)
-                already_submitted = resp is not None and resp.status != "in_progress"
-                if already_submitted or assessments.is_window_past(t, w, g.user.username):
-                    bucket = "past"
-                elif assessments.is_window_open(t, w, g.user.username):
-                    bucket = "current"
-                else:
-                    bucket = "upcoming"
-                out.append({
-                    "assessment_id": t.assessment_id, "event_slug": slug, "window_label": w.label,
-                    "opens_at": w.opens_at, "closes_at": w.closes_at, "bucket": bucket,
-                    "response_status": resp.status if resp else None,
-                    "released": resp.released if resp else False,
-                })
+                for kind in ("exam", "build"):
+                    t = assessments.get_assessment_for(w.window_id, slug, kind=kind)
+                    if t is None or t.status not in _MY_ASSESSMENT_STATUSES[kind]:
+                        continue
+                    resp = assessments.get_response(t.assessment_id, g.user.username)
+                    bucket = _my_assessment_bucket(t, w, resp, g.user.username)
+                    out.append({
+                        "assessment_id": t.assessment_id, "event_slug": slug, "window_label": w.label,
+                        "kind": kind,
+                        "opens_at": w.opens_at, "closes_at": w.closes_at, "bucket": bucket,
+                        "response_status": resp.status if resp else None,
+                        # Never a score, even after release — only whether
+                        # one has been released. The result (earned/possible)
+                        # is fetched separately from the results route, which
+                        # gates on this same `released` flag.
+                        "released": resp.released if resp else False,
+                    })
     return jsonify({"assessments": out})
 
 
@@ -2377,6 +2408,23 @@ def _render_assessment_results(test: "assessments.Assessment", resp: "assessment
     results) and score_detail_page (a coach/grading-volunteer drilling into
     a specific student's response from the Scores page)."""
     ev = EVENTS.get(test.event_slug)
+    if test.kind == "build":
+        grade = resp.manual_grade.get(assessments.BUILD_GRADE_KEY) or {}
+        # rubric lines paired with the student's recorded value, split into
+        # scored (counts toward the total) and measured (recorded, never
+        # summed — see assessments.compute_build_total) for the template to
+        # render as two visually separate groups.
+        scored_rows, measured_rows = [], []
+        for line in (test.rubric or []):
+            value = (resp.rubric_values or {}).get(line["id"])
+            row = {"line": line, "value": value}
+            (scored_rows if line.get("kind") == "scored" else measured_rows).append(row)
+        return render_template("assessment_results.html", event_name=ev.name if ev else test.event_slug,
+                               is_build=True, scored_rows=scored_rows, measured_rows=measured_rows,
+                               total_earned=grade.get("points_earned"), total_possible=grade.get("points_possible"),
+                               comment=grade.get("comment") or "",
+                               viewer_is_self=viewer_is_self, student_username=student_username,
+                               assessment_id=test.assessment_id)
     contexts = test.snapshot_contexts or {}
     rows = []
     for q in (test.snapshot or []):
@@ -2394,7 +2442,7 @@ def _render_assessment_results(test: "assessments.Assessment", resp: "assessment
     total_earned = sum((r["auto"] or r["manual"] or {}).get("points_earned") or 0 for r in rows)
     total_possible = sum(float(q.get("max_points") or 1) for q in (test.snapshot or []))
     return render_template("assessment_results.html", event_name=ev.name if ev else test.event_slug,
-                           rows=rows, total_earned=total_earned, total_possible=total_possible,
+                           is_build=False, rows=rows, total_earned=total_earned, total_possible=total_possible,
                            viewer_is_self=viewer_is_self, student_username=student_username,
                            assessment_id=test.assessment_id)
 

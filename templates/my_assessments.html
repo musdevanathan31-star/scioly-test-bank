@@ -30,9 +30,16 @@ section h2{margin:0 0 10px 0;font-size:14px}
         <span class="ev">{{ entry.event_slug }}</span>
         <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }} — closes {{ entry.window.closes_at|replace("T", " ") }}</span>
       </div>
+      {% if entry.assessment.kind == "build" %}
+      {# No Take button: a build event has nothing to sit down and answer.
+         The coach records the result, so the row is a schedule entry until
+         a score is released. #}
+      <span class="when">Build event — your coach records your score</span>
+      {% else %}
       <a href="{{ url_for('assessment_take_page', assessment_id=entry.assessment.assessment_id) }}"><button class="primary">
         {{ "Continue" if entry.response and entry.response.status == "in_progress" else "Start" }}
       </button></a>
+      {% endif %}
     </div>
     {% endfor %}
   </section>
@@ -46,7 +53,13 @@ section h2{margin:0 0 10px 0;font-size:14px}
         <span class="ev">{{ entry.event_slug }}</span>
         <span class="when">{{ entry.window.label or entry.window.opens_at[:10] }} — opens {{ entry.window.opens_at|replace("T", " ") }}</span>
       </div>
+      {% if entry.assessment.kind == "build" %}
+      {# "not yet open" is exam language — it implies a window you sit down
+         in. A build event is simply on the schedule. #}
+      <span class="badge badge-neutral">Build event — scheduled</span>
+      {% else %}
       <span class="badge badge-neutral">not yet open</span>
+      {% endif %}
     </div>
     {% endfor %}
   </section>
@@ -62,6 +75,11 @@ section h2{margin:0 0 10px 0;font-size:14px}
       </div>
       {% if entry.response and entry.response.released %}
       <a href="{{ url_for('assessment_results_page', assessment_id=entry.assessment.assessment_id) }}"><button>View results</button></a>
+      {% elif entry.assessment.kind == "build" %}
+      {# Never "not submitted" for a build event — there was nothing to
+         submit, and a red badge saying so would read as the student having
+         missed something they were never asked to do. #}
+      <span class="badge badge-warn">awaiting your coach's score</span>
       {% elif entry.response and entry.response.status in ("submitted", "auto_submitted_late") %}
       <span class="badge badge-warn">submitted — awaiting grading</span>
       {% else %}

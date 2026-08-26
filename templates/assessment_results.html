@@ -27,6 +27,44 @@
   {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
+{% if is_build %}
+  {# A build event has no questions — the coach records the result directly.
+     Scored lines make up the total; measured lines are the raw record (mass,
+     load, flight time) and are deliberately NOT part of it, because the
+     formula that turns them into points changes every season and lives with
+     the coach, never in this app. Showing them separately is the point: they
+     are what a student can actually compare against next time. #}
+  <div class="score-big">
+    {% if total_earned is not none %}{{ "%.1f"|format(total_earned) }} / {{ "%.0f"|format(total_possible or 0) }}
+    {% else %}Not scored yet{% endif %}
+  </div>
+  {% if scored_rows %}
+  <div class="result-card">
+    <div class="meta">Scored</div>
+    {% for r in scored_rows %}
+    <div class="ans">{{ r.line.label or "(unnamed)" }}
+      <span class="pts">{{ r.value if r.value is not none else "—" }} / {{ r.line.max_points if r.line.max_points is not none else "—" }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if measured_rows %}
+  <div class="result-card">
+    <div class="meta">Measured — recorded, not part of the score</div>
+    {% for r in measured_rows %}
+    <div class="ans muted">{{ r.line.label or "(unnamed)" }}
+      <span class="pts">{{ r.value if r.value is not none else "—" }}{{ " " + r.line.unit if r.line.unit else "" }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if comment %}
+  <div class="result-card">
+    <div class="meta">Note from your coach</div>
+    <div class="ans">{{ comment }}</div>
+  </div>
+  {% endif %}
+{% else %}
   <div class="score-big">{{ "%.1f"|format(total_earned) }} / {{ "%.0f"|format(total_possible) }}</div>
   {% for row in rows %}
   {% set q = row.q %}
@@ -71,5 +109,6 @@
     {% endif %}
   </div>
   {% endfor %}
+{% endif %}
 </div>
 </body></html>
