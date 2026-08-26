@@ -119,8 +119,15 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     </div>
     {% for et in entry.assessments %}
     <div class="event-row" data-assessment-id="{{ et.assessment.assessment_id }}">
-      <span class="name">{{ et.event_slug }}</span>
+      <span class="name">{{ et.event_slug }}{% if et.kind == "build" %} <span class="muted" style="font-weight:400;font-size:11px">(build)</span>{% endif %}</span>
+      {% if et.kind == "build" %}
+      {# A build assessment never publishes — its status stays "preparing"
+         ("scheduled") until every rostered student has a recorded grade,
+         then "graded", then "released". No "published"/"live" leg. #}
+      <span class="badge {{ 'badge-ok' if et.assessment.status == 'released' else 'badge-warn' if et.assessment.status == 'graded' else 'badge-neutral' }}">{{ "scheduled" if et.assessment.status == "preparing" else et.assessment.status }}</span>
+      {% else %}
       <span class="badge {{ 'badge-ok' if et.assessment.status in ('published','live','released') else 'badge-neutral' if et.assessment.status == 'preparing' else 'badge-warn' }}">{{ et.assessment.status }}</span>
+      {% endif %}
       {% if current_user.role == "coach" %}
       <span class="vols">
         <button type="button" class="ghost assign-btn" data-event="{{ et.event_slug }}" data-window="{{ w.window_id }}"
@@ -131,6 +138,16 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       {% else %}
       <span class="vols muted">{{ et.assigned|join(', ') or "(no volunteers assigned)" }}</span>
       {% endif %}
+      {% if et.kind == "build" %}
+      <a href="{{ url_for('assessment_grading_page', assessment_id=et.assessment.assessment_id) }}">
+        <button class="ghost">Rubric &amp; scores</button>
+      </a>
+      {% if current_user.role == "coach" and hard_delete_enabled() %}
+      <button class="ghost purge-test-btn" data-test="{{ et.assessment.assessment_id }}"
+              data-label="{{ et.event_slug }} build assessment" style="color:var(--bad)"
+              title="Permanently delete this assessment and every student's recorded score.">🗑</button>
+      {% endif %}
+      {% else %}
       <a href="{{ url_for('assessment_builder_page', assessment_id=et.assessment.assessment_id) }}">
         <button class="ghost">{{ "Prepare" if et.assessment.status == "preparing" else "View" }}</button>
       </a>
@@ -161,6 +178,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
         <button class="ghost makeup-btn" data-assessment="{{ et.assessment.assessment_id }}"
                 data-event="{{ et.event_slug }}">+ Makeup window</button>
         {% endif %}
+      {% endif %}
       {% endif %}
     </div>
     {% if et.assessment.overrides %}

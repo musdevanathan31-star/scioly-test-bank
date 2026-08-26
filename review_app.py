@@ -1062,6 +1062,7 @@ def api_get_event(slug: str):
         "topics": list(ev.topics),
         "foci": list(ev.foci),
         "is_builtin": is_builtin(slug),
+        "has_build": ev.has_build,
     })
 
 
@@ -1085,6 +1086,7 @@ def api_edit_event(slug: str):
     match  = _parse_csv(data.get("event_match", list(cur.event_match)))
     wiki   = (data.get("wiki_page", cur.wiki_page) or "").strip()
     name   = (data.get("name", cur.name) or "").strip() or cur.name
+    has_build = bool(data.get("has_build", cur.has_build))
     if "Other / General" not in topics:
         topics.append("Other / General")
     from events import Event, _save_custom_events
@@ -1096,6 +1098,7 @@ def api_edit_event(slug: str):
         topic_keywords=cur.topic_keywords,
         foci=tuple(foci),
         wiki_page=wiki,
+        has_build=has_build,
     )
     _save_custom_events()
     return jsonify({"ok": True, "slug": slug})
@@ -1466,11 +1469,21 @@ def assessments_dashboard_page():
                 continue
             window_tests = []
             for slug in w.event_slugs:
-                t = assessments.get_assessment_for(w.window_id, slug)
                 if g.user.role == "volunteer" and g.user.username not in (w.assignments.get(slug) or []):
                     continue
-                window_tests.append({"event_slug": slug, "assessment": t,
+                t = assessments.get_assessment_for(w.window_id, slug)
+                window_tests.append({"event_slug": slug, "assessment": t, "kind": "exam",
                                      "assigned": w.assignments.get(slug) or []})
+                # An event with a build component gets a second row here —
+                # a build assessment for the same (window, event), created
+                # alongside the exam one whenever the event was added to
+                # this window (see assessments._ensure_assessments_for_event).
+                ev = EVENTS.get(slug)
+                if ev is not None and ev.has_build:
+                    bt = assessments.get_assessment_for(w.window_id, slug, kind="build")
+                    if bt is not None:
+                        window_tests.append({"event_slug": slug, "assessment": bt, "kind": "build",
+                                             "assigned": w.assignments.get(slug) or []})
                 candidates_by_event.setdefault(slug, _candidates_for(slug))
                 students_by_event.setdefault(slug, _students_for(slug))
             windows.append({"window": w, "assessments": window_tests})
@@ -1731,6 +1744,12 @@ def my_assessments_page():
 @student_required
 def assessment_take_page(assessment_id):
     test, window = _student_assessment_context(assessment_id)
+    if test.kind == "build":
+        # A build assessment has no snapshot and nothing to serve — it can
+        # never reach status "live" (go_live_assessment refuses it), so
+        # this can only be reached by guessing an assessment_id directly.
+        abort(400, "This is a build assessment — there's nothing to take. "
+                   "Your coach records your score directly.")
     if test.status != "live" or not assessments.is_window_open(test, window, g.user.username):
         return redirect(url_for("my_assessments_page"))
     existing = assessments.get_response(assessment_id, g.user.username)
@@ -1850,6 +1869,8 @@ def api_my_assessments():
 @student_required
 def api_take_assessment(assessment_id):
     test, window = _student_assessment_context(assessment_id)
+    if test.kind == "build":
+        abort(400, "This is a build assessment — there's nothing to take.")
     if test.status != "live" or not assessments.is_window_open(test, window, g.user.username):
         abort(403, "This test isn't open right now")
     existing = assessments.get_response(assessment_id, g.user.username)
@@ -1923,6 +1944,14 @@ def api_submit_assessment(assessment_id):
 def assessment_grading_page(assessment_id):
     test = _select_assessment(assessment_id)
     ev = EVENTS.get(test.event_slug)
+    if test.kind == "build":
+        # A roster table (one row per rostered student, one column per
+        # rubric line), not the FRQ-per-block layout below — different
+        # enough data shape (no snapshot, no per-question answers) that a
+        # separate template is clearer than branching assessment_grading.html
+        # throughout.
+        return render_template("assessment_grading_build.html", assessment_id=assessment_id,
+                                event_name=ev.name if ev else test.event_slug)
     return render_template("assessment_grading.html", assessment_id=assessment_id,
                             event_name=ev.name if ev else test.event_slug)
 
@@ -2212,6 +2241,108 @@ def api_set_manual_grade(assessment_id, student_username, number):
     return jsonify({"ok": True})
 
 
+@app.route("/api/assessments/<assessment_id>/rubric", methods=["PATCH"])
+@coach_or_volunteer_required
+def api_set_assessment_rubric(assessment_id):
+    """Replaces a build assessment's rubric wholesale — see
+    assessments.set_assessment_rubric. Rejects for an exam assessment (only
+    a build assessment has a rubric at all)."""
+    test = _select_assessment(assessment_id)
+    if test.kind != "build":
+        return jsonify({"error": "only a build assessment has a rubric"}), 400
+    data = request.get_json() or {}
+    try:
+        updated = assessments.set_assessment_rubric(assessment_id, data.get("rubric") or [],
+                                                     edited_by=g.user.username)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "rubric": updated.rubric})
+
+
+@app.route("/api/assessments/<assessment_id>/rubric/copy", methods=["POST"])
+@coach_or_volunteer_required
+def api_copy_assessment_rubric(assessment_id):
+    """"Copy rubric from…" — populate this build assessment's rubric from
+    another build assessment's, so a coach edits last year's rubric rather
+    than retyping it. The source must be a build assessment too; the picker
+    on the grading page only offers other build assessments in the same
+    season (see api_get_build_grading's `other_build_assessments`), but this
+    is re-validated server-side regardless."""
+    test = _select_assessment(assessment_id)
+    if test.kind != "build":
+        return jsonify({"error": "only a build assessment has a rubric"}), 400
+    data = request.get_json() or {}
+    source_id = data.get("source_assessment_id") or ""
+    try:
+        updated = assessments.copy_rubric_from(assessment_id, source_id, edited_by=g.user.username)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "rubric": updated.rubric})
+
+
+@app.route("/api/assessments/<assessment_id>/build-grading")
+@coach_or_volunteer_required
+def api_get_build_grading(assessment_id):
+    """Everything the build grading page needs in one round trip: the
+    rubric, the rostered students (there's no "submission" list — a build
+    assessment is graded straight off the season roster), every response
+    recorded so far, and a picker of other build assessments this season a
+    rubric could be copied from."""
+    import seasons as seasons_mod
+
+    test = _select_assessment(assessment_id)
+    if test.kind != "build":
+        return jsonify({"error": "not a build assessment"}), 400
+    users = auth.load_users()
+    roster = []
+    for username in seasons_mod.get_roster(test.season_id, test.event_slug):
+        u = users.get(username)
+        if u is None or u.disabled:
+            continue
+        roster.append({"username": u.username, "display_name": u.display_name or u.username})
+    roster.sort(key=lambda d: d["display_name"].lower())
+    responses = {u: {"rubric_values": r.rubric_values,
+                     "manual_grade": r.manual_grade.get(assessments.BUILD_GRADE_KEY)}
+                for u, r in assessments.get_responses_for_assessment(assessment_id).items()}
+    other_builds = [
+        {"assessment_id": t.assessment_id, "event_slug": t.event_slug,
+         "window_label": (assessments.get_window(t.window_id).label
+                          if assessments.get_window(t.window_id) else "")}
+        for t in assessments.assessments_for_season(test.season_id)
+        if t.kind == "build" and t.assessment_id != assessment_id and t.rubric
+    ]
+    return jsonify({
+        "rubric": test.rubric, "roster": roster, "responses": responses,
+        "other_build_assessments": other_builds,
+        "grading_complete": assessments.assessment_grading_complete(
+            assessment_id, [], kind="build", season_id=test.season_id, event_slug=test.event_slug),
+    })
+
+
+@app.route("/api/assessments/<assessment_id>/build-grading/<student_username>", methods=["PATCH"])
+@coach_or_volunteer_required
+def api_set_build_grade(assessment_id, student_username):
+    test = _select_assessment(assessment_id)
+    if test.kind != "build":
+        return jsonify({"error": "not a build assessment"}), 400
+    data = request.get_json() or {}
+    override = data.get("override")
+    override_max = data.get("override_max")
+    try:
+        if override is not None:
+            override = float(override)
+        if override_max is not None:
+            override_max = float(override_max)
+        assessments.set_build_grade(
+            assessment_id, student_username,
+            rubric_values=data.get("rubric_values") or {},
+            override=override, override_max=override_max,
+            graded_by=g.user.username, comment=data.get("comment", ""))
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
 @app.route("/assessments/<assessment_id>/release-grades", methods=["POST"])
 @coach_required
 def api_release_grades(assessment_id):
@@ -2219,7 +2350,12 @@ def api_release_grades(assessment_id):
     if test is None:
         abort(404)
     try:
-        count = assessments.release_grades(assessment_id, test.snapshot or [], released_by=g.user.username)
+        if test.kind == "build":
+            count = assessments.release_grades(assessment_id, [], released_by=g.user.username,
+                                                kind="build", season_id=test.season_id,
+                                                event_slug=test.event_slug)
+        else:
+            count = assessments.release_grades(assessment_id, test.snapshot or [], released_by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "released_count": count})
@@ -5541,6 +5677,7 @@ def api_create_event():
             wiki_page=data.get("wiki_page", ""),
             topics=topics,
             foci=foci,
+            has_build=bool(data.get("has_build", False)),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

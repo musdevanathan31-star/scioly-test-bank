@@ -90,6 +90,19 @@ def rendered_pages(tmp_path_factory):
         a.assessment_id, [{"bucket": "s_test.pdf", "number": "1", "max_points": 1}])
     assessments.publish_assessment(a.assessment_id, "coach1")
 
+    # A build event too, so the build-specific grading template (a wholly
+    # separate page from the exam one above) is covered by this sweep as
+    # well — see assessment_grading_build.html.
+    events.add_custom_event("rocket", "Rocket", has_build=True)
+    seasons.create_season("2027-build", event_slugs=["rocket"], created_by="coach1")
+    seasons.set_roster("2027-build", "rocket", ["stu1"])
+    build_window = assessments.create_window("2027-build", "2027-01-01T09:00",
+                                              "2099-01-01T11:00", ["rocket"], label="BW1")
+    b = assessments.get_assessment_for(build_window.window_id, "rocket", kind="build")
+    assessments.set_assessment_rubric(b.assessment_id, [
+        {"kind": "scored", "label": "Distance", "max_points": 10},
+        {"kind": "measured", "label": "Mass", "unit": "g"}])
+
     review_app.app.config["SESSION_COOKIE_SECURE"] = False
     paths = {
         "coach1": ["/", "/scores", "/assessments", "/club", "/admin/jobs", "/settings",
@@ -98,7 +111,8 @@ def rendered_pages(tmp_path_factory):
                    f"/event/{slug}/quiz", f"/event/{slug}/jobs", f"/event/{slug}/scan",
                    f"/event/{slug}/extract/s_test.pdf",
                    f"/assessments/{a.assessment_id}/build",
-                   f"/assessments/{a.assessment_id}/grade"],
+                   f"/assessments/{a.assessment_id}/grade",
+                   f"/assessments/{b.assessment_id}/grade"],
         "stu1": ["/my-assessments", "/scores", "/settings"],
         "vol1": ["/archive", "/assessments", "/scores", "/settings",
                  f"/event/{slug}/", f"/event/{slug}/browse"],

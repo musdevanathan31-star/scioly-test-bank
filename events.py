@@ -70,6 +70,14 @@ class Event:
     # from the landing page via this flag, fully reversible. Built-ins can't
     # be archived (see is_builtin() guard at every call site).
     archived: bool = False
+    # Some Sci-Oly events (bridges, rockets, robots, ...) are judged by
+    # scoring a physical build, not by sitting a question-based test — there
+    # is nothing to "take". has_build lets an event carry a build assessment
+    # (assessments.Assessment(kind="build")) alongside, or instead of, its
+    # usual study-material assessment. Additive: absent/False means
+    # "study-only", exactly today's behavior, so no migration is needed —
+    # see assessments.py's Assessment.kind for the rest of the build design.
+    has_build: bool = False
     cover_markers: tuple[str, ...] = (
         "team name", "team number", "team #", "names:", "score:",
         "final score", "do not flip", "do not turn",
@@ -387,6 +395,7 @@ def _event_to_dict(ev: Event) -> dict:
         "foci":            list(ev.foci),
         "wiki_page":       ev.wiki_page,
         "archived":        ev.archived,
+        "has_build":       ev.has_build,
     }
 
 
@@ -402,6 +411,7 @@ def _dict_to_event(d: dict) -> Event:
         foci=tuple(d.get("foci") or ()),
         wiki_page=d.get("wiki_page") or "",
         archived=bool(d.get("archived", False)),
+        has_build=bool(d.get("has_build", False)),
     )
 
 
@@ -468,6 +478,7 @@ def add_custom_event(
     topics: list[str] | None = None,
     topic_keywords: dict | None = None,
     foci: list[str] | None = None,
+    has_build: bool = False,
 ) -> Event:
     """Register a new event at runtime and persist it to events_custom.json.
 
@@ -517,6 +528,7 @@ def add_custom_event(
         topic_keywords=topic_keywords or {},
         foci=foci_clean,
         wiki_page=(wiki_page or "").strip(),
+        has_build=bool(has_build),
     )
     EVENTS[slug] = ev
     _save_custom_events()

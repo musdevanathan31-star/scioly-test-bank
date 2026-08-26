@@ -52,6 +52,8 @@ Two ways to add an event — see README's "Adding a new event" for the full trad
 
 To temporarily hide an event without losing anything, use **🗄 Archive** next to it on the landing page — reversible via **Show archived events** → **↩ Unarchive**. Every event, including Circuit Lab and Thermodynamics, can be edited and archived the same way.
 
+**Creating an event with a build component**: check **"This event has a build component"** on either the "+ Register a new event" form or an existing event's **✎ Edit** modal — for bridges, rockets, robots, and anything else judged by scoring a physical build rather than sitting a question-based test. See "Scheduling and grading a build assessment" below for what this unlocks. An event can have a build component *and* the usual study material/practice quiz at the same time — checking this box doesn't remove anything.
+
 ### Downloading test PDFs from scioly.org
 
 On an event's main page, click **⬇ Download PDFs from scioly.org** — runs in the background with a live progress bar, no terminal needed. (Equivalent CLI: `python download_event.py --event <slug>`.)
@@ -381,6 +383,24 @@ If a student missed the class-wide window (absence, tech issue, etc.), you can g
 2. Enter the student's username, an opens/closes datetime, and a short reason. Click **Grant**.
 3. That student can now access the test during their personal window, completely independent of whether the class-wide window is open, closed, or hasn't started yet — it doesn't extend the class window, it's a separate clock that wins outright for that one student. Use the same modal with an earlier/blank window to revoke it later if needed.
 
+### Scheduling and grading a build assessment
+
+For events with a build component (bridges, rockets, robots, …) — see "Creating an event with a build component" above — there's nothing to publish, go live, or take. You schedule it and enter each participant's score by hand.
+
+1. Check "This event has a build component" on the event first (Registering a new event, above).
+2. On the **Assessments** dashboard, create a window that includes that event, same as for any other assessment — this alone schedules the build assessment. A second row appears for the event, labelled **(build)**, with its own status badge ("scheduled" → "graded" → "released" as you enter scores; a build assessment never goes through "published"/"live", since there's nothing to publish).
+3. Click **Rubric & scores** on the build row. At the top, define the rubric for this season:
+   - **Scored** lines count toward the total (e.g. "Efficiency", out of however many points that's worth this year).
+   - **Measured** lines (e.g. "Mass (g)", "Load (g)") are recorded and shown, but never added into the total — they're the raw record worth keeping for comparing results across a season, separate from whatever the scored number ends up being.
+   - Click **Save rubric**. Running the same event again this season, or reusing last year's rubric? Pick it from the **Copy rubric from…** dropdown instead of retyping it.
+   - **You don't have to define a rubric at all.** Leave it empty and the page just records one score per student directly — the app's original ask, and it needs zero setup.
+4. Below, one row per student rostered onto this event. Type each rubric line's value for that student (a coach works out that season's actual scoring — a formula, a lookup table, whatever the event's rules define — by hand, outside the app, and enters the *result*). The **Total** column updates live as you type: it's just the sum of the scored lines. Need to record something the rubric doesn't cover, or override the computed sum entirely (a re-score, a judged tiebreak, whatever)? Type a number into **Override** — it wins outright over the sum for that student. Add a comment if useful, then **Save** that row.
+5. Once every rostered student has a saved score, **Release grades** becomes available — same coach-only final step as an exam assessment, and it flips the row to "released."
+
+The app never computes the scoring formula itself, on purpose — the coach who filed this request put it plainly: *"the formula for score calculation changes between events and may have to be reimplemented for each event / season."* Bridge efficiency this year might be `load ÷ mass`; next year's rules might change the exponent, or switch to a completely different curve for rockets or robots. Baking any of that into the app means editing code every season just to keep grading working. Instead the app stores exactly two kinds of things — points that get summed, and raw measurements that don't — and leaves "what does this season's rubric actually mean" entirely up to the coach.
+
+Note: this is phase 1 of build-event support — the coach-facing scheduling and grading side. Students don't yet see build assessments on My Assessments or a released-score view for them; that's a separate, later piece of work.
+
 ### Permanently deleting things (only if enabled)
 
 Normally nothing in this app is really deleted — "Remove", "Archive" and "Disable" all set a reversible flag. On an instance where the operator has set `ALLOW_HARD_DELETE`, extra red **🗑 Delete** buttons appear for coaches: on users and seasons (Club Management), events (landing page), assessment windows and individual tests (Assessments dashboard), and one student's response (Grade page).
@@ -667,6 +687,8 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 | Permanently delete an assessment window or test | Coach (needs `ALLOW_HARD_DELETE`) | Assessments dashboard → 🗑 |
 | Let a student retake an assessment they submitted | Coach (needs `ALLOW_HARD_DELETE`) | Grade page → 🗑 next to their name |
 | Register a new event | Coach | Landing page → + Register a new event |
+| Mark an event as a build event (bridges, rockets, robots, …) | Coach | Landing page → + Register a new event / ✎ Edit → "This event has a build component" |
+| Schedule and grade a build assessment | Coach, Volunteer (assigned) | Assessments dashboard → (build) row → Rubric & scores |
 | Download scioly.org PDFs | Coach, Volunteer (assigned events) | Event page → ⬇ Download PDFs |
 | Upload a test PDF (+ key, + figures) | Coach, Volunteer (assigned events) | Event page → + Upload test |
 

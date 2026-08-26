@@ -1,0 +1,350 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Grade · {{ event_name }} · {{ school_name }} Sci-Oly Question Banks</title>
+<style>
+{{ common_css|safe }}
+.wrap{padding:18px;max-width:1100px;margin:0 auto}
+section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  padding:14px 18px;margin-bottom:14px}
+section h2{margin:0 0 4px 0;font-size:14px}
+section p.muted{margin:4px 0 10px 0;font-size:12px}
+.release-bar{display:flex;justify-content:space-between;align-items:center}
+.msg{font-size:12px;margin-top:8px}
+.msg.ok{color:var(--ok)}
+.msg.err{color:var(--bad)}
+
+/* Rubric editor */
+.rubric-row{display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line-soft)}
+.rubric-row:first-of-type{border-top:none}
+.rubric-row select{padding:3px 6px;border:1px solid var(--line);border-radius:4px}
+.rubric-row input[type=text]{flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px}
+.rubric-row input.num{width:80px;padding:4px 6px;border:1px solid var(--line);border-radius:4px}
+.rubric-row .kind-tag{font-size:10px;text-transform:uppercase;letter-spacing:.03em;
+  padding:1px 6px;border-radius:3px;border:1px solid var(--line);color:var(--muted)}
+.rubric-row .kind-tag.scored{border-color:var(--ok);color:var(--ok)}
+.rubric-row .kind-tag.measured{border-color:var(--accent);color:var(--accent)}
+.rubric-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+.copy-bar{display:flex;gap:8px;align-items:center;margin-left:auto}
+.copy-bar select{padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px}
+
+/* Roster / scoring table */
+.roster-table-wrap{overflow-x:auto}
+table.roster{width:100%;border-collapse:collapse;font-size:13px}
+table.roster th, table.roster td{padding:6px 8px;border-bottom:1px solid var(--line-soft);
+  text-align:left;white-space:nowrap}
+table.roster th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+table.roster th.measured, table.roster td.measured{background:var(--bg-alt)}
+table.roster input.line-input{width:64px;padding:3px 6px;border:1px solid var(--line);
+  border-radius:4px;text-align:right}
+table.roster input.override-input{width:70px;padding:3px 6px;border:1px solid var(--line);
+  border-radius:4px;text-align:right}
+table.roster input.comment-input{width:140px;padding:3px 6px;border:1px solid var(--line);
+  border-radius:4px}
+table.roster .total-cell{font-weight:600}
+table.roster .total-cell.pending{color:var(--muted);font-weight:400;font-style:italic}
+table.roster .save-cell button{font-size:11px;padding:3px 8px}
+table.roster .save-cell .saved{color:var(--ok);font-size:11px}
+</style></head>
+<body>
+<script>{{ common_js|safe }}</script>
+<header>
+  <h1>Grade (build) · {{ event_name }}</h1>
+  {% include "_user_badge.html" %}
+</header>
+<div class="wrap">
+
+  <section>
+    <div class="release-bar">
+      <span id="grading_progress" class="muted">Loading…</span>
+      <button id="release_btn" class="primary" disabled>Release grades</button>
+    </div>
+    <div id="release_msg" class="msg" style="display:none"></div>
+  </section>
+
+  <section>
+    <h2>Rubric</h2>
+    <p class="muted">
+      Each line is either <b>scored</b> (counts toward the total) or
+      <b>measured</b> (recorded for the record — mass, load, elapsed time,
+      … — but never added up). The total is always just the sum of the
+      scored lines, unless a manual override is set for a student, in which
+      case the override wins. This app never computes a scoring formula —
+      work out this season's rules by hand and enter the result as a scored
+      line or an override. Leave the rubric empty to just record a single
+      score per student.
+    </p>
+    <div id="rubric_list"></div>
+    <div class="rubric-actions">
+      <button type="button" id="add_scored_btn" class="ghost">+ Scored line</button>
+      <button type="button" id="add_measured_btn" class="ghost">+ Measured line</button>
+      <button type="button" id="save_rubric_btn" class="primary">Save rubric</button>
+      <span class="copy-bar">
+        <select id="copy_from_select"></select>
+        <button type="button" id="copy_rubric_btn" class="ghost">Copy rubric from…</button>
+      </span>
+    </div>
+    <div id="rubric_msg" class="msg" style="display:none"></div>
+  </section>
+
+  <section>
+    <h2>Scores</h2>
+    <p class="muted">One row per rostered student. Measured columns are shaded — they're recorded but not part of the total.</p>
+    <div class="roster-table-wrap">
+      <table class="roster" id="roster_table">
+        <thead><tr id="roster_head"></tr></thead>
+        <tbody id="roster_body"></tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+<script>
+const ASSESSMENT_ID = {{ assessment_id|tojson }};
+let RUBRIC = [], ROSTER = [], RESPONSES = {}, OTHER_BUILDS = [];
+
+function esc(s){ return (s == null ? "" : String(s))
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function uid(){ return "l" + Math.random().toString(36).slice(2, 10); }
+
+async function load(){
+  const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/build-grading`);
+  const j = await r.json();
+  RUBRIC = j.rubric || [];
+  ROSTER = j.roster || [];
+  RESPONSES = j.responses || {};
+  OTHER_BUILDS = j.other_build_assessments || [];
+  renderRubricEditor();
+  renderCopyPicker();
+  renderRoster();
+  updateProgress(j.grading_complete);
+}
+
+function updateProgress(complete){
+  const graded = ROSTER.filter(s => RESPONSES[s.username] && RESPONSES[s.username].manual_grade
+                                    && RESPONSES[s.username].manual_grade.points_earned != null).length;
+  document.getElementById("grading_progress").textContent =
+    ROSTER.length ? `${graded} / ${ROSTER.length} students scored` : "Nobody is rostered onto this event this season.";
+  const btn = document.getElementById("release_btn");
+  btn.disabled = !complete || !ROSTER.length;
+  btn.title = complete ? "" : "Every rostered student needs a recorded score first";
+}
+
+// --- Rubric editor -----------------------------------------------------
+
+function renderRubricEditor(){
+  const root = document.getElementById("rubric_list");
+  if(!RUBRIC.length){
+    root.innerHTML = '<p class="muted">No rubric lines yet — either add some below, or leave this empty and just record one score per student.</p>';
+    return;
+  }
+  root.innerHTML = RUBRIC.map((line, i) => `
+    <div class="rubric-row" data-idx="${i}">
+      <span class="kind-tag ${line.kind}">${line.kind}</span>
+      <input type="text" class="rubric-label" placeholder="Label" value="${esc(line.label)}">
+      ${line.kind === "scored"
+        ? `<input type="number" class="num rubric-max" min="0" step="any" placeholder="max pts" value="${line.max_points != null ? line.max_points : ""}">`
+        : `<input type="text" class="num rubric-unit" placeholder="unit (g, s, cm…)" value="${esc(line.unit || "")}">`}
+      <button type="button" class="ghost remove-line-btn" title="Remove this line">&times;</button>
+    </div>`).join("");
+  root.querySelectorAll(".remove-line-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.closest(".rubric-row").dataset.idx, 10);
+      RUBRIC.splice(idx, 1);
+      renderRubricEditor();
+    });
+  });
+}
+
+function addRubricLine(kind){
+  RUBRIC.push({id: uid(), kind, label: "", max_points: kind === "scored" ? 1 : undefined});
+  renderRubricEditor();
+}
+document.getElementById("add_scored_btn").addEventListener("click", () => addRubricLine("scored"));
+document.getElementById("add_measured_btn").addEventListener("click", () => addRubricLine("measured"));
+
+function collectRubricFromEditor(){
+  const rows = [...document.querySelectorAll("#rubric_list .rubric-row")];
+  return rows.map((row, i) => {
+    const line = RUBRIC[i];
+    const label = row.querySelector(".rubric-label").value.trim();
+    const entry = {id: line.id, kind: line.kind, label};
+    if(line.kind === "scored"){
+      entry.max_points = parseFloat(row.querySelector(".rubric-max").value);
+    } else {
+      entry.unit = row.querySelector(".rubric-unit").value.trim();
+    }
+    return entry;
+  });
+}
+
+document.getElementById("save_rubric_btn").addEventListener("click", async () => {
+  const rubric = collectRubricFromEditor();
+  const msgEl = document.getElementById("rubric_msg");
+  const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/rubric`, {
+    method: "PATCH", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({rubric}),
+  });
+  const j = await r.json();
+  msgEl.style.display = "";
+  if(j.ok){ msgEl.className = "msg ok"; msgEl.textContent = "Rubric saved."; await load(); }
+  else { msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed"; }
+});
+
+function renderCopyPicker(){
+  const sel = document.getElementById("copy_from_select");
+  if(!OTHER_BUILDS.length){
+    sel.innerHTML = '<option value="">(no other build assessments this season)</option>';
+    sel.disabled = true;
+    document.getElementById("copy_rubric_btn").disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  document.getElementById("copy_rubric_btn").disabled = false;
+  sel.innerHTML = OTHER_BUILDS.map(o =>
+    `<option value="${esc(o.assessment_id)}">${esc(o.event_slug)} — ${esc(o.window_label || o.assessment_id.slice(0,8))}</option>`).join("");
+}
+
+document.getElementById("copy_rubric_btn").addEventListener("click", async () => {
+  const sourceId = document.getElementById("copy_from_select").value;
+  if(!sourceId) return;
+  if(RUBRIC.length && !await confirmModal("This replaces the current rubric (and any lines you've been editing here) with the copied one. Continue?")) return;
+  const msgEl = document.getElementById("rubric_msg");
+  const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/rubric/copy`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({source_assessment_id: sourceId}),
+  });
+  const j = await r.json();
+  msgEl.style.display = "";
+  if(j.ok){ msgEl.className = "msg ok"; msgEl.textContent = "Rubric copied."; await load(); }
+  else { msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed"; }
+});
+
+// --- Roster / scoring table ---------------------------------------------
+
+function renderRoster(){
+  const head = document.getElementById("roster_head");
+  const body = document.getElementById("roster_body");
+  const scoredLines = RUBRIC.filter(l => l.kind === "scored");
+  const measuredLines = RUBRIC.filter(l => l.kind === "measured");
+  const cols = [...scoredLines, ...measuredLines];
+
+  head.innerHTML = `<th>Student</th>` +
+    cols.map(l => `<th class="${l.kind === "measured" ? "measured" : ""}" title="${l.kind === "scored" ? "max " + l.max_points : (l.unit || "")}">${esc(l.label)}${l.kind === "scored" ? ` <span class="muted">/ ${l.max_points}</span>` : (l.unit ? ` <span class="muted">(${esc(l.unit)})</span>` : "")}</th>`).join("") +
+    `<th>Override</th><th>Total</th><th>Comment</th><th></th>`;
+
+  if(!ROSTER.length){
+    body.innerHTML = `<tr><td colspan="${cols.length + 4}" class="muted">Nobody is rostered onto this event this season.</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = ROSTER.map(s => {
+    const resp = RESPONSES[s.username] || {};
+    const values = resp.rubric_values || {};
+    const grade = resp.manual_grade;
+    const cells = cols.map(l => {
+      const v = values[l.id];
+      return `<td class="${l.kind === "measured" ? "measured" : ""}">
+        <input type="number" step="any" class="line-input" data-line="${esc(l.id)}"
+               value="${v != null ? v : ""}"></td>`;
+    }).join("");
+    // The override field is deliberately never pre-filled from the stored
+    // grade: manual_grade only records the final total, not whether that
+    // total came from the scored-lines sum or an override, so there is
+    // nothing honest to show here on reload. Leaving it blank means "use
+    // the sum of scored lines" both on first load and after a reload.
+    return `
+    <tr data-username="${esc(s.username)}">
+      <td>${esc(s.display_name)}</td>
+      ${cells}
+      <td><input type="number" step="any" class="override-input" placeholder="override"></td>
+      <td class="total-cell ${grade ? "" : "pending"}" data-stored="${grade ? "1" : "0"}">${grade ? `${grade.points_earned} / ${grade.points_possible}` : "not scored"}</td>
+      <td><input type="text" class="comment-input" value="${esc(grade ? grade.comment || "" : "")}"></td>
+      <td class="save-cell"><button type="button" class="ghost save-row-btn">Save</button></td>
+    </tr>`;
+  }).join("");
+
+  body.querySelectorAll(".save-row-btn").forEach(btn => {
+    btn.addEventListener("click", () => saveRow(btn.closest("tr")));
+  });
+  // Live-updating total: recomputed client-side (sum of scored lines,
+  // unless an override is typed — same rule as compute_build_total) on
+  // every keystroke, purely for feedback before Save is clicked. The
+  // authoritative total is always whatever the server last stored, shown
+  // in the same cell until Save recomputes it server-side.
+  body.querySelectorAll(".line-input, .override-input").forEach(el => {
+    el.addEventListener("input", () => updateLiveTotal(el.closest("tr")));
+  });
+}
+
+function updateLiveTotal(row){
+  const scoredLines = RUBRIC.filter(l => l.kind === "scored");
+  const possible = scoredLines.reduce((a, l) => a + (parseFloat(l.max_points) || 0), 0);
+  const override = row.querySelector(".override-input").value;
+  const cell = row.querySelector(".total-cell");
+  let total;
+  if(override !== ""){
+    total = parseFloat(override);
+    if(isNaN(total)) return;
+  } else if(scoredLines.length){
+    total = 0;
+    for(const l of scoredLines){
+      const input = row.querySelector(`.line-input[data-line="${l.id}"]`);
+      total += parseFloat(input && input.value !== "" ? input.value : 0) || 0;
+    }
+  } else {
+    return; // no rubric, no override typed yet — leave the stored value showing
+  }
+  cell.textContent = `${total}${scoredLines.length || override !== "" ? " / " + (override !== "" ? (possible || "?") : possible) : ""} (unsaved)`;
+  cell.classList.add("pending");
+}
+
+async function saveRow(row){
+  const username = row.dataset.username;
+  const scoredLines = RUBRIC.filter(l => l.kind === "scored");
+  const rubric_values = {};
+  RUBRIC.forEach(l => {
+    const input = row.querySelector(`.line-input[data-line="${l.id}"]`);
+    const v = input ? input.value : "";
+    if(v !== "") rubric_values[l.id] = parseFloat(v);
+  });
+  const overrideRaw = row.querySelector(".override-input").value;
+  const override = overrideRaw !== "" ? parseFloat(overrideRaw) : null;
+  const comment = row.querySelector(".comment-input").value;
+
+  const body = {rubric_values, comment};
+  if(override !== null){
+    body.override = override;
+    if(!scoredLines.length){
+      // No-rubric ("single score per student") path — the override IS the
+      // score, and needs an explicit max since there are no scored lines
+      // to derive one from.
+      const maxStr = prompt("This assessment has no rubric — what's the max possible score?", "100");
+      const max = parseFloat(maxStr);
+      if(!maxStr || isNaN(max) || max <= 0) return toast("A positive max points value is required.", "err");
+      body.override_max = max;
+    }
+  } else if(!scoredLines.length){
+    return toast("This assessment has no scored rubric lines — enter an override score.", "err");
+  }
+
+  const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/build-grading/${encodeURIComponent(username)}`, {
+    method: "PATCH", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  if(j.ok){ toast("Saved.", "ok"); await load(); }
+  else { toast("Failed: " + (j.error || ""), "err"); }
+}
+
+document.getElementById("release_btn").addEventListener("click", async () => {
+  if(!await confirmModal("Release grades? Students will immediately be able to see their score for this assessment.")) return;
+  const r = await fetch(`${APP_ROOT}/assessments/${ASSESSMENT_ID}/release-grades`, {method: "POST"});
+  const j = await r.json();
+  const msgEl = document.getElementById("release_msg");
+  msgEl.style.display = "";
+  if(j.ok){ msgEl.className = "msg ok"; msgEl.textContent = `Released to ${j.released_count} student(s).`; }
+  else { msgEl.className = "msg err"; msgEl.textContent = j.error || "Failed"; }
+});
+
+load();
+</script>
+</body></html>

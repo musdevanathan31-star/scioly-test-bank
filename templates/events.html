@@ -123,6 +123,10 @@
         <label for="ne_foci">Rotating foci (optional)</label>
         <input id="ne_foci" type="text" placeholder="Endocrine, Nervous, Sense Organs" autocomplete="off">
         <div class="help">Comma-separated. Use when the event has a yearly sub-topic rotation (Anatomy &amp; Physiology, Dynamic Planet, Water Quality, Materials Science, …). Each question can be tagged with one focus; the markdown groups by focus when set.</div>
+
+        <label for="ne_has_build">Build component</label>
+        <label style="font-weight:400"><input id="ne_has_build" type="checkbox"> This event has a build component</label>
+        <div class="help">Bridges, rockets, robots, … — a coach schedules a build assessment and enters each participant's score by hand instead of the event having a question-based test.</div>
       </div>
       <div class="actions">
         <button id="ne_submit" class="primary" title="Register the event using the values above. Persisted to events_custom.json.">Create event</button>
@@ -181,6 +185,10 @@
       <label for="ev_edit_foci">Rotating foci</label>
       <input id="ev_edit_foci" type="text" placeholder="Endocrine, Nervous, Sense Organs">
       <div class="muted" style="grid-column:2;font-size:11px;margin-top:-4px">Comma-separated. For events whose sub-topic rotates yearly.</div>
+
+      <label for="ev_edit_has_build">Build component</label>
+      <label style="font-weight:400"><input id="ev_edit_has_build" type="checkbox"> This event has a build component</label>
+      <div class="muted" style="grid-column:2;font-size:11px;margin-top:-4px">Bridges, rockets, robots, … — scheduling a window then offers a build assessment for this event alongside its usual one.</div>
     </div>
     <div id="ev_edit_err" style="color:var(--bad);font-size:12px;margin-top:8px;display:none"></div>
     <div style="text-align:right;margin-top:18px;display:flex;gap:8px;justify-content:flex-end">
@@ -268,6 +276,7 @@ async function openEventEditModal(slug){
     document.getElementById("ev_edit_wiki").value   = j.wiki_page || "";
     document.getElementById("ev_edit_topics").value = (j.topics || []).filter(t => t !== "Other / General").join(", ");
     document.getElementById("ev_edit_foci").value   = (j.foci || []).join(", ");
+    document.getElementById("ev_edit_has_build").checked = !!j.has_build;
     document.getElementById("ev_edit_modal").classList.add("on");
     document.getElementById("ev_edit_name").focus();
   } catch(e){ toast("Network error: " + e.message, "err"); }
@@ -284,6 +293,7 @@ document.getElementById("ev_edit_save").addEventListener("click", async () => {
   const wiki   = document.getElementById("ev_edit_wiki").value.trim();
   const topics = document.getElementById("ev_edit_topics").value.trim();
   const foci   = document.getElementById("ev_edit_foci").value.trim();
+  const has_build = document.getElementById("ev_edit_has_build").checked;
   const err = document.getElementById("ev_edit_err");
   const btn = document.getElementById("ev_edit_save");
   err.style.display = "none";
@@ -292,7 +302,7 @@ document.getElementById("ev_edit_save").addEventListener("click", async () => {
     const r = await fetch(`${APP_ROOT}/api/events/${encodeURIComponent(_editingSlug)}`, {
       method: "PATCH",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name, topics, foci, wiki_page: wiki, event_match: match}),
+      body: JSON.stringify({name, topics, foci, wiki_page: wiki, event_match: match, has_build}),
     });
     const j = await r.json();
     if(j.ok){
@@ -341,6 +351,7 @@ document.getElementById("ne_submit").addEventListener("click", async () => {
   const wiki   = document.getElementById("ne_wiki").value.trim();
   const topics = document.getElementById("ne_topics").value.trim();
   const foci   = document.getElementById("ne_foci").value.trim();
+  const has_build = document.getElementById("ne_has_build").checked;
   const errEl = document.getElementById("ne_err");
   const okEl  = document.getElementById("ne_ok");
   errEl.style.display = "none"; okEl.style.display = "none";
@@ -353,7 +364,7 @@ document.getElementById("ne_submit").addEventListener("click", async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         slug, name, filename_prefix: prefix,
-        event_match: match, wiki_page: wiki, topics, foci,
+        event_match: match, wiki_page: wiki, topics, foci, has_build,
       }),
     });
     j = await r.json();

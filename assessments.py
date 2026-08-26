@@ -64,6 +64,16 @@ _LEGACY_RESPONSES_FILE = DATA_ROOT / "test_responses.json"
 
 SCHEMA_VERSION = 1
 
+# Synthetic "question number" a build assessment's single manual grade is
+# keyed under in Response.manual_grade — a build assessment has no
+# questions, but manual_grade/set_manual_grade/release_grades all key by
+# question number, and reusing that storage (rather than inventing a
+# parallel one) is what keeps release/Scores/grading-permission checks
+# working unchanged for both kinds. Real question numbers are strings of
+# digits (see build_question_bank.py); "__build__" can never collide with
+# one.
+BUILD_GRADE_KEY = "__build__"
+
 _lock_registry: dict[str, threading.RLock] = {}
 _registry_lock = threading.Lock()
 
@@ -261,7 +271,7 @@ def create_window(season_id: str, opens_at: str, closes_at: str,
     with _windows_transaction() as windows:
         windows[window_id] = window
     for slug in event_slugs:
-        _ensure_assessment(window_id, season_id, slug, created_by)
+        _ensure_assessments_for_event(window_id, season_id, slug, created_by)
     return window
 
 
@@ -294,7 +304,7 @@ def update_window(window_id: str, label: str | None = None, opens_at: str | None
         )
         windows[window_id] = updated
     for slug in new_slugs:
-        _ensure_assessment(window_id, existing.season_id, slug, existing.created_by)
+        _ensure_assessments_for_event(window_id, existing.season_id, slug, existing.created_by)
     return updated
 
 
@@ -323,6 +333,19 @@ class Assessment:
     season_id: str
     event_slug: str
     status: str = "preparing"     # preparing|published|live|closed|graded|released
+    # "exam" (the original, question-bank-built assessment) or "build" (a
+    # coach-graded build event — bridge, rocket, robot, ... — with no
+    # questions to publish/take, see the module docstring's Build events
+    # section). Independent of `status`'s legacy "building" value below —
+    # that was a status string renamed to "preparing" years before `kind`
+    # existed, and nothing here ever infers one from the other.
+    kind: str = "exam"
+    # Build-only: the season-specific scoring rubric a coach defines by
+    # hand — never a formula (see set_build_grade/compute_build_total).
+    # Each line: {"id", "kind": "scored"|"measured", "label",
+    # "max_points" (scored only), "unit" (measured only, optional)}.
+    # Always [] for an exam assessment.
+    rubric: list = field(default_factory=list)
     kept: list = field(default_factory=list)            # [{bucket, number, max_points}]
     snapshot: list | None = None                          # frozen question content, set at publish
     snapshot_contexts: dict = field(default_factory=dict)  # frozen shared-context blocks, keyed "bucket::id"
@@ -340,7 +363,8 @@ class Assessment:
 def _assessment_to_dict(t: Assessment) -> dict:
     return {
         "assessment_id": t.assessment_id, "window_id": t.window_id, "season_id": t.season_id,
-        "event_slug": t.event_slug, "status": t.status, "kept": list(t.kept),
+        "event_slug": t.event_slug, "status": t.status, "kind": t.kind,
+        "rubric": [dict(line) for line in t.rubric], "kept": list(t.kept),
         "snapshot": t.snapshot, "snapshot_contexts": dict(t.snapshot_contexts),
         "overrides": dict(t.overrides),
         "published_at": t.published_at, "published_by": t.published_by,
@@ -369,6 +393,13 @@ def _dict_to_assessment(d: dict) -> Assessment:
         assessment_id=d.get("assessment_id") or d["test_id"],
         window_id=d.get("window_id", ""), season_id=d.get("season_id", ""),
         event_slug=d.get("event_slug", ""), status=status,
+        # `kind` is a wholly separate field from the `status` migration
+        # above — deliberately read straight from the record with no
+        # cross-referencing of `status` at all, so a legacy "building"
+        # status record (an exam, always) can never be misread as a build
+        # assessment just because the two happen to share the word "build".
+        kind=d.get("kind") or "exam",
+        rubric=[dict(line) for line in (d.get("rubric") or [])],
         kept=list(d.get("kept") or []), snapshot=d.get("snapshot"),
         snapshot_contexts=dict(d.get("snapshot_contexts") or {}),
         overrides=dict(d.get("overrides") or {}),
@@ -388,9 +419,14 @@ def get_assessment(assessment_id: str) -> Assessment | None:
     return load_assessments().get(assessment_id)
 
 
-def get_assessment_for(window_id: str, event_slug: str) -> Assessment | None:
+def get_assessment_for(window_id: str, event_slug: str, kind: str = "exam") -> Assessment | None:
+    """One (window, event) pair can now hold up to two Assessments — an
+    "exam" and a "build" — since an event may have both study material and
+    a build component (see Event.has_build). `kind` defaults to "exam" so
+    every pre-existing caller keeps resolving exactly the assessment it did
+    before this parameter existed."""
     for t in load_assessments().values():
-        if t.window_id == window_id and t.event_slug == event_slug:
+        if t.window_id == window_id and t.event_slug == event_slug and t.kind == kind:
             return t
     return None
 
@@ -399,28 +435,49 @@ def assessments_for_window(window_id: str) -> list[Assessment]:
     return [t for t in load_assessments().values() if t.window_id == window_id]
 
 
-def _ensure_assessment(window_id: str, season_id: str, event_slug: str, created_by: str = "") -> Assessment:
-    """Lazily creates an Assessment for (window_id, event_slug) if one doesn't
-    already exist — never overwrites an existing Assessment (re-adding an event
-    that already has an Assessment, e.g. after it was removed and re-added to a
-    window, must not wipe out a test someone already built)."""
+def _ensure_assessment(window_id: str, season_id: str, event_slug: str, created_by: str = "",
+                        kind: str = "exam") -> Assessment:
+    """Lazily creates an Assessment for (window_id, event_slug, kind) if one
+    doesn't already exist — never overwrites an existing Assessment
+    (re-adding an event that already has an Assessment, e.g. after it was
+    removed and re-added to a window, must not wipe out a test someone
+    already built). `kind` defaults to "exam" so every pre-existing caller
+    creates exactly the assessment it did before this parameter existed;
+    see _ensure_assessments_for_event for how a build assessment gets
+    created alongside it."""
     # Fast-path check outside the lock (the common case: the test already
     # exists, so no write is needed). Re-checked inside the transaction
     # below to close the race where two threads both see "doesn't exist yet"
     # and would otherwise create two Assessment records for the same pair.
-    existing = get_assessment_for(window_id, event_slug)
+    existing = get_assessment_for(window_id, event_slug, kind)
     if existing is not None:
         return existing
     with _assessments_transaction() as assessments:
         existing = next((t for t in assessments.values()
-                         if t.window_id == window_id and t.event_slug == event_slug), None)
+                         if t.window_id == window_id and t.event_slug == event_slug and t.kind == kind), None)
         if existing is not None:
             return existing
         assessment_id = uuid.uuid4().hex
         t = Assessment(assessment_id=assessment_id, window_id=window_id, season_id=season_id, event_slug=event_slug,
-                  created_at=_now_iso(), created_by=created_by)
+                  kind=kind, created_at=_now_iso(), created_by=created_by)
         assessments[assessment_id] = t
         return t
+
+
+def _ensure_assessments_for_event(window_id: str, season_id: str, event_slug: str,
+                                   created_by: str = "") -> None:
+    """Ensures the "exam" Assessment for (window, event) exists, exactly as
+    every window always has — plus a "build" Assessment too when the event
+    has a build component (Event.has_build). An event can carry both a
+    study-material assessment and a build assessment in the same window; a
+    coach schedules both just by adding the event to a window, same as
+    today, with no separate "schedule a build" step."""
+    _ensure_assessment(window_id, season_id, event_slug, created_by, kind="exam")
+    import events as events_mod
+
+    ev = events_mod.EVENTS.get(event_slug)
+    if ev is not None and ev.has_build:
+        _ensure_assessment(window_id, season_id, event_slug, created_by, kind="build")
 
 
 def update_assessment_kept(assessment_id: str, kept: list, edited_by: str = "") -> Assessment:
@@ -442,6 +499,182 @@ def update_assessment_kept(assessment_id: str, kept: list, edited_by: str = "") 
             })
         updated = replace(existing, kept=cleaned, last_edited_by=edited_by, last_edited_at=_now_iso())
         assessments[assessment_id] = updated
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Build-event rubric — see the module docstring's "Build events" note and
+# CLAUDE.md/spec.md for the full design. The app deliberately never
+# computes a scoring formula: a coach defines rubric *lines* (scored or
+# measured), and the total is always just the sum of the scored lines'
+# values, unless a manual override is set. There is no per-event code path
+# and nothing here changes when a season's scoring rules change.
+# ---------------------------------------------------------------------------
+
+def _clean_rubric(rubric: list) -> list:
+    """Validates and normalizes a rubric line list. Each line must be
+    "scored" (contributes to the total; requires a positive max_points) or
+    "measured" (recorded, shown, and carried on every response, but NEVER
+    summed — see compute_build_total). A missing/blank id is assigned here
+    so the caller (the rubric editor) doesn't have to invent one for a
+    brand-new line."""
+    cleaned = []
+    seen_ids: set[str] = set()
+    for line in rubric:
+        kind = line.get("kind")
+        if kind not in ("scored", "measured"):
+            raise ValueError(f"rubric line kind must be 'scored' or 'measured', got {kind!r}")
+        label = (line.get("label") or "").strip()
+        if not label:
+            raise ValueError("every rubric line needs a label")
+        line_id = (line.get("id") or "").strip() or uuid.uuid4().hex[:12]
+        if line_id in seen_ids:
+            raise ValueError(f"duplicate rubric line id {line_id!r}")
+        seen_ids.add(line_id)
+        entry = {"id": line_id, "kind": kind, "label": label}
+        if kind == "scored":
+            try:
+                max_points = float(line.get("max_points"))
+            except (TypeError, ValueError):
+                raise ValueError(f"rubric line {label!r} needs a numeric max_points")
+            if max_points <= 0:
+                raise ValueError(f"rubric line {label!r}'s max_points must be > 0")
+            entry["max_points"] = max_points
+        else:
+            unit = (line.get("unit") or "").strip()
+            if unit:
+                entry["unit"] = unit
+        cleaned.append(entry)
+    return cleaned
+
+
+def set_assessment_rubric(assessment_id: str, rubric: list, edited_by: str = "") -> Assessment:
+    """Replaces a build assessment's rubric wholesale — the rubric editor
+    always sends the full line list back, same shape as
+    update_assessment_kept for an exam's kept-set. Blocked once grades have
+    been released: changing the definition of "scored" after students have
+    seen a final number would silently invalidate what was already shown."""
+    cleaned = _clean_rubric(rubric)
+    with _assessments_transaction() as assessments:
+        existing = assessments.get(assessment_id)
+        if existing is None:
+            raise ValueError(f"unknown assessment {assessment_id!r}")
+        if existing.kind != "build":
+            raise ValueError("only a build assessment has a rubric")
+        if existing.status == "released":
+            raise ValueError("grades are already released — can't change the rubric now")
+        updated = replace(existing, rubric=cleaned, last_edited_by=edited_by, last_edited_at=_now_iso())
+        assessments[assessment_id] = updated
+    return updated
+
+
+def copy_rubric_from(assessment_id: str, source_assessment_id: str, edited_by: str = "") -> Assessment:
+    """Populates a build assessment's rubric from another build assessment's
+    — "copy rubric from last year's window" — rather than a coach retyping
+    an unchanged rubric every season. Line ids are copied as-is: they're
+    scoped per-assessment (Response.rubric_values is keyed per
+    assessment_id), so reusing them across two different assessments never
+    collides."""
+    source = get_assessment(source_assessment_id)
+    if source is None:
+        raise ValueError(f"unknown source assessment {source_assessment_id!r}")
+    if source.kind != "build":
+        raise ValueError("source assessment is not a build assessment")
+    return set_assessment_rubric(assessment_id, [dict(line) for line in source.rubric], edited_by=edited_by)
+
+
+def compute_build_total(rubric: list, rubric_values: dict, override: float | None) -> float | None:
+    """The entire scoring calculation for a build assessment: sum the
+    "scored" lines' recorded values, unless a manual override is set, in
+    which case the override wins outright. "measured" lines never
+    contribute — they're the raw record (mass, load, elapsed time, ...) a
+    coach keeps for comparing across a season, not inputs to a formula this
+    app computes. Returns None only when there is nothing to total yet (no
+    override and no scored lines) — the no-rubric case must always be
+    scored via an override, see set_build_grade."""
+    if override is not None:
+        return float(override)
+    scored = [line for line in rubric if line.get("kind") == "scored"]
+    if not scored:
+        return None
+    return sum(float((rubric_values or {}).get(line["id"], 0) or 0) for line in scored)
+
+
+def build_rubric_possible(rubric: list) -> float:
+    """Sum of every "scored" line's max_points — the default denominator
+    for a build assessment's total. 0 when the rubric has no scored lines
+    (the no-rubric case), in which case the caller must supply an explicit
+    override_max instead."""
+    return sum(float(line.get("max_points") or 0) for line in rubric if line.get("kind") == "scored")
+
+
+def set_build_grade(assessment_id: str, student_username: str, rubric_values: dict | None = None,
+                    override: float | None = None, override_max: float | None = None,
+                    graded_by: str = "", comment: str = "") -> Response:
+    """Records one student's build-event grade. There is no "take" step for
+    a build assessment, so unlike set_manual_grade this also creates the
+    Response if one doesn't exist yet — the first time a coach records a
+    grade for a rostered student IS how their Response comes to exist.
+    Status is set to "submitted" (not a new value) so this response is
+    picked up by release_grades' existing "submitted or auto_submitted_late"
+    filter with no changes there.
+
+    The total is computed by compute_build_total — sum of the rubric's
+    scored lines, or the override if one is given — and stored as the
+    authoritative manual_grade[BUILD_GRADE_KEY], exactly the shape
+    set_manual_grade already uses for an exam FRQ. rubric_values is stored
+    alongside it, never summed by anything downstream."""
+    test = get_assessment(assessment_id)
+    if test is None:
+        raise ValueError(f"unknown assessment {assessment_id!r}")
+    if test.kind != "build":
+        raise ValueError("not a build assessment")
+    rubric_values = dict(rubric_values or {})
+    earned = compute_build_total(test.rubric, rubric_values, override)
+    if earned is None:
+        raise ValueError("this assessment has no scored rubric lines — enter an override score")
+    possible = build_rubric_possible(test.rubric)
+    if override is not None and override_max is not None:
+        possible = float(override_max)
+    elif not test.rubric:
+        # No-rubric case: build_rubric_possible() is 0 with nothing to sum,
+        # so a max must come from the coach explicitly — this is the
+        # "single score per student" path the app must support with zero
+        # rubric setup.
+        if override_max is None:
+            raise ValueError("this assessment has no rubric — enter a max points value with the score")
+        possible = float(override_max)
+    if possible <= 0:
+        raise ValueError("max points must be greater than 0")
+
+    with _response_transaction(assessment_id, student_username) as box:
+        resp = box.value
+        if resp is None:
+            resp = Response(student_username=student_username, assessment_id=assessment_id,
+                            status="submitted", started_at=_now_iso(), last_saved_at=_now_iso(),
+                            submitted_at=_now_iso())
+        manual_grade = dict(resp.manual_grade)
+        manual_grade[BUILD_GRADE_KEY] = {
+            "points_earned": earned, "points_possible": possible,
+            "graded_by": graded_by, "graded_at": _now_iso(), "comment": comment,
+        }
+        updated = replace(resp, manual_grade=manual_grade, rubric_values=rubric_values,
+                          status="submitted", last_saved_at=_now_iso())
+        box.value = updated
+
+    # Status flow for a build assessment is scheduled(preparing) -> graded
+    # -> released, reusing the existing vocabulary rather than inventing
+    # new values (see the module docstring). This is the "graded" leg:
+    # once every rostered student has a recorded grade, flip out of
+    # "preparing" automatically -- there's no separate "mark as graded"
+    # button to click, since completeness is exactly this same condition
+    # the grading page's release button already gates on.
+    if assessment_grading_complete(assessment_id, [], kind="build",
+                                   season_id=test.season_id, event_slug=test.event_slug):
+        with _assessments_transaction() as assessments:
+            current = assessments.get(assessment_id)
+            if current is not None and current.status == "preparing":
+                assessments[assessment_id] = replace(current, status="graded")
     return updated
 
 
@@ -493,6 +726,9 @@ def publish_assessment(assessment_id: str, published_by: str = "") -> dict:
         existing = assessments.get(assessment_id)
         if existing is None:
             raise ValueError(f"unknown test {assessment_id!r}")
+        if existing.kind == "build":
+            raise ValueError("build assessments have no questions to publish — "
+                             "record scores on the grading page instead")
         if existing.status != "preparing":
             raise ValueError(f"test is already {existing.status!r}")
         if not existing.kept:
@@ -743,6 +979,9 @@ def go_live_assessment(assessment_id: str, live_by: str = "") -> Assessment:
         existing = assessments.get(assessment_id)
         if existing is None:
             raise ValueError(f"unknown test {assessment_id!r}")
+        if existing.kind == "build":
+            raise ValueError("build assessments have nothing to serve students — "
+                             "there is no 'go live' step for a build assessment")
         if existing.status != "published":
             raise ValueError(f"test is {existing.status!r}, must be 'published' first")
         updated = replace(existing, status="live", live_at=_now_iso(), live_by=live_by)
@@ -860,6 +1099,14 @@ class Response:
     answers: dict = field(default_factory=dict)            # {number: {qtype, picked|text|picks}}
     auto_grade: dict = field(default_factory=dict)         # {number: {...,points_earned,points_possible}}
     manual_grade: dict = field(default_factory=dict)       # {number: {points_earned,points_possible,graded_by,graded_at,comment}}
+    # Build-only: the coach's per-rubric-line raw values, {line_id: value}.
+    # Never summed by anything — manual_grade[BUILD_GRADE_KEY].points_earned
+    # (set by set_build_grade, from compute_build_total) is the single
+    # authoritative total; this is the record kept alongside it because the
+    # raw measurements (mass, load, ...) are what a coach actually wants
+    # back when comparing across a season, not just the final number.
+    # Always {} for an exam response.
+    rubric_values: dict = field(default_factory=dict)
     status: str = "in_progress"     # in_progress|submitted|auto_submitted_late
     started_at: str = ""
     last_saved_at: str = ""
@@ -874,6 +1121,7 @@ def _response_to_dict(r: Response) -> dict:
         "student_username": r.student_username, "assessment_id": r.assessment_id,
         "question_order": list(r.question_order), "answers": dict(r.answers),
         "auto_grade": dict(r.auto_grade), "manual_grade": dict(r.manual_grade),
+        "rubric_values": dict(r.rubric_values),
         "status": r.status, "started_at": r.started_at, "last_saved_at": r.last_saved_at,
         "submitted_at": r.submitted_at, "released": r.released,
         "released_at": r.released_at, "released_by": r.released_by,
@@ -887,6 +1135,7 @@ def _dict_to_response(d: dict) -> Response:
         assessment_id=d.get("assessment_id") or d.get("test_id", ""),
         question_order=list(d.get("question_order") or []), answers=dict(d.get("answers") or {}),
         auto_grade=dict(d.get("auto_grade") or {}), manual_grade=dict(d.get("manual_grade") or {}),
+        rubric_values=dict(d.get("rubric_values") or {}),
         status=d.get("status", "in_progress"), started_at=d.get("started_at", ""),
         last_saved_at=d.get("last_saved_at", ""), submitted_at=d.get("submitted_at"),
         released=bool(d.get("released", False)), released_at=d.get("released_at"),
@@ -1313,11 +1562,39 @@ def submit_response(assessment_id: str, username: str, snapshot: list, now: date
     return updated
 
 
-def assessment_grading_complete(assessment_id: str, snapshot: list) -> bool:
-    """True iff every response with status in (submitted, auto_submitted_late)
-    has a non-null manual_grade.points_earned for every FRQ in the snapshot.
-    Recomputed on read (cheap — bounded by roster size x FRQ count) rather
-    than stored, to avoid a second source of truth that could drift."""
+def assessment_grading_complete(assessment_id: str, snapshot: list, *, kind: str = "exam",
+                                season_id: str = "", event_slug: str = "") -> bool:
+    """True iff grading is done.
+
+    For an exam (`kind="exam"`, the default — every pre-existing caller
+    keeps this behavior unchanged): every response with status in
+    (submitted, auto_submitted_late) has a non-null
+    manual_grade.points_earned for every FRQ in the snapshot.
+
+    For a build assessment (`kind="build"`): a build assessment's snapshot
+    is always empty, so the FRQ-counting rule above would trivially report
+    "complete" with nothing graded. Completeness instead means every
+    ROSTERED student (seasons.get_roster(season_id, event_slug) — there is
+    no "submission" to check the status of) has a recorded
+    manual_grade[BUILD_GRADE_KEY]. An empty roster is vacuously complete,
+    matching the exam branch's "no FRQs -> complete" behavior above.
+
+    Recomputed on read (cheap — bounded by roster size) rather than stored,
+    to avoid a second source of truth that could drift."""
+    if kind == "build":
+        import seasons as seasons_mod
+
+        roster = seasons_mod.get_roster(season_id, event_slug) if season_id and event_slug else []
+        if not roster:
+            return True
+        responses = get_responses_for_assessment(assessment_id)
+        for username in roster:
+            r = responses.get(username)
+            g = r.manual_grade.get(BUILD_GRADE_KEY) if r else None
+            if not g or g.get("points_earned") is None:
+                return False
+        return True
+
     frq_numbers = [str(q.get("number")) for q in snapshot if q.get("qtype") == "frq"]
     if not frq_numbers:
         return True
@@ -1349,7 +1626,8 @@ def set_manual_grade(assessment_id: str, student_username: str, number: str, poi
     return updated
 
 
-def release_grades(assessment_id: str, snapshot: list, released_by: str = "") -> int:
+def release_grades(assessment_id: str, snapshot: list, released_by: str = "", *,
+                   kind: str = "exam", season_id: str = "", event_slug: str = "") -> int:
     """Flips released=True (+released_at/released_by) on every submitted
     response for this test. Per-response storage (not a single Assessment-level
     flag) because "released" is fundamentally about what a student can see
@@ -1359,6 +1637,13 @@ def release_grades(assessment_id: str, snapshot: list, released_by: str = "") ->
     this server-side regardless of whether the UI's button was disabled,
     never trusting client state).
 
+    `kind`/`season_id`/`event_slug` default to the exam behavior every
+    pre-existing caller relies on; pass kind="build" (with the assessment's
+    season_id/event_slug) to use the roster-based completeness check
+    instead — see assessment_grading_complete. A build response's status is
+    "submitted" too (set by set_build_grade), so the per-response release
+    loop below needs no changes at all for either kind.
+
     Unlike the old design, this can no longer hold one lock across every
     student's release at once — each (assessment_id, username) pair has its own
     file/lock now, which is the whole point (see module docstring). So
@@ -1367,8 +1652,10 @@ def release_grades(assessment_id: str, snapshot: list, released_by: str = "") ->
     that per-student re-check is what keeps the same guarantee the old
     single big lock gave for free: nothing here acts on a status that's
     gone stale between the initial scan and that student's own lock."""
-    if not assessment_grading_complete(assessment_id, snapshot):
-        raise ValueError("not every free-response question has been graded yet")
+    if not assessment_grading_complete(assessment_id, snapshot, kind=kind,
+                                       season_id=season_id, event_slug=event_slug):
+        raise ValueError("not every free-response question has been graded yet" if kind != "build"
+                         else "not every rostered student has a recorded grade yet")
     count = 0
     for username, r in get_responses_for_assessment(assessment_id).items():
         if r.status not in ("submitted", "auto_submitted_late"):
@@ -1379,4 +1666,13 @@ def release_grades(assessment_id: str, snapshot: list, released_by: str = "") ->
                 continue
             box.value = replace(current, released=True, released_at=_now_iso(), released_by=released_by)
             count += 1
+    if kind == "build" and count > 0:
+        # The "released" leg of the build status flow (see set_build_grade's
+        # "graded" leg) -- purely a display-facing transition, same as
+        # "graded"; the actual access-control fact students are gated on is
+        # each response's own `released` flag flipped just above.
+        with _assessments_transaction() as assessments:
+            current = assessments.get(assessment_id)
+            if current is not None and current.status in ("preparing", "graded"):
+                assessments[assessment_id] = replace(current, status="released")
     return count
