@@ -213,12 +213,26 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   z-index:20;box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .zoom-controls button{padding:3px 8px;font-size:13px;line-height:1}
 
-/* Collapsed verified-correct cards */
-.q-card.collapsed{padding:8px 12px;cursor:pointer;display:flex;
-  gap:10px;align-items:center;background:#f3faf3}
-.q-card.collapsed .summary-line{flex:1;font-size:13px;color:var(--fg-soft);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.q-card.collapsed > *:not(.summary-line):not(.row){display:none}
+/* Collapsed one-line question rows (Phase 2a default view — every question
+   except the focused one). Must stay exactly one line and never reflow as
+   content changes: every text-bearing piece truncates with an ellipsis
+   instead of wrapping. */
+.q-card.collapsed{padding:6px 10px;cursor:pointer;display:flex;
+  gap:8px;align-items:center;min-width:0;background:var(--bg-card)}
+.q-card.collapsed.focused{box-shadow:0 0 0 2px var(--accent)}
+.q-card.collapsed .qnum{flex:0 0 auto;font-weight:600;font-size:13px;
+  min-width:22px;color:var(--fg)}
+.q-card.collapsed .qtype-tag{flex:0 0 auto;font-size:10px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.3px;color:var(--muted);
+  border:1px solid var(--line);border-radius:3px;padding:1px 5px;
+  white-space:nowrap}
+.q-card.collapsed .topic-tag{flex:0 1 160px;min-width:0;font-size:12px;
+  color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-card.collapsed .complete-marker{flex:0 0 auto;font-size:11px;white-space:nowrap}
+.q-card.collapsed .complete-marker.ok{color:var(--ok)}
+.q-card.collapsed .complete-marker.bad{color:var(--warn)}
+.q-card.collapsed .summary-line{flex:1 1 auto;min-width:0;font-size:13px;
+  color:var(--fg-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* Outline / TOC drawer */
 .outline-drawer{position:fixed;top:46px;bottom:0;left:0;width:280px;
@@ -511,6 +525,7 @@ details.q-zone .zone-body{padding:2px 10px 10px}
       answer capture). For image association: click an image below, then click
       a question card. Press <kbd>Esc</kbd> to cancel capture mode.
     </div>
+    <div id="completenessSummary" class="muted" style="font-size:12px;margin:2px 0 8px"></div>
     <div id="cards"></div>
     <div class="image-bay">
       <h3>Images extracted from this PDF
@@ -543,6 +558,17 @@ let captureMode = null;       // null | {field: "stem"|"choices"|"answer"|"newQ"
 let nextLocalId = 1;
 let MATCHING_DRAFT = null;    // {left: [...], right: []} while the two-drag matching capture is in progress
 const collapsedIds = new Set(); // session-only: which Q card _ids are collapsed
+// Phase 2a: the question list defaults to collapsed one-line rows, with only
+// the focused card expanded. `collapsedIds` still just says "this id renders
+// collapsed" (unchanged meaning, so Collapse all / Expand all below keep
+// working exactly as before — add every id / delete every id). The new
+// piece is `collapseDefaultApplied`: the *first* time renderCards() sees a
+// given _id it seeds the "collapsed unless focused" default into
+// collapsedIds; after that the id is left alone so a manual toggle, Collapse
+// all, or Expand all isn't silently undone by the next re-render. Every
+// _id is unique for the lifetime of the page (nextLocalId only increments),
+// so this set never needs clearing.
+const collapseDefaultApplied = new Set();
 let extraTopics = [];         // user-added topics, persisted via questions
 let extraFoci   = [];         // user-added foci, persisted via questions
 
@@ -704,6 +730,43 @@ function annOverrideMatching(q){
 // but once the user picks a segment here we write it explicitly.
 function questionType(q){
   return q.qtype || (q.choices && q.choices.length ? "mcq" : "frq");
+}
+// Pure, side-effect-free: given a question, says whether it's ready and, if
+// not, why — drives the collapsed-row completeness marker and the
+// page-level "N of M incomplete" count (Phase 2a). Rules per type:
+//   mcq      - stem text + at least 2 choices + a non-empty answer
+//   tf       - stem text + answer is exactly "True" or "False". An
+//              unparseable extracted answer (e.g. "T" or "" from the
+//              extractor) is deliberately left un-normalized elsewhere in
+//              this app (see annOverrideQtype's tf comment above) and must
+//              count as incomplete here too, not be treated as "close enough".
+//   frq      - stem text + a non-empty answer
+//   matching - stem text + at least one left item + at least one right item
+//              + at least one entry in matching.pairs
+function questionCompleteness(q){
+  const hasStem = !!(q.text || "").trim();
+  if(!hasStem) return {complete: false, reason: "no stem"};
+  const qtype = questionType(q);
+  if(qtype === "mcq"){
+    const choices = q.choices || [];
+    if(choices.length < 2) return {complete: false, reason: "needs choices"};
+    if(!(q.answer || "").toString().trim()) return {complete: false, reason: "no answer"};
+    return {complete: true, reason: null};
+  }
+  if(qtype === "tf"){
+    if(q.answer !== "True" && q.answer !== "False") return {complete: false, reason: "no answer"};
+    return {complete: true, reason: null};
+  }
+  if(qtype === "matching"){
+    const m = q.matching || {};
+    if(!(m.left && m.left.length)) return {complete: false, reason: "needs left items"};
+    if(!(m.right && m.right.length)) return {complete: false, reason: "needs right items"};
+    if(!(m.pairs && Object.keys(m.pairs).length)) return {complete: false, reason: "needs pairs"};
+    return {complete: true, reason: null};
+  }
+  // frq
+  if(!(q.answer || "").toString().trim()) return {complete: false, reason: "no answer"};
+  return {complete: true, reason: null};
 }
 function annOverrideQtype(q, newType){
   if(newType === "tf"){
@@ -1130,8 +1193,8 @@ async function drawQuestionBoxes(){
         toast(`Question #${num} not in the extracted set — click "+ Add question from region", then click this box to capture it.`, "warn");
         return;
       }
-      focusedId = q._id;
       curPage = q.page || curPage;
+      focusQuestion(q._id);
       renderCards();
       setTimeout(() => {
         const card = document.querySelector(".q-card.focused");
@@ -1224,8 +1287,14 @@ async function load(){
     const q = STATE.questions.find(x => String(x.number) === targetQ);
     if(q){
       curPage = q.page || 1;
-      focusedId = q._id;
+      focusQuestion(q._id);
     }
+  } else {
+    // No deep link — default to focusing the first question on the opening
+    // page, so the pane opens with one card already readable instead of a
+    // page of one-line rows and nothing expanded.
+    const firstQ = questionsOnPage(curPage)[0];
+    if(firstQ) focusQuestion(firstQ._id);
   }
   render();
   if(targetQ){
@@ -1317,9 +1386,41 @@ let casesPanelOpen = false;
 let cardZoneOpen = {};
 function zoneIsOpen(qid, zone){ return !!cardZoneOpen[`${qid}:${zone}`]; }
 
+// Sets focus to `id` and enforces "only one card expanded at a time" (req.
+// 4): expands the target and collapses every OTHER question on the current
+// page, even ones a prior "Expand all" had opened. Use this instead of
+// assigning `focusedId` directly whenever a click/action is meant to bring a
+// question into focus — a handful of call sites (jump-from-PDF-box, jump
+// from the shared-context roster, "Go to Q#", capture buttons needing focus
+// first) all funnel through here so the invariant holds everywhere.
+function focusQuestion(id){
+  focusedId = id;
+  questionsOnPage(curPage).forEach(q => {
+    if(q._id === id) collapsedIds.delete(q._id);
+    else collapsedIds.add(q._id);
+  });
+}
+
 function renderCards(){
   const list = questionsOnPage(curPage);
   const root = document.getElementById("cards");
+  // Seed the "collapsed unless focused" default the first time each _id is
+  // rendered (new page, newly-added question, post-undo/reprocess fresh
+  // ids). Left alone on every later render so a manual toggle or Collapse
+  // all / Expand all isn't undone by the next renderCards() call.
+  list.forEach(q => {
+    if(!collapseDefaultApplied.has(q._id)){
+      collapseDefaultApplied.add(q._id);
+      if(q._id !== focusedId) collapsedIds.add(q._id);
+    }
+  });
+  const summaryEl = document.getElementById("completenessSummary");
+  if(summaryEl){
+    const incomplete = list.filter(q => !questionCompleteness(q).complete).length;
+    summaryEl.textContent = list.length
+      ? `${incomplete} of ${list.length} incomplete on this page`
+      : "";
+  }
   // Contexts that touch this page (either pages[] include curPage, or any Q on
   // this page references them). Render at the top of the cards pane so the
   // user can edit/delete the shared block in one place.
@@ -1403,8 +1504,8 @@ function bindCasesPanelEvents(){
     el.addEventListener("click", () => {
       const q = STATE.questions.find(x => x._id === Number(el.dataset.jumpQ));
       if(!q) return;
-      focusedId = q._id;
       curPage = q.page || curPage;
+      focusQuestion(q._id);
       renderCards();
       setTimeout(() => {
         const card = document.querySelector(".q-card.focused");
@@ -1593,7 +1694,53 @@ function matchingHTML(q){
     </div>`;
 }
 
+// One-line collapsed row (Phase 2a default). Cheap on purpose — it's built
+// for potentially 65 of 66 questions on a page, so it does none of the
+// choice/topic/image-list work cardHTML()'s expanded body does. Carries
+// exactly what a reviewer needs to triage the list without opening a card:
+// number, topic, type, and why (if at all) it's incomplete, plus a same-line
+// stem preview when there's room.
+function collapsedRowHTML(q, isFocused){
+  const qtype = questionType(q);
+  const typeLabel = {mcq:"MCQ", tf:"T/F", frq:"FRQ", matching:"Matching"}[qtype] || qtype;
+  const topic = q.topic || "(no topic)";
+  const topicShort = topic.length > 28 ? topic.slice(0, 27) + "…" : topic;
+  const comp = questionCompleteness(q);
+  const marker = comp.complete
+    ? `<span class="complete-marker ok" title="Complete">✓</span>`
+    : `<span class="complete-marker bad" title="Incomplete — ${esc(comp.reason)}">⚠ ${esc(comp.reason)}</span>`;
+  const stemPreview = (q.text || "").trim();
+  const isSelected = SELECTED_QNUMS.has(q.number);
+  const selCheck = SELECTION_MODE
+    ? `<input type="checkbox" class="sel-check" data-act="toggleSelect" ${isSelected ? "checked" : ""}
+              title="Select this question for bulk context assignment">` : "";
+  return `
+    <div class="q-card collapsed ${isFocused ? "focused" : ""} ${SELECTION_MODE ? "sel-mode":""} ${isSelected ? "sel-picked":""}" data-id="${q._id}">
+      <button data-act="toggleCollapse" title="Expand this card" class="ghost btn-tiny"
+              style="background:transparent;border:none;font-size:14px;padding:0 6px;cursor:pointer">▶</button>
+      ${selCheck}
+      <span class="qnum">${esc(q.number)}</span>
+      <span class="qtype-tag">${typeLabel}</span>
+      <span class="topic-tag" title="${esc(topic)}">${esc(topicShort)}</span>
+      ${marker}
+      <span class="summary-line">${esc(stemPreview)}</span>
+    </div>`;
+}
+
 function cardHTML(q){
+  const isFocused = (focusedId === q._id);
+  // Collapse only when the user has explicitly toggled this card (or used
+  // "Collapse all"/"Expand all" in the toolbar) — see focusQuestion() and
+  // renderCards()'s collapseDefaultApplied seeding for how the default
+  // ("collapsed unless focused") gets into collapsedIds in the first place.
+  // Validating an answer used to auto-collapse; that was surprising, so we
+  // leave the card open and let the user decide.
+  const collapsed = collapsedIds.has(q._id);
+  if(collapsed) return collapsedRowHTML(q, isFocused);
+  // Everything below only runs for the (normally: one) expanded card per
+  // page — building choice rows, topic/focus option lists, image markup
+  // etc. for 65 collapsed rows that will never render them would be pure
+  // waste (Phase 2a req. 8).
   const choices = (q.choices||[]).map((c,i) => `
     <div class="choice-row" data-cid="${i}">
       <span class="letter">${c.letter || String.fromCharCode(65+i)}</span>
@@ -1639,28 +1786,6 @@ function cardHTML(q){
         `<option ${f === q.focus ? "selected":""}>${esc(f)}</option>`))
       .concat([`<option value="__NEW_FOCUS__">+ New focus...</option>`]);
     focusSelect = `<select class="focus" data-edit="focus" title="Focus">${fopts.join("")}</select>`;
-  }
-  const isFocused = (focusedId === q._id);
-  // Collapse only when the user has explicitly toggled this card (or used
-  // "Collapse all" in the toolbar). Validating an answer used to auto-collapse;
-  // that was surprising, so we leave the card open and let the user decide.
-  const collapsed = collapsedIds.has(q._id);
-  if(collapsed){
-    const choicesPreview = (q.choices && q.choices.length)
-      ? ` (${q.choices.length} choices)` : "";
-    const vStatus = (q.validation && q.validation.status) || "";
-    const vBadge = vStatus === "correct"   ? `<span class="badge badge-ok" title="Validated correct">✓</span>`
-                 : vStatus === "incorrect" ? `<span class="badge badge-bad" title="Validated incorrect">⚠</span>`
-                 : vStatus === "uncertain" ? `<span class="badge badge-warn" title="Validation uncertain">?</span>`
-                 : "";
-    return `
-    <div class="q-card collapsed" data-id="${q._id}">
-      <button data-act="toggleCollapse" title="Expand this card" class="ghost btn-tiny"
-              style="background:transparent;border:none;font-size:14px;padding:0 6px;cursor:pointer">▶</button>
-      <span class="qnum" style="font-weight:600">${esc(q.number)}</span>
-      ${vBadge}
-      <span class="summary-line">${esc((q.text||"").slice(0,90))}${choicesPreview}</span>
-    </div>`;
   }
   // Question-type segmented control (P-01) — always visible, first thing
   // in the Content zone. questionType() infers mcq/frq for the (common)
@@ -1938,11 +2063,11 @@ function bindCardEvents(){
         }
         return;
       }
-      // Otherwise focus this card (unless click on button/input).
-      // If the card is currently collapsed, expand it as part of the focus.
+      // Otherwise focus this card (unless click on button/input). Clicking a
+      // collapsed row focuses AND expands it, collapsing whatever was
+      // expanded before — see focusQuestion().
       if(!e.target.closest("input,textarea,button,select,summary")){
-        focusedId = Number(id);
-        if(collapsedIds.has(Number(id))) collapsedIds.delete(Number(id));
+        focusQuestion(Number(id));
         renderCards();
       }
     });
@@ -2056,8 +2181,13 @@ function bindCardEvents(){
           annOverrideQtype(q, newType);
           setDirty(true); renderCards();
         } else if(act === "toggleCollapse"){
-          if(collapsedIds.has(q._id)) collapsedIds.delete(q._id);
-          else                        collapsedIds.add(q._id);
+          if(collapsedIds.has(q._id)){
+            // Row is collapsed — its chevron expands the same way clicking
+            // the row does: focus it, collapsing whatever was open before.
+            focusQuestion(q._id);
+          } else {
+            collapsedIds.add(q._id);
+          }
           renderCards();
         } else if(act === "addChoice"){
           q.choices = q.choices || [];
@@ -2151,7 +2281,7 @@ function bindCardEvents(){
           // you'd already guessed the control existed. They're now on every
           // card, which means the button itself has to establish focus
           // rather than assuming it.
-          if(focusedId !== q._id){ focusedId = q._id; renderCards(); }
+          if(focusedId !== q._id){ focusQuestion(q._id); renderCards(); }
           startCapture(el.dataset.field, q._id);
         } else if(act === "capture-math"){
           startCapture("math:" + el.dataset.into, q._id);
@@ -2968,7 +3098,7 @@ function applyCapture(mode, j, text){
       page: curPage,
     };
     STATE.questions.push(q);
-    focusedId = q._id;
+    focusQuestion(q._id);
     annAddQuestion(q);
     annNoteRegion(q.number, "stem", r.page, r.target, r.x, r.y, r.w, r.h);
     setDirty(true); renderCards();
@@ -3033,7 +3163,7 @@ function finalizeMatchingDraft(){
     page: curPage,
   };
   STATE.questions.push(q);
-  focusedId = q._id;
+  focusQuestion(q._id);
   annAddQuestion(q);
   setDirty(true); renderCards();
   setStatus(`Captured matching Q#${num} (${draft.left.length} × ${draft.right.length} items). Fix up any mis-split rows and set the correct pairs below.`, "ok");
@@ -3085,7 +3215,7 @@ document.getElementById("gotoQ").addEventListener("change", e => {
   const q = STATE.questions.find(x => String(x.number) === num);
   if(!q){ toast(`No question #${num} in this PDF`, "err"); return; }
   curPage = q.page || 1;
-  focusedId = q._id;
+  focusQuestion(q._id);
   render();
   setTimeout(() => {
     const card = document.querySelector(".q-card.focused");
@@ -3158,7 +3288,7 @@ document.getElementById("addQ").addEventListener("click", ()=>{
   };
   STATE.questions.push(q);
   annAddQuestion(q);
-  focusedId = q._id;
+  focusQuestion(q._id);
   setDirty(true); renderCards();
 });
 
