@@ -247,7 +247,6 @@ _load_dotenv()
 # Anthropic client (lazy, optional)
 # ---------------------------------------------------------------------------
 
-_anthropic_client = None
 # Vision model — cheapest with image support today. Override with the
 # ANTHROPIC_VISION_MODEL env var when Anthropic ships a successor without
 # requiring a code change.
@@ -259,12 +258,76 @@ VISION_MODEL = os.environ.get("ANTHROPIC_VISION_MODEL", "claude-haiku-4-5-202510
 # ships. Used by the review-page "Generate diagram" chat panel.
 DIAGRAM_MODEL = os.environ.get("ANTHROPIC_DIAGRAM_MODEL", "claude-sonnet-4-6")
 
+# ---------------------------------------------------------------------------
+# Per-request/per-job vision key (browser-supplied ANTHROPIC key)
+# ---------------------------------------------------------------------------
+#
+# Every vision call (OCR, region capture, matching-table detection, image
+# assignment, equation→LaTeX) used to read only os.environ["ANTHROPIC_API_KEY"]
+# via a single module-level client singleton — meaning every user of a shared
+# server spent the operator's own key. The browser can now send a personal
+# key via the `X-LLM-Keys` header (see review_app.py's _request_llm_keys()),
+# already honoured by answer validation/qgen/diagram-chat through
+# llm_providers.chat(keys=...). This ContextVar closes the same gap for
+# vision, mirroring set_event()/_get_current() above:
+#   - Request-scoped vision routes (review_app.py: OCR, region-vision,
+#     column-vision, extract-math) bind this for the duration of one request.
+#   - Background jobs (reprocess/upload/scan-process, which run process_pair()
+#     on jobs.py's single worker thread — no Flask request context there) have
+#     their key captured at submit time and bound at the top of the worker
+#     thread by jobs.py's _run_job(); see that module for how the key is
+#     carried across the thread boundary without ever touching disk.
+# The key is NEVER written to .qbank_jobs.json, a job's .log file, a job's
+# `error`/result, or any log/print statement — it lives only in this
+# ContextVar (and jobs.py's transient in-memory side map) for the lifetime of
+# the request/job that supplied it.
+_vision_key_var: ContextVar[str | None] = ContextVar("scioly_vision_key", default=None)
 
-def _get_client():
-    global _anthropic_client
-    if _anthropic_client is None:
-        key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if key:
+
+def set_vision_key(key: str | None):
+    """Bind `key` (a browser-supplied Anthropic key, or None) to the active
+    context. Returns a token — pass it to reset_vision_key() to restore the
+    previous value (contextvars.ContextVar.set()/.reset() semantics), which
+    matters because Flask/gunicorn threads and jobs.py's single worker thread
+    are both reused across many requests/jobs, so leaving a stale value bound
+    would leak one user's key into the next unrelated request or job on the
+    same thread."""
+    return _vision_key_var.set(key)
+
+
+def reset_vision_key(token) -> None:
+    _vision_key_var.reset(token)
+
+
+@contextlib.contextmanager
+def vision_key_scope(key: str | None):
+    """Context-manager convenience wrapper around set_vision_key()/
+    reset_vision_key() for callers that don't need to hold the token
+    themselves."""
+    token = set_vision_key(key)
+    try:
+        yield
+    finally:
+        reset_vision_key(token)
+
+
+def _current_vision_key() -> str | None:
+    return _vision_key_var.get()
+
+
+# Anthropic clients, cached per API key so different users' vision calls never
+# share (or worse, silently reuse) another user's client/key. Keyed by a hash
+# of the key rather than the raw key string itself, purely so the key value
+# never appears as a dict key in an accidental debugger dump or repr.
+_client_cache: dict[str, "object"] = {}
+_client_cache_lock = _t_usage.Lock()
+
+
+def _client_for_key(key: str):
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    with _client_cache_lock:
+        client = _client_cache.get(h)
+        if client is None:
             import anthropic
             # `max_retries=4` overrides the SDK default of 2; combined with the
             # SDK's built-in exponential backoff this gives us 5 attempts spread
@@ -273,16 +336,34 @@ def _get_client():
             # without making single-call failures wait forever. 4xx errors
             # (bad key / bad request) still fail-fast — the SDK only retries
             # on 408/409/429 and 5xx.
-            _anthropic_client = anthropic.Anthropic(
+            client = anthropic.Anthropic(
                 api_key=key,
                 max_retries=4,
                 timeout=60.0,
             )
-    return _anthropic_client
+            _client_cache[h] = client
+        return client
+
+
+def _get_client():
+    """Resolve the Anthropic client to use for a vision call: the
+    per-request/per-job key bound via set_vision_key() takes priority over
+    the server's own ANTHROPIC_API_KEY, so a browser-supplied key always
+    covers its own request/job's spend instead of quietly falling back to
+    the operator's. Returns None (vision unavailable) only when neither is
+    set."""
+    key = (_vision_key_var.get(None) or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        return None
+    return _client_for_key(key)
 
 
 def _vision_available() -> bool:
-    return _get_client() is not None
+    """True iff either a per-request/per-job key or the server's env key is
+    present — cheap (no client construction), safe to call on every route to
+    decide whether to show vision-dependent UI/actions."""
+    return bool((_vision_key_var.get(None) or "").strip()
+                or os.environ.get("ANTHROPIC_API_KEY", "").strip())
 
 # ---------------------------------------------------------------------------
 # Topic taxonomy + keyword scoring (per-event; see events.py)

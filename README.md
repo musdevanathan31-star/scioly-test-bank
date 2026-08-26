@@ -499,6 +499,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 Without a key, the pipeline still runs: it skips vision OCR (image-based PDFs yield no questions) and skips image-association refinement (falls back to y-coordinate heuristic). The review UI still works; vision-dependent buttons disable themselves.
 
+The server key is now **optional** for vision specifically — anyone who's put their own Anthropic key in Settings → LLM API Keys (see below) gets vision (OCR, region/column capture, matching-table detection, image assignment, equation→LaTeX) charged to their own key instead, whether they're clicking a vision button directly or kicking off a background reprocess/upload job. `ANTHROPIC_API_KEY` in `.env` is still the fallback for anyone who hasn't opened Settings, and is still required for answer validation/question-generation/diagram-chat requests where nobody supplied their own key of any provider.
+
 ### Separating app code from data (`DATA_ROOT`)
 
 By default every event's data — PDFs, images, generated markdown, state/job files — plus `auth_users.json`, `events_custom.json`, and the shared `textbooks/` directory all live right next to the app's code, under the same directory `events.py` is in (`REPO_ROOT`). That's fine for local dev or a small instance, but on a real deployment the data grows continuously while the code doesn't — set `DATA_ROOT` in `.env` to put data on a separate (e.g. larger) disk instead:
@@ -529,7 +531,7 @@ After that, log in and use **Club Management → Manage Users** (coach-only, lin
 
 **Settings** (linked from the navicon, every logged-in user) is the one place for account self-service:
 - **My Account** — change your display name (a friendlier label shown in the navicon instead of your username; purely cosmetic, doesn't change your login) and change your own password (requires re-entering your current password first).
-- **LLM API Keys** — supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral key(s) for this browser only (localStorage, never sent to the server except as a request header) — used to override the server's own key, with automatic fallback through the list if one is rate-limited or out of credits.
+- **LLM API Keys** — supply your own Anthropic/OpenAI/Gemini/DeepSeek/Mistral key(s) for this browser only (localStorage, never sent to the server except as a request header) — used to override the server's own key, with automatic fallback through the list if one is rate-limited or out of credits. An Anthropic key here also covers vision (OCR/region-vision/column-vision/equation-to-LaTeX and background reprocess/upload jobs), not just chat-style calls — see "Cost notes" above and `spec.md`'s vision-key section for how it's carried into a background job and why it's never written to disk or logged.
 
 **Manage Users** (coach-only, on the **Club Management** page) — the same user CRUD that used to live at `/admin/users` (still works as a redirect here for old links/bookmarks).
 

@@ -277,6 +277,26 @@ _cancel_events_lock = threading.Lock()
 _worker_started = False
 _worker_started_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Per-job vision key side-channel (SECURITY: never persisted, never logged).
+#
+# Vision (OCR/region-capture/matching-detection/image-assignment) runs inside
+# process_pair() on THIS module's single worker thread, which has no Flask
+# request context — so a browser-supplied Anthropic key (see review_app.py's
+# _request_llm_keys(), sent via the X-LLM-Keys header) can't be read at call
+# time the way request-scoped vision routes read it. The submitting route
+# instead passes the key to submit_job()'s `vision_key` kwarg, which stashes
+# it here (in memory only, keyed by the job id that's about to be queued —
+# NOT on JobRecord, so it's never part of what _upsert() writes to
+# .qbank_jobs.json or what job_to_public_dict() returns). _run_job() binds it
+# into build_question_bank's per-context ContextVar for the life of the job
+# and pops it from this dict in its `finally`, so it cannot outlive the job
+# it belongs to. request_cancel() pops it too, for a job cancelled while
+# still queued (which never reaches _run_job at all).
+# ---------------------------------------------------------------------------
+_job_vision_keys: dict[str, str] = {}
+_job_vision_keys_lock = threading.Lock()
+
 
 def _start_worker_once() -> None:
     global _worker_started
@@ -313,6 +333,19 @@ def _run_job(record: JobRecord, target: Callable) -> None:
 
     log_buffer: list[str] = []
     token = _job_log_var.set(log_buffer)
+
+    # Bind this job's browser-supplied vision key (if any) into
+    # build_question_bank's ContextVar for the life of the job — this is
+    # "the top of the worker thread" the key has to reach, since process_pair()
+    # (called from inside `target`) has no other way to see it. Local import:
+    # build_question_bank imports this module at top level (for JobCancelled),
+    # so importing it back at jobs.py's module scope would be circular; by the
+    # time a job actually runs, both modules are already fully loaded, so this
+    # is just a sys.modules lookup, not a real re-import.
+    import build_question_bank as _bqb
+    with _job_vision_keys_lock:
+        vision_key = _job_vision_keys.get(record.id)
+    vision_token = _bqb.set_vision_key(vision_key)
 
     record.status = "running"
     record.started_at = datetime.now(timezone.utc).isoformat()
@@ -367,6 +400,9 @@ def _run_job(record: JobRecord, target: Callable) -> None:
         _flush_log(force=True)
         _upsert(slug, record)
         _job_log_var.reset(token)
+        _bqb.reset_vision_key(vision_token)
+        with _job_vision_keys_lock:
+            _job_vision_keys.pop(record.id, None)
         with _cancel_events_lock:
             _cancel_events.pop(record.id, None)
 
@@ -377,10 +413,19 @@ def _run_job(record: JobRecord, target: Callable) -> None:
 
 def submit_job(event: str, kind: str, label: str, started_by: str,
                target: Callable[..., dict | None],
-               max_queued_per_event: int = 8) -> str:
+               max_queued_per_event: int = 8,
+               vision_key: str | None = None) -> str:
     """Enqueue work. `target` is called as
     target(should_cancel=<callable>, on_progress=<callable>) on the worker
     thread and may return a dict to store as the job's `result`.
+
+    `vision_key` is an optional browser-supplied Anthropic key (see
+    review_app.py's _request_llm_keys()) captured HERE, at submit time, in
+    the caller's own request context — the worker thread has none of its
+    own. It is kept only in the in-memory `_job_vision_keys` side map (never
+    on `record`, so it's never part of the JSON index or job_to_public_dict())
+    and is bound into build_question_bank's vision ContextVar for the life of
+    the job by _run_job(), which pops it again in its `finally`.
 
     Raises JobQueueFull if `event` already has too many queued/running
     jobs — callers should turn that into an HTTP 429."""
@@ -394,6 +439,9 @@ def submit_job(event: str, kind: str, label: str, started_by: str,
         event=event, kind=kind, label=label, started_by=started_by,
         status="queued", created_at=datetime.now(timezone.utc).isoformat(),
     )
+    if vision_key:
+        with _job_vision_keys_lock:
+            _job_vision_keys[record.id] = vision_key
     _upsert(event, record)
     with _queue_lock:
         _queue.append((record, target))
@@ -438,6 +486,12 @@ def request_cancel(event: str, job_id: str, username: str, is_coach: bool) -> Jo
         record.status = "cancelled"
         record.finished_at = datetime.now(timezone.utc).isoformat()
         _upsert(event, record)
+        # This job never reaches _run_job (which is where the key would
+        # normally get popped), so it has to be cleaned up here instead —
+        # otherwise a job cancelled while still queued would leak its key in
+        # this in-memory map for the rest of the process's lifetime.
+        with _job_vision_keys_lock:
+            _job_vision_keys.pop(job_id, None)
     elif record.status == "running":
         record.cancel_requested = True
         _upsert(event, record)

@@ -484,6 +484,28 @@ def _request_llm_keys() -> dict:
     return keys or llm_providers.default_keys()
 
 
+def _with_vision_key(fn):
+    """Decorator for the request-scoped vision routes (OCR, region-vision,
+    column-vision, extract-math) — binds the browser-supplied Anthropic key
+    (if any) to build_question_bank's per-context vision ContextVar for the
+    duration of this request, so _get_client()/_vision_available() honour it
+    instead of only the server's ANTHROPIC_API_KEY. Always reset afterward:
+    Flask/gunicorn worker threads are reused across many requests, so a
+    ContextVar left bound would leak one user's key into the next unrelated
+    request handled on the same thread. Background-job vision (reprocess/
+    upload/scan-process) is bound separately, by jobs.py's worker thread —
+    see build_question_bank.set_vision_key()'s docstring."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        keys = _request_llm_keys()
+        token = bqb.set_vision_key(keys.get("anthropic"))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            bqb.reset_vision_key(token)
+    return wrapper
+
+
 # fitz.Document handles are deliberately NOT cached across requests.
 #
 # There used to be a bounded LRU here, which handed the same Document to all
@@ -2393,6 +2415,7 @@ def api_pdfs(event_slug):
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>")
+@_with_vision_key
 def api_pdf(event_slug, pdfname):
     _select_event(event_slug)
     state = bqb._load_state()
@@ -3625,6 +3648,15 @@ def api_upload_test_pdf(event_slug):
         else f"{Path(supplementary_name).stem}.pdf"
     )
 
+    # Captured here, in the request thread, while _request_llm_keys() can
+    # still read the X-LLM-Keys header — the job below runs on jobs.py's
+    # worker thread, which has no request context of its own. submit_job()
+    # carries this through its own in-memory side map (never persisted, never
+    # logged — see jobs.py) and binds it into build_question_bank's vision
+    # ContextVar for the life of the job, so process_pair()'s vision calls
+    # below use this user's key instead of falling back to the server's.
+    vision_key = _request_llm_keys().get("anthropic")
+
     def _target(should_cancel, on_progress):
         _job_target_setup(event_slug)
         pdf_test = test_dest
@@ -3653,7 +3685,7 @@ def api_upload_test_pdf(event_slug):
 
     try:
         job_id = jobs.submit_job(event_slug, "upload_extract", f"Extract {final_test_name}",
-                                 g.user.username, _target)
+                                 g.user.username, _target, vision_key=vision_key)
     except jobs.JobQueueFull as e:
         return jsonify({"error": str(e)}), 429
     return jsonify({"ok": True, "pdf_name": final_test_name, "has_key": key_dest is not None,
@@ -3788,6 +3820,9 @@ def api_scan_process_all(event_slug):
     upload/reprocess, so progress/cancellation work identically."""
     _select_event(event_slug)
     scan = _scan_event_files()
+    # See the upload_extract route above: captured now (request context),
+    # threaded through submit_job()'s vision_key kwarg for each queued job.
+    vision_key = _request_llm_keys().get("anthropic")
 
     def _make_target(pdfname: str, test_pdf: Path):
         def _target(should_cancel, on_progress):
@@ -3807,7 +3842,8 @@ def api_scan_process_all(event_slug):
         try:
             job_id = jobs.submit_job(event_slug, "scan_process", f"Process {pdfname}",
                                      g.user.username,
-                                     _make_target(pdfname, bqb.BASE_DIR / pdfname))
+                                     _make_target(pdfname, bqb.BASE_DIR / pdfname),
+                                     vision_key=vision_key)
             job_ids.append(job_id)
         except jobs.JobQueueFull:
             break
@@ -3859,6 +3895,10 @@ def api_reprocess(event_slug, pdfname):
                         "discarded_annotations": True,
                         "manual_mode": True})
 
+    # See the upload_extract route's identical comment: captured now (request
+    # context), threaded through submit_job()'s vision_key kwarg.
+    vision_key = _request_llm_keys().get("anthropic")
+
     def _target(should_cancel, on_progress):
         _job_target_setup(event_slug)
         job_state = bqb._load_state()
@@ -3872,7 +3912,7 @@ def api_reprocess(event_slug, pdfname):
 
     try:
         job_id = jobs.submit_job(event_slug, "reprocess", f"Reprocess {pdfname}",
-                                 g.user.username, _target)
+                                 g.user.username, _target, vision_key=vision_key)
     except jobs.JobQueueFull as e:
         return jsonify({"error": str(e)}), 429
     return jsonify({"ok": True, "job_id": job_id})
@@ -3985,6 +4025,7 @@ def api_restore_snapshot(event_slug, pdfname):
 
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/ocr", methods=["POST"])
+@_with_vision_key
 def api_ocr(event_slug, pdfname, pno):
     _select_event(event_slug)
     if not _vision_available():
@@ -4081,6 +4122,7 @@ def api_extract_region(event_slug, pdfname, pno):
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/extract-region-vision",
            methods=["POST"])
+@_with_vision_key
 def api_extract_region_vision(event_slug, pdfname, pno):
     """Haiku-vision fallback: extracts a region's text + choices via the LLM.
     Used when pure-Python region capture struggles with complex layouts."""
@@ -4151,6 +4193,7 @@ def api_extract_region_column(event_slug, pdfname, pno):
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/extract-region-column-vision",
            methods=["POST"])
+@_with_vision_key
 def api_extract_region_column_vision(event_slug, pdfname, pno):
     """Haiku-vision fallback for one column of a matching-question capture,
     analogous to api_extract_region_vision."""
@@ -4183,6 +4226,7 @@ def api_extract_region_column_vision(event_slug, pdfname, pno):
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/page/<int:pno>/extract-math",
            methods=["POST"])
+@_with_vision_key
 def api_extract_math(event_slug, pdfname, pno):
     _select_event(event_slug)
     if not _vision_available():
