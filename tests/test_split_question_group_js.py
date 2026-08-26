@@ -1,5 +1,5 @@
 """
-Unit tests for the pure JS helpers behind review.html's "Split into question
+Unit tests for the pure JS helpers behind extract.html's "Split into question
 group" card action (stripTrailingPointMarker / nextGroupQuestionNumbers).
 
 The feature converts a mis-parsed MCQ -- whose "choices" are really
@@ -31,13 +31,13 @@ pytestmark = pytest.mark.skipif(
     reason="Node not installed -- JS helper execution is skipped",
 )
 
-TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "review.html"
+TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "extract.html"
 
 
 def _extract_function(src: str, name: str) -> str:
     """Pull one top-level `function name(...){ ... }` block out by brace-matching."""
     m = re.search(r"function\s+" + re.escape(name) + r"\s*\([^)]*\)\s*\{", src)
-    assert m, f"could not find function {name} in review.html"
+    assert m, f"could not find function {name} in extract.html"
     start = m.end() - 1  # position of the opening "{"
     depth = 0
     i = start

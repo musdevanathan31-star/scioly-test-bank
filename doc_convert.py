@@ -1,6 +1,6 @@
 """
 Normalize .docx/.doc test/key submissions to PDF via headless LibreOffice,
-so the rest of the pipeline (process_pair, pdf_safety, review.html's
+so the rest of the pipeline (process_pair, pdf_safety, extract.html's
 page-based rendering/capture) only ever has to deal with PDFs.
 
 scioly.org test submissions are mostly PDF, but a meaningful slice (~7% of

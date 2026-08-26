@@ -219,8 +219,8 @@ def test_sources(page: Page, run: TestRun):
 
 
 def test_review(page: Page, run: TestRun):
-    label = "review"
-    url = f"{BASE}/event/{EV_SLUG}/review/{PDF_NAME}"
+    label = "extract"
+    url = f"{BASE}/event/{EV_SLUG}/extract/{PDF_NAME}"
     if not _safe_goto(page, url, run, label):
         return
     # Wait for STATE to populate. JS declares STATE = {questions:[],
@@ -304,7 +304,7 @@ def test_review(page: Page, run: TestRun):
 
 
 def test_browse_to_review_link(page: Page, run: TestRun):
-    label = "browse → review deep link"
+    label = "browse → extract deep link"
     # Pick a known question number from the browse page
     if not _safe_goto(page, f"{BASE}/event/{EV_SLUG}/browse", run, label):
         return
@@ -314,7 +314,7 @@ def test_browse_to_review_link(page: Page, run: TestRun):
         return
     # Pull href from the first "Open source ↗" link
     href = page.evaluate(
-        "document.querySelector('.qcard a[href*=\"/review/\"]')?.href || ''"
+        "document.querySelector('.qcard a[href*=\"/extract/\"]')?.href || ''"
     )
     if not href:
         run.add("warn", label, "no Open-source link on first card")
@@ -323,7 +323,7 @@ def test_browse_to_review_link(page: Page, run: TestRun):
         return
     try:
         page.wait_for_selector(".q-card.focused", timeout=8000)
-        run.add("info", label, "review page focused the linked question correctly")
+        run.add("info", label, "extract page focused the linked question correctly")
     except Exception:
         run.add("err", label, "?q=<num> did not focus the target question")
 
@@ -349,8 +349,8 @@ def main():
                 ("Event index",            test_event_index),
                 ("Browse",                 test_browse),
                 ("Sources",                test_sources),
-                ("Review (PDF + Qs)",      test_review),
-                ("Browse→Review deep link", test_browse_to_review_link),
+                ("Extract (PDF + Qs)",     test_review),
+                ("Browse→Extract deep link", test_browse_to_review_link),
             ]
             for name, fn in tests:
                 print(f"  · {name}…")

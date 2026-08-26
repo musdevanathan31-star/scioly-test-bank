@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>{{ event_name }} · Review · {{ school_name }} Sci-Oly Question Banks</title>
+<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>{{ event_name }} · Extract · {{ school_name }} Sci-Oly Question Banks</title>
 <style>
 {{ common_css|safe }}
 .list-wrap{padding:18px}
@@ -37,7 +37,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
 <script>{{ common_js|safe }}</script>
 <script>const HARD_DELETE = {{ "true" if hard_delete_enabled() else "false" }};</script>
 <header>
-  <h1>{{ event_name }} — Review</h1>
+  <h1>{{ event_name }} — Extract</h1>
   <span id="status" class="muted"></span>
   {%- if n_active %}
   {# The viewer is excluded at the source (presence.active_by_event's
@@ -52,7 +52,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
 </header>
 <div class="list-wrap">
   <div class="controls">
-    <span class="muted">Click a row to review. Sort by column. Tick boxes to bulk-reprocess.</span>
+    <span class="muted">Click a row to extract. Sort by column. Tick boxes to bulk-reprocess.</span>
     <div class="toolbar-group" style="position:relative;margin-left:18px">
       <button id="upload_toggle_btn" type="button" title="Upload a test PDF/.docx/.doc directly into this event">+ Upload test</button>
       <a href="{{ request.script_root }}/event/{{ event_slug }}/scan"><button title="Scan files — onboard files dropped directly into this event's directory (e.g. via scp) or convert .docx/.doc tests to PDF">↻</button></a>
@@ -73,7 +73,7 @@ th .arrow{font-size:10px;color:var(--muted);margin-left:4px}
           <label class="muted" style="font-size:12px;display:block;margin-bottom:10px">
             + figures (optional)
             <input type="file" name="supplementary_file" accept=".pdf,.docx,.doc"
-                   title="A separate document (e.g. a 'sheet'/'notes' file) containing figures referenced by this test — stored alongside it and browsable later from the review page's target toggle, not run through extraction"
+                   title="A separate document (e.g. a 'sheet'/'notes' file) containing figures referenced by this test — stored alongside it and browsable later from the extract page's target toggle, not run through extraction"
                    style="display:block;width:100%;margin-top:4px">
           </label>
           <button type="submit" class="primary" style="width:100%"
@@ -258,7 +258,7 @@ async function load(){
     html += `
       <tr ${needsAttention}>
         <td><input type="checkbox" class="row-check" data-pdf="${r.name}" title="Select for bulk reprocess"></td>
-        <td><a href="${APP_ROOT}/event/${EVENT_SLUG}/review/${r.name}" title="Review questions extracted from this PDF">${r.name}</a>
+        <td><a href="${APP_ROOT}/event/${EVENT_SLUG}/extract/${r.name}" title="Extract questions from this PDF">${r.name}</a>
           ${r.has_key ? '' : '<span class="badge badge-warn" title="No answer-key PDF found for this test">no key</span>'}</td>
         <td>${r.mtime_h}</td>
         <td class="numcell">${r.size_h}</td>
@@ -266,7 +266,7 @@ async function load(){
         <td class="numcell">${r.n_with_img}</td>
         <td class="numcell">${r.n_with_ans}</td>
         <td>${
-           r.manual_edited ? '<span class="badge badge-warn" title="You have edited this PDF\'s questions in the review UI">manual edits</span>'
+           r.manual_edited ? '<span class="badge badge-warn" title="You have edited this PDF\'s questions in the extract UI">manual edits</span>'
          : r.processed ? '<span class="badge badge-ok">processed</span>'
          : '<span class="badge badge-warn">not processed</span>'
         }</td>
@@ -388,7 +388,7 @@ document.addEventListener("click", async e=>{
   if(d){
     if(!await confirmModal(
       `Delete ALL questions from ${d}? Recorded as annotations — deletions survive Reprocess. ` +
-      `You can re-add questions from regions in the review page.`,
+      `You can re-add questions from regions in the extract page.`,
       {danger:true, confirmLabel:"Delete all"})) return;
     e.target.textContent = "Deleting...";
     e.target.disabled = true;

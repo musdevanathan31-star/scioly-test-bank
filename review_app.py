@@ -7,7 +7,7 @@ Run:
 
 Workflow:
   1. Browse all test PDFs (sort by name / modified / size / question count).
-  2. Open a PDF to review it page by page.
+  2. Open a PDF to extract its questions page by page.
   3. Edit question text, topic, choices, answer. Add or delete questions.
   4. Reassign images to questions: click an image in the bay -> click a
      question card -> assigned. Click the X on an attached image to detach.
@@ -513,7 +513,7 @@ def _select_event(slug: str):
     # all, not even read-only — practice-quiz/browse exposure could leak
     # content that ends up on a future official test. Every /event/<slug>/
     # route calls _select_event() first, so this one line blocks all of
-    # review.html/browse.html/quiz.html/sources.html/event_index.html for
+    # extract.html/browse.html/quiz.html/sources.html/event_index.html for
     # students in one place; their own surface lives entirely under
     # /my-tests (see review_app.py's student route block).
     if user is not None and user.role == "student":
@@ -744,7 +744,7 @@ def _supplementary_docs(test_pdf: Path) -> list[Path]:
 
     Despite the literal `_notes.pdf` filename scioly.org sometimes uses,
     everything this function returns is figures/images *attached to this
-    one test* — browsed via the review page's target toggle, never fed to
+    one test* — browsed via the extract page's target toggle, never fed to
     the LLM. This is NOT the same thing as the Scan page's `role="notes"`
     onboarding option (`api_scan_rename`), which is event-wide *source
     material* for question generation, moved into `texts_dir`. The
@@ -2346,13 +2346,23 @@ def event_index(event_slug):
             exclude_user=g.user.username).get(event_slug, 0))
 
 
-@app.route("/event/<event_slug>/review/<pdfname>")
-def review(event_slug, pdfname):
+@app.route("/event/<event_slug>/extract/<pdfname>")
+def extract_pdf(event_slug, pdfname):
     _select_event(event_slug)
-    return render_template("review.html",
+    return render_template("extract.html",
                             pdf_name=pdfname,
                             event_slug=event_slug,
                             event_name=bqb.EVENT.name)
+
+
+@app.route("/event/<event_slug>/review/<pdfname>")
+def review_redirect(event_slug, pdfname):
+    """Permanent redirect from the old page name. The per-PDF workflow here
+    was never reviewing a trustworthy automatic result — the extraction is
+    not robust, so this is where you re-extract the questions by hand. Old
+    bookmarks and links use /review/, so it has to keep resolving."""
+    return redirect(url_for("extract_pdf", event_slug=event_slug, pdfname=pdfname),
+                     code=301)
 
 
 # ---------------------------------------------------------------------------
@@ -2411,7 +2421,7 @@ def api_pdf(event_slug, pdfname):
         "key_page_count": (fitz.open(str(key_path)).page_count if key_path else None),
         "annotations": ann,
         # Tournament/Year: an explicit override if one's been saved, else the
-        # filename-derived guess — always something to pre-fill the review
+        # filename-derived guess — always something to pre-fill the extract
         # page's editable fields with, override or not.
         "tournament": meta["tournament"],
         "year": meta["year"],
@@ -2510,7 +2520,7 @@ def api_pdf_outline(event_slug, pdfname):
 
 @app.route("/event/<event_slug>/api/pdf/<pdfname>/supplementary")
 def api_pdf_supplementary(event_slug, pdfname):
-    """Backs review.html's dynamically-added target-toggle buttons (one per
+    """Backs extract.html's dynamically-added target-toggle buttons (one per
     discovered sheet/notes/etc. document) — see _supplementary_docs()."""
     _select_event(event_slug)
     test_pdf = bqb.BASE_DIR / pdfname
@@ -3559,7 +3569,7 @@ def api_upload_test_pdf(event_slug):
     # living in a separate file (the same situation _supplementary_docs()
     # already discovers for files dropped in some other way). Never fed to
     # process_pair(): it's pure storage/browsing material, picked up
-    # automatically by _supplementary_docs()'s glob on the next review-page
+    # automatically by _supplementary_docs()'s glob on the next extract-page
     # load purely from sharing the test's stem prefix — no further code
     # needed once it's saved under that naming convention.
     supplementary_name = None
@@ -3998,7 +4008,7 @@ def api_images(event_slug, pdfname):
     src_prefix = pdfname.replace("_test.pdf", "").replace(".pdf", "")
     # Both sides get hyphens folded to underscores. The pipeline's own
     # extracted images are already fully underscored (they go through
-    # bqb._slug), but images added from the review page keep the source
+    # bqb._slug), but images added from the extract page keep the source
     # PDF's punctuation verbatim — _slug_image_name embeds the bucket name,
     # so a manual pick off `..._ssss-avdestroyer_test.pdf` lands on disk as
     # `..._ssss-avdestroyer_test_q5_pick_<hash>.png`. Normalising only the
@@ -4324,7 +4334,7 @@ _VALIDATION_STATUSES = {"correct", "incorrect", "uncertain", "unavailable"}
 @app.route("/event/<event_slug>/api/q/<bucket>/<num>", methods=["PATCH"])
 def api_patch_question(event_slug, bucket, num):
     """Apply a single-field edit to one question, without going through the
-    review page. Used by the browse-page inline editor."""
+    extract page. Used by the browse-page inline editor."""
     _select_event(event_slug)
     data = request.get_json() or {}
     # Validated up front (before the transaction, not inside it) — a `with`
@@ -4651,7 +4661,7 @@ def api_context_image(event_slug):
     that several sub-questions refer back to). Sibling of api_q_pick_image,
     minus any question identity — contexts live in annotations, not
     state["questions"], so this route deliberately does NOT touch `state`;
-    the caller (review.html's applyCapture()) pushes the returned filename
+    the caller (extract.html's applyCapture()) pushes the returned filename
     into the context's own `images` list via the normal annotations save.
     Body: {pdfname, page, target, x, y, w, h, dpi}"""
     _select_event(event_slug)
@@ -4921,7 +4931,7 @@ def api_export(event_slug, fmt):
         # "_contexts" carries the shared case-study passages/tables/diagrams
         # referenced by any question's context_id (bucket::id-namespaced —
         # see bqb._all_contexts) so a JSON consumer doesn't have to separately
-        # reconstruct them from the review-page annotations.
+        # reconstruct them from the extract-page annotations.
         payload = {"questions": all_qs, "_contexts": bqb._all_contexts()}
         return Response(json.dumps(payload, ensure_ascii=False, indent=2),
                         mimetype="application/json",

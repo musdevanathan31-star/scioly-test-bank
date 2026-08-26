@@ -157,7 +157,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
     <a href="{{ request.script_root }}/event/{{ event_slug }}/" style="text-decoration:none;color:var(--fg-soft)">{{ event_name }}</a>
     <span class="muted" style="font-weight:400"> · Browse</span>
   </h1>
-  <a href="{{ request.script_root }}/event/{{ event_slug }}/"><button title="Review questions one PDF at a time">Review by PDF</button></a>
+  <a href="{{ request.script_root }}/event/{{ event_slug }}/"><button title="Extract questions one PDF at a time">Extract by PDF</button></a>
   <a href="{{ request.script_root }}/event/{{ event_slug }}/sources"><button title="Scrape sources or generate questions with an LLM">Generate</button></a>
   <button id="export_btn" title="Export questions — choose scope and format">Export ▾</button>
   <span id="hdr_sel_count" class="badge" style="display:none"
@@ -527,7 +527,7 @@ const VALIDATION_ICONS = {correct: "✓", incorrect: "⚠", uncertain: "?", unav
 // Browse-page matching editor: label+text per item (images are read-only
 // here, same as the rest of browse.html's image handling — no PDF-page
 // context to pick a new region from), plus a dropdown pairs editor mirroring
-// review.html's matchingHTML(). Reads/writes the whole `matching` object as
+// extract.html's matchingHTML(). Reads/writes the whole `matching` object as
 // one PATCH field, same idiom as choicesHtml/_readChoicesFromCard for `choices`.
 function matchingEditorHtml(q){
   const m = q.matching || {left: [], right: [], pairs: {}};
@@ -592,8 +592,8 @@ function _readMatchingFromCard(card, q){
 function renderCard(q){
   const isReal = !q._synthetic_bucket;
   const sourceLink = isReal
-    ? `<a href="${APP_ROOT}/event/${EVENT_SLUG}/review/${encodeURIComponent(q._bucket)}?q=${encodeURIComponent(q.number)}"
-         target="_blank" title="Open the source PDF on its review page (Q${esc(q.number)} highlighted)">
+    ? `<a href="${APP_ROOT}/event/${EVENT_SLUG}/extract/${encodeURIComponent(q._bucket)}?q=${encodeURIComponent(q.number)}"
+         target="_blank" title="Open the source PDF on its extract page (Q${esc(q.number)} highlighted)">
          Open source ↗
        </a>`
     : "";
@@ -1032,7 +1032,7 @@ window.acceptSimilar = async function(){
 };
 
 // ---------- Diagram generation chat ----------
-// Same backend endpoints review.html uses (keyed by bucket + Q#, not tied to
+// Same backend endpoints extract.html uses (keyed by bucket + Q#, not tied to
 // a real PDF file), so this works for synthetic buckets too — that's the
 // only place imported/generated questions can reach this capability from.
 let DIAGRAM_CHAT = null;   // {q, messages: [...]}

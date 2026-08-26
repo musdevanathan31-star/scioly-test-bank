@@ -1645,7 +1645,7 @@ def _validate_matching_answer(q: dict, keys: dict) -> dict:
     plus the recorded pairs mapping, asks the LLM to verify each pairing,
     and returns a per-pair breakdown nested under the same top-level shape
     every other question type uses (status/rationale/source/validated_at/
-    model) so review.html's existing validate-bar rendering needs only one
+    model) so extract.html's existing validate-bar rendering needs only one
     additional conditional to also show `per_pair` when present — the
     aggregate status/badge logic is unchanged.
 
@@ -2596,7 +2596,7 @@ def _render_topic_section(lines: list[str], topic: str, qs: list[dict],
 def _all_contexts() -> dict[str, dict]:
     """Shared context blocks (case-study passages/tables/diagrams) across
     every bucket of the current event, namespaced "bucket::id" — context ids
-    are only unique within their own bucket (see review.html's nextContextId
+    are only unique within their own bucket (see extract.html's nextContextId
     counter, which restarts per PDF)."""
     state = _load_state()
     out: dict[str, dict] = {}

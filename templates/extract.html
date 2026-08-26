@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Review · {{ pdf_name }}</title>
+<html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Extract · {{ pdf_name }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
@@ -2089,7 +2089,7 @@ function cardHTML(q){
   const v = q.validation;
   // Lets a human set/override the verdict directly, no LLM call — mirrors
   // Browse page's existing manual Validation dropdown (validated_by:
-  // "human") exactly, just reachable from the review page too now.
+  // "human") exactly, just reachable from the extract page too now.
   const markHumanSelect = `<select class="btn-tiny mark-human" title="Set this verdict yourself — no LLM call">
       <option value="" ${!v || !v.status ? "selected" : ""}>(unset)</option>
       <option value="correct" ${v && v.status==="correct" ? "selected" : ""}>✓ Correct</option>

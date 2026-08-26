@@ -56,24 +56,24 @@ On an event's main page, click **⬇ Download PDFs from scioly.org** — runs in
 
 ### Uploading your own test PDF
 
-Same event page has a **+ Upload test** button near the top that opens a small form with three slots: the test (required), its answer key (optional), and a figures/supplementary document (optional — for tests that ship their diagrams in a separate file, e.g. a `_sheet`/`_notes` PDF; see "pulling figures from a supplementary document" below). Each slot accepts a PDF, `.docx`, or `.doc` — Word documents are converted to PDF automatically (needs `soffice`/LibreOffice installed on the server; if it isn't, the upload fails with an install hint instead of hanging). The test and key are run through extraction immediately — you'll see questions on the very next page load, no separate step required. The figures file is never extracted; it's just stored for browsing on the review page.
+Same event page has a **+ Upload test** button near the top that opens a small form with three slots: the test (required), its answer key (optional), and a figures/supplementary document (optional — for tests that ship their diagrams in a separate file, e.g. a `_sheet`/`_notes` PDF; see "pulling figures from a supplementary document" below). Each slot accepts a PDF, `.docx`, or `.doc` — Word documents are converted to PDF automatically (needs `soffice`/LibreOffice installed on the server; if it isn't, the upload fails with an install hint instead of hanging). The test and key are run through extraction immediately — you'll see questions on the very next page load, no separate step required. The figures file is never extracted; it's just stored for browsing on the extract page.
 
-### Previewing a PDF without opening the review page
+### Previewing a PDF without opening the extract page
 
-On the event's PDF list, click **👁 Preview** on any row to slide in a panel on the right showing that PDF — its own Test/Key/sheet toggle, page nav, and zoom, all without leaving the list. Handy for a quick glance (e.g. confirming which file is actually the test before deciding whether you need ⇄ Swap) when you don't need the full review page.
+On the event's PDF list, click **👁 Preview** on any row to slide in a panel on the right showing that PDF — its own Test/Key/sheet toggle, page nav, and zoom, all without leaving the list. Handy for a quick glance (e.g. confirming which file is actually the test before deciding whether you need ⇄ Swap) when you don't need the full extract page.
 
 ### Onboarding files copied directly onto the server
 
 If you (or a script) `scp` files straight into an event's directory instead of using the upload form or the scioly.org download — e.g. while assembling a question bank from elsewhere — they won't show up anywhere until they're named like everything else. The event's **Scan files** page finds them: a **Ready to process** bucket for already-correctly-named files that were never extracted (one-click **Process all**), a **Needs conversion** bucket for `.docx`/`.doc` files still waiting on PDF conversion, and an **Unrecognized** bucket for anything else, with a small form to onboard each one by role:
 - **Test** / **Key** — needs a best-effort year/division guess (always editable) plus a submitter label; renamed in place to match the naming convention.
-- **Supplementary** — figures/images for *one specific* test; pick which test it belongs to and a short label (e.g. "sheet"). Becomes browsable on that test's review page via the target toggle.
+- **Supplementary** — figures/images for *one specific* test; pick which test it belongs to and a short label (e.g. "sheet"). Becomes browsable on that test's extract page via the target toggle.
 - **Notes** — reading material for *generating new questions*, the same kind of thing as anything already uploaded on the Sources page. No extra fields — it's moved straight into the event's source list (`.pdf`/`.docx`/`.doc`/`.md`/`.txt` all accepted; Word docs convert to PDF automatically). **Supplementary and Notes are easy to confuse** but serve different purposes: supplementary is *for a test*, notes is *for the LLM*.
 
 This is a manual "Refresh" page, not a background watcher — revisit it after dropping in new files. The landing page also shows a small "N unrecognized" badge next to any event that has files waiting here.
 
-### Reviewing a PDF page-by-page
+### Extracting a PDF page-by-page
 
-Click a PDF's name from the event page (or **Review by PDF**) to open the review page — the PDF on one side, extracted question cards on the other. To get back, click the **event name** at the left of the review page's title (e.g. the "Circuit Lab" in "Circuit Lab · circuitlab_2020_….pdf") — it links to that event's list of test PDFs. The question pane opens with every question collapsed to a one-line row **except the one in focus**, which expands into the full card described below — see "The question list: collapsed rows and one expanded card" for what each row shows.
+Click a PDF's name from the event page (or **Extract by PDF**) to open the extract page — the PDF on one side, extracted question cards on the other. To get back, click the **event name** at the left of the extract page's title (e.g. the "Circuit Lab" in "Circuit Lab · circuitlab_2020_….pdf") — it links to that event's list of test PDFs. The question pane opens with every question collapsed to a one-line row **except the one in focus**, which expands into the full card described below — see "The question list: collapsed rows and one expanded card" for what each row shows.
 
 **Where the controls live.** The top toolbar keeps only what you reach for constantly — **Go to Q**, plus two menus and an overflow:
 - **+ Add ▾** — the four ways to add a question: **+ Add question from region**, **+ Add matching question**, **+ Add context from region**, **+ Add blank**.
@@ -146,7 +146,7 @@ To set one up:
 2. **Link the sub-questions to it.** Either pick the context from each question card's Context dropdown one at a time, or bulk-assign several at once: tick the checkbox on each question's row (every row has one — no mode to turn on first), or click **Tools ▾ → 🔗 Group questions on this page** to tick every question on the current page in one go (click it again to clear the page). The moment anything's ticked, a bar appears right under the toolbar with the count, the picked question numbers, **Assign to context ▾**, and **Clear**; once you've ticked at least one question, clicking its bounding box on the PDF also toggles it. Use **Assign to context ▾** to link the whole selection to an existing context or a freshly captured one in one step — clearing the selection (via **Clear**, or by un-ticking down to zero) makes the bar disappear again. Selections persist while you flip pages, so a group whose questions span pages is no problem.
 3. **Review the group.** The collapsible **📎 Question groups in this PDF** panel above the page cards lists every context on this PDF regardless of which page you're currently viewing, with jump links to its linked questions — useful for auditing a group that spans pages.
 
-Once linked, the shared context (text and any figures) renders once above the whole group everywhere the app shows questions: the review page, the markdown/PDF/CSV/JSON exports, the practice quiz (behind its "Keep question groups together" checkbox), and a published assessment. **A published assessment's shuffle is group-preserving and unconditional** — group members are always served together and in their original order, never split apart or interleaved with unrelated questions, since that would be a correctness bug on a graded test (see spec.md for why this differs from the quiz page's opt-in checkbox). The student take page also collapses a repeated context banner to a one-line "Refer to the diagram above" affordance instead of re-showing the full figure on every sub-question.
+Once linked, the shared context (text and any figures) renders once above the whole group everywhere the app shows questions: the extract page, the markdown/PDF/CSV/JSON exports, the practice quiz (behind its "Keep question groups together" checkbox), and a published assessment. **A published assessment's shuffle is group-preserving and unconditional** — group members are always served together and in their original order, never split apart or interleaved with unrelated questions, since that would be a correctness bug on a graded test (see spec.md for why this differs from the quiz page's opt-in checkbox). The student take page also collapses a repeated context banner to a one-line "Refer to the diagram above" affordance instead of re-showing the full figure on every sub-question.
 
 To remove a figure from a context, click the **×** on its thumbnail — this only unlinks it from that context (the underlying PNG stays on disk, since another context or question may still use it).
 
@@ -443,7 +443,7 @@ What to know before you use it:
 | Create/edit/archive events | ✅ | ❌ |
 | Manage users | ✅ | ❌ |
 | Upload/edit shared textbooks | ✅ | view/use only |
-| Generate questions, scrape scio.ly, review PDFs, browse/export, quizzes | ✅ | ✅, for assigned events only |
+| Generate questions, scrape scio.ly, extract PDFs, browse/export, quizzes | ✅ | ✅, for assigned events only |
 
 ## For Volunteers
 
@@ -455,9 +455,9 @@ A coach creates your account and tells you the username/password (and which even
 
 Only the events a coach assigned you. Everything else doesn't appear on your landing page, and typing its URL directly returns a 403, not an error page that reveals it exists.
 
-### Reviewing and editing questions in your assigned events
+### Extracting and editing questions in your assigned events
 
-Identical to the coach workflow above for **Review by PDF** — drag-capture, image reassignment, math capture, reprocess, snapshot/restore. The only difference is scope: you only see PDFs for events you've been assigned.
+Identical to the coach workflow above for **Extract by PDF** — drag-capture, image reassignment, math capture, reprocess, snapshot/restore. The only difference is scope: you only see PDFs for events you've been assigned.
 
 ### Browsing, searching, and editing within your assigned events
 
@@ -610,14 +610,14 @@ It ramps through increasing numbers of concurrent synthetic students (`--steps`,
 While a long action runs (upload/extract, reprocess, a scrape, LLM generation) a progress window shows the server's own console output live. It closes itself a moment after the job **succeeds**; a job that fails or is cancelled leaves it open, because that console is the only place the reason is written. A striped moving bar means "still working" — most PDFs never report a page count to measure against, so there is nothing to show a percentage of.
 
 | Onboard files dropped in via scp (test/key/supplementary/notes) | Coach, Volunteer (assigned events) | Event page → Scan files (next to + Upload test) |
-| Preview a PDF without opening the review page | Coach, Volunteer (assigned events) | Event page → 👁 Preview |
-| Fix a backwards test/key upload | Coach, Volunteer (assigned events) | Event page → ⇄ Swap, or Review page → Tools ▾ → ⇄ Swap test/key |
-| Correct a PDF's Tournament name / Year | Coach, Volunteer (assigned events) | Review page → header fields next to the PDF name |
-| Review/edit one PDF's questions | Coach, Volunteer (assigned events) | Event page → click a PDF / Review by PDF |
-| Pull figures from a supplementary doc | Coach, Volunteer (assigned events) | Review page → target toggle next to Test PDF/Key PDF |
+| Preview a PDF without opening the extract page | Coach, Volunteer (assigned events) | Event page → 👁 Preview |
+| Fix a backwards test/key upload | Coach, Volunteer (assigned events) | Event page → ⇄ Swap, or Extract page → Tools ▾ → ⇄ Swap test/key |
+| Correct a PDF's Tournament name / Year | Coach, Volunteer (assigned events) | Extract page → header fields next to the PDF name |
+| Extract/edit one PDF's questions | Coach, Volunteer (assigned events) | Event page → click a PDF / Extract by PDF |
+| Pull figures from a supplementary doc | Coach, Volunteer (assigned events) | Extract page → target toggle next to Test PDF/Key PDF |
 | Browse/search/bulk-edit the whole bank | Coach, Volunteer (assigned events) | Browse questions |
-| Validate an answer with AI | Coach, Volunteer (assigned events) | Review or Browse page → 🤖 AI Validate / ✓ Validate |
-| Mark a verdict yourself, no LLM call | Coach, Volunteer (assigned events) | Review or Browse page → validation dropdown |
+| Validate an answer with AI | Coach, Volunteer (assigned events) | Extract or Browse page → 🤖 AI Validate / ✓ Validate |
+| Mark a verdict yourself, no LLM call | Coach, Volunteer (assigned events) | Extract or Browse page → validation dropdown |
 | Scrape scio.ly practice questions | Coach, Volunteer (assigned events) | Generate page → scio.ly panel |
 | Generate questions from a source | Coach, Volunteer (assigned events) | Generate page |
 | Upload a shared textbook | Coach only | Generate page → Shared textbooks |
@@ -627,7 +627,7 @@ While a long action runs (upload/extract, reprocess, a scrape, LLM generation) a
 | See whether the server is busy before a big job | Coach, Volunteer | `👥 N active` / `⏳ N jobs` badges in the header |
 | See who else is working in an event | Coach, Volunteer (assigned events) | Landing page → `👥 N here now` on the event row |
 | Archive/unarchive an event | Coach only | Landing page |
-| Restore a wiped reprocess | Coach, Volunteer (assigned events) | Review page → 🕘 Snapshot history |
+| Restore a wiped reprocess | Coach, Volunteer (assigned events) | Extract page → 🕘 Snapshot history |
 | Create/mark current a season | Coach | Club Management |
 | Bulk-create students + roster via CSV | Coach | Club Management → + Bulk-add students from CSV |
 | Roster a student onto an event | Coach | Club Management → roster grid |

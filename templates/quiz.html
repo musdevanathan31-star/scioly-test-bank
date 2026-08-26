@@ -181,7 +181,7 @@ function esc(s){ return (s == null ? "" : String(s))
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 // JS port of text_utils.parse_answer_letters() -- kept in lockstep with the
-// Python original (and review.html's own copy) so quiz-page practice
+// Python original (and extract.html's own copy) so quiz-page practice
 // grading agrees with the real assessment grader (assessments._grade_mcq)
 // on every input, letter-shaped or prose. Returns null when `answer` isn't
 // letter-shaped (23 real MCQs in the bank have prose answers instead), an

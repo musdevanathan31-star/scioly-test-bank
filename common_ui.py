@@ -181,7 +181,7 @@ a{color:var(--accent);text-decoration:none}
   align-items:start;font-size:13px}
 
 /* Page navigation (prev/next + page-number input) and a test/key/sheet
-   target toggle — originally local to review.html, now shared since
+   target toggle — originally local to extract.html, now shared since
    event_index.html's PDF preview drawer needs both too. */
 .page-nav{display:flex;align-items:center;gap:6px}
 .page-nav input{width:54px;text-align:center;padding:3px 4px;
@@ -190,7 +190,7 @@ a{color:var(--accent);text-decoration:none}
 .target-toggle button{border:none;border-radius:0;padding:4px 10px;font-size:12px}
 .target-toggle button.on{background:var(--accent);color:#fff}
 
-/* Right-side slide-in drawer — mirrors review.html's left-side
+/* Right-side slide-in drawer — mirrors extract.html's left-side
    .outline-drawer (same transform/transition/`.on` toggle idiom), flipped
    to the right edge. Used by event_index.html's PDF preview panel. */
 .side-drawer{position:fixed;top:0;bottom:0;right:0;width:520px;max-width:92vw;
