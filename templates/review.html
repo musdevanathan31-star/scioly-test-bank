@@ -8,6 +8,29 @@
 .toolbar{padding:7px 18px;background:#fff;border-bottom:1px solid var(--line);
   display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:46px;z-index:9}
 .toolbar .grow{flex:1}
+/* Toolbar overflow menus (P-04a) — "+ Add", "Tools", and the "..." overflow
+   all copy the header's Reprocess ▾ dropdown: absolutely-positioned panel,
+   full-width ghost buttons with a bold title line and a muted one-line
+   description underneath, so someone opening the menu learns what each
+   control does instead of guessing from an icon alone (P-04b). */
+.toolbar-menu-wrap{position:relative;display:inline-block}
+.toolbar-menu{display:none;position:absolute;top:100%;left:0;margin-top:4px;
+  background:var(--bg-card);border:1px solid var(--line);border-radius:6px;
+  box-shadow:0 6px 16px rgba(0,0,0,.25);min-width:270px;z-index:60;padding:4px 0}
+.toolbar-menu.on{display:block}
+.toolbar-menu button{display:block;width:100%;text-align:left;padding:8px 14px;
+  border:none;border-radius:0;background:transparent;color:var(--fg)}
+.toolbar-menu button:hover{background:var(--hover)}
+.toolbar-menu button .menu-desc{display:block;font-weight:400;font-size:11px;
+  color:var(--muted);margin-top:2px;white-space:normal}
+.toolbar-menu .menu-div{border-top:1px solid var(--line);margin:4px 0}
+/* The one destructive action in the overflow menu should read quieter than
+   a normal item, not louder — no red button, just muted text that only
+   warns on hover. */
+.toolbar-menu button.quiet-danger{color:var(--muted)}
+.toolbar-menu button.quiet-danger:hover{background:var(--hover);color:var(--bad)}
+.toolbar-menu button.quiet-danger .menu-desc{color:var(--muted)}
+#toolsMenuBtn.on{background:#9b1cb3;color:#fff;border-color:#9b1cb3}
 .review-wrap{display:flex;height:calc(100vh - 95px);min-width:0}
 .pdf-pane{flex:1.05;overflow:auto;background:#5a5a60;padding:14px;
   display:flex;justify-content:center;align-items:flex-start;min-width:0;position:relative}
@@ -190,28 +213,57 @@ details.q-zone .zone-body{padding:2px 10px 10px}
 .field-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;
   flex-wrap:wrap}
 .field-capture-btn{white-space:nowrap}
-.help{font-size:12px;color:var(--muted);margin:4px 0 10px 0;line-height:1.5}
+/* P-09: the help paragraph is read once and never again, so it's dismissible
+   (persisted in localStorage like PDF zoom / bbox-visibility already are)
+   with a small "?" affordance left behind to bring it back. */
+.help{position:relative;font-size:12px;color:var(--muted);margin:4px 0 10px 0;
+  line-height:1.5;padding-right:22px}
+.help.hidden{display:none}
 .help kbd{background:#eee;border:1px solid #ccc;padding:1px 5px;
   border-radius:4px;font-size:11px}
-/* Page-thumbnail strip across the top of the PDF pane */
-.thumb-strip{display:flex;gap:4px;padding:8px;background:var(--bg-alt);
-  overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--line);
-  height:96px;flex-shrink:0;align-items:flex-start}
-.thumb-strip .thumb{flex:0 0 56px;height:74px;border:2px solid transparent;
+.help-dismiss{position:absolute;top:0;right:0;background:transparent;border:none;
+  color:var(--muted);font-size:13px;padding:2px 6px;cursor:pointer;line-height:1}
+.help-dismiss:hover{color:var(--fg-soft)}
+.help-reopen{display:none;align-items:center;justify-content:center;
+  width:20px;height:20px;border-radius:50%;border:1px solid var(--line);
+  background:var(--bg-card);color:var(--muted);font-size:11px;font-weight:700;
+  cursor:pointer;margin:4px 0 10px 0;padding:0}
+.help-reopen.show{display:inline-flex}
+.help-reopen:hover{color:var(--fg-soft);border-color:var(--muted)}
+/* Page thumbnails now live inside the left drawer (opened by the ☰ button)
+   instead of a permanent full-width strip — P-09. Measured across this
+   repo's test PDFs, 13 of 14 have zero get_toc() entries, so the drawer
+   was otherwise almost always empty dead space; folding thumbnails into it
+   removes 96px of always-on chrome instead of just re-hiding it behind
+   another toggle. Wraps into a grid instead of scrolling horizontally,
+   since the drawer is a vertical rail. */
+.outline-drawer .thumb-strip{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.outline-drawer .thumb-strip .thumb{flex:0 0 56px;height:74px;border:2px solid transparent;
   cursor:pointer;background:#fff;border-radius:4px;position:relative;
   display:flex;align-items:center;justify-content:center;
   font-size:10px;color:var(--muted);font-weight:500}
-.thumb-strip .thumb.on{border-color:var(--accent)}
-.thumb-strip .thumb img{max-width:100%;max-height:100%;display:block}
-.thumb-strip .thumb .pn{position:absolute;bottom:0;left:0;right:0;
+.outline-drawer .thumb-strip .thumb.on{border-color:var(--accent)}
+.outline-drawer .thumb-strip .thumb img{max-width:100%;max-height:100%;display:block}
+.outline-drawer .thumb-strip .thumb .pn{position:absolute;bottom:0;left:0;right:0;
   background:rgba(0,0,0,.55);color:#fff;font-size:9px;text-align:center;padding:1px 0}
+.outline-drawer .drawer-section-title{font-size:11px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.5px;margin:14px 0 8px}
 
-/* Zoom controls on PDF stage */
+/* Zoom controls on PDF stage — also holds page navigation and the Test/Key
+   toggle (moved from the global toolbar): those controls act ON the page
+   image, so they belong with the other controls that act on it, not in a
+   toolbar strip above the whole page. Wraps to a second line rather than
+   overflowing the pane if it ever gets too narrow. */
 .pdf-pane{position:relative}
 .zoom-controls{position:absolute;top:14px;right:14px;background:var(--bg-card);
-  border:1px solid var(--line);border-radius:6px;padding:4px;display:flex;gap:4px;
-  z-index:20;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+  border:1px solid var(--line);border-radius:6px;padding:4px 6px;display:flex;
+  gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end;
+  max-width:calc(100% - 28px);z-index:20;box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .zoom-controls button{padding:3px 8px;font-size:13px;line-height:1}
+.zoom-controls .page-nav{gap:4px}
+.zoom-controls .page-nav input{width:44px}
+.zoom-controls .zc-div{width:1px;align-self:stretch;background:var(--line);margin:0 2px}
+.zoom-controls .target-toggle button{padding:3px 8px}
 
 /* Collapsed one-line question rows (Phase 2a default view — every question
    except the focused one). Must stay exactly one line and never reflow as
@@ -314,6 +366,9 @@ details.q-zone .zone-body{padding:2px 10px 10px}
 .cases-panel .jump-q{color:var(--accent);cursor:pointer;text-decoration:underline;
   font-size:11px}
 #groupQuestions.on{background:#9b1cb3;color:#fff;border-color:#9b1cb3}
+/* Reflect selection mode on the Tools ▾ trigger too, now that #groupQuestions
+   lives inside the closed Tools menu — otherwise the only sign selection
+   mode is active is the floating selection pill once questions are picked. */
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -367,16 +422,10 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   {% include "_user_badge.html" %}
 </header>
 <div class="toolbar">
-  <div class="toolbar-group">
-    <div class="page-nav">
-      <button id="prev" title="Previous page">◀</button>
-      <span>Page</span>
-      <input id="pageInput" type="number" min="1" value="1" title="Page number">
-      <span id="pageCount" class="muted">/ ?</span>
-      <span id="pageProgress" class="muted" style="font-size:11px"></span>
-      <button id="next" title="Next page">▶</button>
-    </div>
-  </div>
+  <!-- Page navigation and the Test/Key toggle moved to the .zoom-controls
+       floating panel over the PDF image (see .pdf-stage below) — those
+       controls act ON the page image, not on the question list, so they
+       belong there. "Go to Q" stays here: it acts on the question list. -->
   <div class="toolbar-group">
     <div class="page-nav">
       <span>Go to Q</span>
@@ -384,34 +433,78 @@ details.q-zone .zone-body{padding:2px 10px 10px}
              title="Jump to a question by number">
     </div>
   </div>
-  <div class="toolbar-group">
-    <div class="target-toggle" id="targetToggle">
-      <button data-target="test" class="on" title="Render and capture from the main test PDF">Test PDF</button>
-      <button data-target="key" title="Render and capture from the answer key PDF (when available)">Key PDF</button>
-    </div>
-    <button id="swapTestKey" title="The test and key files got named backwards — swap them">⇄ Swap test/key</button>
-  </div>
   <div class="grow"></div>
+  <!-- P-04a triage: ~20 controls in 4 category groups collapsed to 3 menus
+       by frequency instead of category. "+ Add" and "Tools" copy the header
+       Reprocess ▾ dropdown pattern (icon+label always shown inside the
+       menu — P-04b — since the menu is where someone learns what a glyph
+       means); the lone destructive action lives in the quiet "..." overflow
+       instead of standing out as a bright red toolbar button. -->
   <div class="toolbar-group">
-    <span class="label">Inspect</span>
-    <button id="validatePage" title="Send every question on this page to Haiku for answer validation (~$0.003/question)">✓ Validate page</button>
-    <button id="ocr" title="Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing">OCR this page (vision)</button>
+    <div class="toolbar-menu-wrap" id="addMenuWrap">
+      <button id="addMenuBtn" class="primary" title="Add a question, matching question, shared context, or blank card">+ Add ▾</button>
+      <div id="addMenu" class="toolbar-menu">
+        <button id="addRegion" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">
+          ▭ Add question from region
+          <span class="menu-desc">Drag a rectangle on the page; the region is OCR'd into a new question. Shift-drag to span the next page too.</span>
+        </button>
+        <button id="addMatching" title="Draw two rectangles — the left column, then the right column — to create a matching question (e.g. 'match each term to its definition').">
+          ⇄ Add matching question
+          <span class="menu-desc">Draw two rectangles — left column, then right — for a "match the term" question.</span>
+        </button>
+        <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">
+          📄 Add context from region
+          <span class="menu-desc">Capture a shared passage/table/intro that other questions can link to.</span>
+        </button>
+        <button id="addQ" title="Insert an empty question card you can fill out manually">
+          ✚ Add blank
+          <span class="menu-desc">Insert an empty question card to fill out manually.</span>
+        </button>
+      </div>
+    </div>
   </div>
   <div class="toolbar-group">
-    <span class="label">Add</span>
-    <button id="addRegion" class="primary" title="Draw a rectangle on the page; the selected region is OCR'd into a new question. Hold Shift while dragging to capture a region that spans the next page too.">+ Add question from region</button>
-    <button id="addMatching" title="Draw two rectangles — the left column, then the right column — to create a matching question (e.g. 'match each term to its definition').">+ Add matching question</button>
-    <button id="addContext" title="Draw a rectangle around a shared context block (passage, table, intro). The captured text becomes a context other questions can link to. Use when many questions reference the same passage/diagram.">+ Add context from region</button>
-    <button id="addQ" title="Insert an empty question card you can fill out manually">+ Add blank</button>
+    <div class="toolbar-menu-wrap" id="toolsMenuWrap">
+      <button id="toolsMenuBtn" title="Validate answers, OCR, swap test/key, collapse/expand cards, or group questions into a shared context">Tools ▾</button>
+      <div id="toolsMenu" class="toolbar-menu">
+        <button id="validatePage" title="Send every question on this page to Haiku for answer validation (~$0.003/question)">
+          ✓ Validate page
+          <span class="menu-desc">Send every question on this page to Haiku for answer validation (~$0.003/question).</span>
+        </button>
+        <button id="ocr" title="Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing">
+          🔍 OCR this page (vision)
+          <span class="menu-desc">Run full-page OCR via Haiku vision — useful for scanned PDFs whose text layer is missing.</span>
+        </button>
+        <button id="swapTestKey" title="The test and key files got named backwards — swap them">
+          ⇄ Swap test/key
+          <span class="menu-desc">The test and key files got named backwards — swap them.</span>
+        </button>
+        <div class="menu-div"></div>
+        <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">
+          ▼ Collapse all
+          <span class="menu-desc">Collapse every question card on this page to a single-line summary.</span>
+        </button>
+        <button id="expandAll" title="Expand every question card on this page">
+          ▲ Expand all
+          <span class="menu-desc">Expand every question card on this page.</span>
+        </button>
+        <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for a shared passage or diagram (e.g. a Disease Detectives case study) — capture it, then group its questions.">
+          🔗 Group questions
+          <span class="menu-desc">Select several questions, then assign them all to a shared context in one step.</span>
+        </button>
+      </div>
+    </div>
   </div>
   <div class="toolbar-group">
-    <span class="label">Organize</span>
-    <button id="groupQuestions" title="Select several questions (click their cards or their boxes on the PDF) then assign them all to a shared context in one step. Use for a shared passage or diagram (e.g. a Disease Detectives case study) — capture it, then group its questions.">🔗 Group questions</button>
-    <button id="collapseAll" title="Collapse every question card on this page to a single-line summary">▼ Collapse all</button>
-    <button id="expandAll" title="Expand every question card on this page">▲ Expand all</button>
-  </div>
-  <div class="toolbar-group">
-    <button id="delAllQ" class="danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">🗑 Delete all</button>
+    <div class="toolbar-menu-wrap" id="overflowMenuWrap">
+      <button id="overflowMenuBtn" title="More actions">⋯</button>
+      <div id="overflowMenu" class="toolbar-menu">
+        <button id="delAllQ" class="quiet-danger" title="Delete every question on this PDF. Use before rebuilding from regions. Survives Save / Reprocess via the annotations system.">
+          🗑 Delete all
+          <span class="menu-desc">Deletes every question on this PDF. Use before rebuilding from regions — survives Save/Reprocess via the annotations system.</span>
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 <div id="snapshotsModal" class="modal-backdrop">
@@ -485,10 +578,18 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   <button class="ghost btn-tiny" id="selPillClear">Clear</button>
   <button class="ghost btn-tiny" id="selPillExit">✕ Exit</button>
 </div>
+<!-- Left drawer, opened by the ☰ button: page thumbnails (always) plus the
+     PDF's embedded outline/TOC section (only when it actually has one — most
+     test PDFs don't, so an unconditional "PDF outline" heading over an empty
+     list was dead space; see toggleOutline() below for the has-toc check). -->
 <div class="outline-drawer" id="outlineDrawer">
-  <h4>PDF outline</h4>
-  <div id="outlineItems">
-    <div class="empty">Loading…</div>
+  <h4>Pages</h4>
+  <div class="thumb-strip" id="thumbStrip" title="Page thumbnails — click to jump"></div>
+  <div id="outlineSection" style="display:none">
+    <div class="drawer-section-title">Outline</div>
+    <div id="outlineItems">
+      <div class="empty">Loading…</div>
+    </div>
   </div>
 </div>
 <div class="capture-hint" id="captureHint">
@@ -499,15 +600,29 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   </button>
   <button id="cancelCapture" title="Cancel and reset capture mode">Cancel (Esc)</button>
 </div>
-<div class="thumb-strip" id="thumbStrip" title="Page thumbnails — click to jump"></div>
 <div class="review-wrap">
   <div class="pdf-pane">
+    <!-- Page navigation and the Test/Key toggle live here (not the toolbar)
+         because they act ON this page image, same as zoom/outline/bboxes. -->
     <div class="zoom-controls">
+      <div class="page-nav">
+        <button id="prev" title="Previous page">◀</button>
+        <input id="pageInput" type="number" min="1" value="1" title="Page number">
+        <span id="pageCount" class="muted">/ ?</span>
+        <span id="pageProgress" class="muted" style="font-size:11px"></span>
+        <button id="next" title="Next page">▶</button>
+      </div>
+      <span class="zc-div"></span>
+      <div class="target-toggle" id="targetToggle">
+        <button data-target="test" class="on" title="Render and capture from the main test PDF">Test PDF</button>
+        <button data-target="key" title="Render and capture from the answer key PDF (when available)">Key PDF</button>
+      </div>
+      <span class="zc-div"></span>
       <button onclick="adjustZoom(-1)" title="Zoom out">−</button>
       <span id="zoomLabel" style="font-size:11px;color:var(--muted);padding:3px 6px">100%</span>
       <button onclick="adjustZoom(1)" title="Zoom in">+</button>
       <button onclick="adjustZoom(0)" title="Reset zoom">⟲</button>
-      <button onclick="toggleOutline()" title="PDF outline / table of contents">☰</button>
+      <button onclick="toggleOutline()" title="Page thumbnails and PDF sections">☰</button>
       <button id="qboxToggleBtn" onclick="toggleQBoxes()" title="Show/hide bounding boxes around extracted questions">▢</button>
     </div>
     <div class="pdf-stage" id="pdfStage">
@@ -518,13 +633,15 @@ details.q-zone .zone-body{padding:2px 10px 10px}
     </div>
   </div>
   <div class="q-pane">
-    <div class="help">
+    <div class="help" id="helpBlock">
+      <button id="helpDismiss" class="help-dismiss" title="Hide this tip (it won't show again on this device)">✕</button>
       Click a question card to <b>focus</b> it (blue outline). Then use its
       <b>Capture</b> bar to drag a rectangle on the PDF and pull text into
       <i>stem</i>, <i>choices</i> or <i>answer</i> (switch to Key PDF first for
       answer capture). For image association: click an image below, then click
       a question card. Press <kbd>Esc</kbd> to cancel capture mode.
     </div>
+    <button id="helpReopen" class="help-reopen" title="Show the how-to tip again">?</button>
     <div id="completenessSummary" class="muted" style="font-size:12px;margin:2px 0 8px"></div>
     <div id="cards"></div>
     <div class="image-bay">
@@ -596,6 +713,7 @@ function setSelectionMode(on){
   SELECTION_MODE = on;
   if(!on) SELECTED_QNUMS.clear();
   document.getElementById("groupQuestions").classList.toggle("on", on);
+  document.getElementById("toolsMenuBtn").classList.toggle("on", on);
   renderSelectionPill();
   renderCards();
   drawQuestionBoxes();
@@ -1015,31 +1133,37 @@ window.adjustZoom = function(dir){
   drawQuestionBoxes();
 };
 
-// ---- outline drawer ----
+// ---- outline drawer (page thumbnails + optional PDF outline/TOC) ----
 let outlineLoaded = false;
 window.toggleOutline = async function(){
   const dr = document.getElementById("outlineDrawer");
   dr.classList.toggle("on");
   if(!outlineLoaded && dr.classList.contains("on")){
     outlineLoaded = true;
+    const section = document.getElementById("outlineSection");
     try {
       const r = await fetch(`${API}/pdf/${PDF}/outline`);
       const j = await r.json();
-      const root = document.getElementById("outlineItems");
+      // Most test PDFs have no embedded outline/TOC at all (13 of 14 sampled
+      // in this repo) — omit the section entirely rather than showing an
+      // empty "PDF outline" heading over nothing.
       if(!j.outline || !j.outline.length){
-        root.innerHTML = '<div class="empty">This PDF has no embedded outline / TOC.</div>';
-      } else {
-        root.innerHTML = j.outline.map(it =>
-          `<div class="item lvl-${Math.min(3, it.level)}" data-pg="${it.page}">${esc(it.title)} <span class="muted">p${it.page}</span></div>`).join("");
-        root.querySelectorAll(".item").forEach(el => {
-          el.addEventListener("click", () => {
-            curPage = Math.max(1, Math.min(STATE.page_count, parseInt(el.dataset.pg)));
-            render();
-            dr.classList.remove("on");
-          });
-        });
+        section.style.display = "none";
+        return;
       }
+      section.style.display = "";
+      const root = document.getElementById("outlineItems");
+      root.innerHTML = j.outline.map(it =>
+        `<div class="item lvl-${Math.min(3, it.level)}" data-pg="${it.page}">${esc(it.title)} <span class="muted">p${it.page}</span></div>`).join("");
+      root.querySelectorAll(".item").forEach(el => {
+        el.addEventListener("click", () => {
+          curPage = Math.max(1, Math.min(STATE.page_count, parseInt(el.dataset.pg)));
+          render();
+          dr.classList.remove("on");
+        });
+      });
     } catch(err){
+      section.style.display = "";
       document.getElementById("outlineItems").innerHTML =
         '<div class="empty">Failed to load outline: ' + err.message + '</div>';
     }
@@ -3459,6 +3583,56 @@ document.getElementById("save").addEventListener("click", async ()=>{
     openSnapshotsModal();
   });
 })();
+
+// Toolbar overflow menus ("+ Add ▾", "Tools ▾", "..."), P-04a — same
+// anchored-dropdown idiom as Reprocess ▾ above: toggle on click, close on
+// outside click or once a menu item is chosen. The item itself still does
+// its actual work through the id-bound handler wired elsewhere in this
+// file (moving a button into a menu never touched its id or its handler).
+function wireToolbarMenu(wrapId, btnId, menuId){
+  const wrap = document.getElementById(wrapId);
+  const btn = document.getElementById(btnId);
+  const menu = document.getElementById(menuId);
+  if(!wrap || !btn || !menu) return;
+  btn.addEventListener("click", e => {
+    e.stopPropagation();
+    const willOpen = !menu.classList.contains("on");
+    document.querySelectorAll(".toolbar-menu.on").forEach(m => m.classList.remove("on"));
+    menu.classList.toggle("on", willOpen);
+  });
+  menu.querySelectorAll("button").forEach(el => {
+    el.addEventListener("click", () => menu.classList.remove("on"));
+  });
+  document.addEventListener("click", e => {
+    if(!wrap.contains(e.target)) menu.classList.remove("on");
+  });
+}
+wireToolbarMenu("addMenuWrap", "addMenuBtn", "addMenu");
+wireToolbarMenu("toolsMenuWrap", "toolsMenuBtn", "toolsMenu");
+wireToolbarMenu("overflowMenuWrap", "overflowMenuBtn", "overflowMenu");
+
+// P-09: the "click a card, drag a capture rectangle…" help paragraph is
+// read once and never again — dismissible, persisted in localStorage, with
+// a small "?" affordance left behind so the content stays reachable.
+let HELP_DISMISSED = localStorage.getItem("help_dismissed") === "1";
+function setHelpUI(){
+  const help = document.getElementById("helpBlock");
+  const reopen = document.getElementById("helpReopen");
+  if(!help || !reopen) return;
+  help.classList.toggle("hidden", HELP_DISMISSED);
+  reopen.classList.toggle("show", HELP_DISMISSED);
+}
+document.getElementById("helpDismiss").addEventListener("click", () => {
+  HELP_DISMISSED = true;
+  localStorage.setItem("help_dismissed", "1");
+  setHelpUI();
+});
+document.getElementById("helpReopen").addEventListener("click", () => {
+  HELP_DISMISSED = false;
+  localStorage.setItem("help_dismissed", "0");
+  setHelpUI();
+});
+setHelpUI();
 
 async function openSnapshotsModal(){
   const listEl = document.getElementById("snapshotsList");
