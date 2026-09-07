@@ -368,10 +368,41 @@ function fillSelect(sel, items, allLabel){
   if([...sel.options].some(o => o.value === cur)) sel.value = cur;
 }
 
-async function load(){
-  const r = await fetch(`${API}/all-questions`);
-  DATA = await r.json();
-  // Populate filter dropdowns
+// Recomputes DATA.stats from the current DATA.questions array. Mirrors
+// api_all_questions's Python logic exactly (review_app.py, same fallback
+// labels) so the client never disagrees with the server about what a
+// count means -- called after any edit that changes a question's topic/
+// focus/source/validation/bucket, so the sidebar doesn't need a full
+// page reload (or even a re-fetch) to reflect it. Pure -- takes the
+// questions array as a parameter rather than reading DATA itself, so it's
+// unit-testable under Node the same way nextGroupQuestionNumbers etc. are
+// (tests/test_browse_stats_refresh_js.py).
+function recomputeStats(questions){
+  const by_topic = {}, by_focus = {}, by_source = {}, by_validation = {}, by_bucket = {};
+  for(const q of questions){
+    const t = q.topic || "Other / General";
+    by_topic[t] = (by_topic[t] || 0) + 1;
+    const f = q.focus || "";
+    if(f) by_focus[f] = (by_focus[f] || 0) + 1;
+    const s = q.source || "(no source)";
+    by_source[s] = (by_source[s] || 0) + 1;
+    const vs = (q.validation && q.validation.status) || "unvalidated";
+    by_validation[vs] = (by_validation[vs] || 0) + 1;
+    by_bucket[q._bucket] = (by_bucket[q._bucket] || 0) + 1;
+  }
+  return { total: questions.length, by_topic, by_focus, by_source, by_validation, by_bucket };
+}
+
+// Populates the sidebar (filter dropdown options, the topic distribution
+// chart, and the Stats list) from DATA.stats. Split out of load() so it
+// can also run after recomputeStats() following an edit, without re-doing
+// the URL-restore step (which must only ever run once, at initial load --
+// re-running it after an edit would stomp whatever the user has since
+// picked). fillSelect() already preserves each select's current value
+// across a rebuild, so calling this again never resets an active filter --
+// it only adds/relabels options (e.g. a brand-new topic appearing in the
+// list while the currently-selected topic stays selected).
+function renderSidebar(){
   const sortedBy = (obj) => Object.entries(obj).sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
   fillSelect(document.getElementById("f_topic"),  sortedBy(DATA.stats.by_topic),  "All topics");
   fillSelect(document.getElementById("f_source"), sortedBy(DATA.stats.by_source), "All sources");
@@ -380,19 +411,6 @@ async function load(){
     document.getElementById("focus_section").style.display = "";
     fillSelect(document.getElementById("f_focus"), sortedBy(DATA.stats.by_focus), "All foci");
   }
-  // Restore filter state from URL (?search=...&topic=...&bucket=...)
-  const p = new URLSearchParams(location.search);
-  const setVal = (id, v) => { const el=document.getElementById(id); if(el && v != null) el.value = v; };
-  setVal("f_search", p.get("search") || "");
-  setVal("f_topic",  p.get("topic")  || "");
-  setVal("f_focus",  p.get("focus")  || "");
-  setVal("f_source", p.get("source") || "");
-  setVal("f_bucket", p.get("bucket") || "");
-  setVal("f_validation", p.get("validation") || "");
-  setVal("f_type", p.get("type") || "");
-  setVal("f_image", p.get("image") || "");
-  setVal("f_difficulty", p.get("difficulty") || "");
-  setVal("f_sort", p.get("sort") || "bucket-num");
   // Topic distribution mini-chart
   const tc = document.getElementById("topic_chart");
   const items = Object.entries(DATA.stats.by_topic).sort((a,b)=>b[1]-a[1]);
@@ -416,6 +434,40 @@ async function load(){
     <li><span>⚠ Validated incorrect</span><span class="n">${DATA.stats.by_validation.incorrect||0}</span></li>
     <li><span>? Uncertain</span><span class="n">${DATA.stats.by_validation.uncertain||0}</span></li>
     <li><span>· Unvalidated</span><span class="n">${DATA.stats.by_validation.unvalidated||0}</span></li>`;
+}
+
+// Re-derives DATA.stats from DATA.questions and re-populates the sidebar
+// in place -- called after any successful edit that could change a topic/
+// focus/source/validation/bucket count (validate, per-field autosave,
+// undo, delete). No network round trip: the mutation response already
+// updated the relevant question(s) in DATA.questions, so this is purely a
+// local recompute + redraw. Deliberately does NOT touch the URL or restore
+// anything from it -- that only ever happens once, at initial load.
+function refreshSidebarStats(){
+  if(!DATA) return;
+  DATA.stats = recomputeStats(DATA.questions);
+  renderSidebar();
+}
+
+async function load(){
+  const r = await fetch(`${API}/all-questions`);
+  DATA = await r.json();
+  renderSidebar();
+  // Restore filter state from URL (?search=...&topic=...&bucket=...) --
+  // must run after renderSidebar() populates the <select> options, since
+  // setting .value to an option that doesn't exist yet is a no-op.
+  const p = new URLSearchParams(location.search);
+  const setVal = (id, v) => { const el=document.getElementById(id); if(el && v != null) el.value = v; };
+  setVal("f_search", p.get("search") || "");
+  setVal("f_topic",  p.get("topic")  || "");
+  setVal("f_focus",  p.get("focus")  || "");
+  setVal("f_source", p.get("source") || "");
+  setVal("f_bucket", p.get("bucket") || "");
+  setVal("f_validation", p.get("validation") || "");
+  setVal("f_type", p.get("type") || "");
+  setVal("f_image", p.get("image") || "");
+  setVal("f_difficulty", p.get("difficulty") || "");
+  setVal("f_sort", p.get("sort") || "bucket-num");
   // Pick up ?q=NUM&bucket=foo from URL to scroll to a specific question
   rerender();
   const params = new URLSearchParams(location.search);
@@ -797,6 +849,15 @@ async function flushAutosave(card, q){
       if(undoBtn) undoBtn.style.display = "";
       const led = card.querySelector(".last-edited");
       if(led) led.innerHTML = `Last edited by <b>${esc(q.lastEditedBy)}</b> · ${esc((q.lastEditedDateTime||"").replace("T"," "))}`;
+      // Cheap and always correct, so just always recompute; only rebuild
+      // the card LIST (rerender(), a full innerHTML replace of #results)
+      // when a field that actually feeds a stat/filter changed. topic and
+      // focus qualify; text/answer/choices/matching don't, and a user is
+      // often still typing in one of those fields when this debounced
+      // autosave fires -- replacing its DOM node out from under them would
+      // drop focus and cursor position, exactly the "UI jumping" to avoid.
+      refreshSidebarStats();
+      if("topic" in payload || "focus" in payload) rerender();
     } else {
       _setSaveStatus(card, "Save failed: " + (j.error || ""), "err");
     }
@@ -822,6 +883,7 @@ async function undoLastChange(card, q){
     if(j.ok){
       Object.assign(q, j.question);
       toast(`Undid last change to Q${q.number}`, "ok");
+      refreshSidebarStats();
       rerender();
     } else {
       _setSaveStatus(card, "Undo failed: " + (j.error || ""), "err");
@@ -894,6 +956,10 @@ async function setValidation(card, q, validationPayload){
       _setSaveStatus(card, "Saved " + new Date().toLocaleTimeString(), "");
       const led = card.querySelector(".last-edited");
       if(led) led.innerHTML = `Last edited by <b>${esc(q.lastEditedBy)}</b> · ${esc((q.lastEditedDateTime||"").replace("T"," "))}`;
+      // Sidebar validation counts, and the card list if a Validation
+      // filter is active (this card may no longer match it).
+      refreshSidebarStats();
+      rerender();
     } else {
       _setSaveStatus(card, "Save failed: " + (j.error || ""), "err");
     }
@@ -961,6 +1027,7 @@ document.getElementById("results").addEventListener("click", async e => {
         if(j.ok){
           toast(`Deleted Q${q.number}`, "ok");
           DATA.questions = DATA.questions.filter(x => !(x._bucket === q._bucket && String(x.number) === String(q.number)));
+          refreshSidebarStats();
           rerender();
         } else { toast("Delete failed: " + (j.error || ""), "err"); }
       })

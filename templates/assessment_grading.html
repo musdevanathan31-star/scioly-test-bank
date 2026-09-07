@@ -8,6 +8,19 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
 .toggle-bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .frq-block{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:12px}
 .frq-block h3{margin:0 0 8px 0;font-size:14px}
+/* Read-only sibling of .frq-block for every auto-graded question -- a
+   coach reviewing a submission needs to see the whole thing, not just the
+   free-response items that happen to need a manual grade. Deliberately
+   the same shape and spacing as .frq-block (this is a reference view, not
+   a lesser one) but on --bg-alt so the two are still tellable apart at a
+   glance -- which one has an input box to fill in isn't always obvious at
+   this size. */
+.auto-block{border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+  margin-bottom:12px;background:var(--bg-alt)}
+.auto-block h3{margin:0 0 8px 0;font-size:14px}
+.auto-block .answer-row .ans .pair-ok{color:var(--ok)}
+.auto-block .answer-row .ans .pair-bad{color:var(--bad)}
+.grading-scope-note{font-size:12px;color:var(--muted);margin:0 0 12px 0}
 /* Deliberately distinct from the student answers below it: a grader
    scanning the block must never mistake the model answer for someone's
    submission. */
@@ -57,13 +70,14 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
   </section>
 
   <section>
+    <p class="grading-scope-note">Every question is shown below for reference. Only free-response answers need a manual grade — everything else was graded automatically.</p>
     <div id="frq_list"></div>
   </section>
 
 </div>
 <script>
 const ASSESSMENT_ID = {{ assessment_id|tojson }};
-let SNAPSHOT_FRQS = [], RESPONSES = {};
+let SNAPSHOT = [], SNAPSHOT_FRQS = [], RESPONSES = {};
 
 function esc(s){ return (s == null ? "" : String(s))
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -71,6 +85,11 @@ function esc(s){ return (s == null ? "" : String(s))
 async function load(){
   const r = await fetch(`${APP_ROOT}/api/assessments/${ASSESSMENT_ID}/grading`);
   const j = await r.json();
+  SNAPSHOT = j.snapshot || [];
+  // Still the FRQ-only list -- updateProgress()'s completeness math and
+  // the release gate are correctly scoped to just what needs a manual
+  // grade, and must keep reading exactly this, unaffected by SNAPSHOT now
+  // also carrying every other qtype for display.
   SNAPSHOT_FRQS = j.snapshot_frqs || [];
   RESPONSES = j.responses || {};
   render();
@@ -93,12 +112,61 @@ function updateProgress(complete){
   btn.title = complete ? "" : "Every free-response answer must be graded first";
 }
 
+// Builds the "Your answer: X — correct answer: Y" (or per-pair breakdown
+// for matching) summary for one student's answer to one auto-graded
+// question. Mirrors assessment_results.html's student-facing wording
+// exactly, so a coach reviewing the same data here isn't learning a
+// second vocabulary for it.
+function autoAnswerSummaryHTML(q, answer, autoGrade){
+  const picked = answer ? answer.picked : null;
+  if(q.qtype === "mcq"){
+    const label = q.select_multiple ? "picks" : "answer";
+    const correctLabel = q.select_multiple ? "answers (select all that apply)" : "answer";
+    return `Your ${label}: <b>${esc(picked || "(none)")}</b> — correct ${correctLabel}: <b>${esc(q.correct_answer)}</b>`;
+  }
+  if(q.qtype === "tf"){
+    return `Your answer: <b>${esc(picked || "(none)")}</b> — correct answer: <b>${esc(q.correct_answer)}</b>`;
+  }
+  if(q.qtype === "matching"){
+    const pairs = (autoGrade && autoGrade.per_pair) || [];
+    if(!pairs.length) return `<span class="muted">(no pairs answered)</span>`;
+    return pairs.map(p => `<div class="${p.ok ? "pair-ok" : "pair-bad"}">${esc(p.label)} → ${esc(p.given || "(blank)")}`
+      + `${p.ok ? "" : ` (correct: ${esc(p.expected)})`}</div>`).join("");
+  }
+  return `<span class="muted">(unrecognized question type)</span>`;
+}
+
 function render(){
   const root = document.getElementById("frq_list");
-  if(!SNAPSHOT_FRQS.length){ root.innerHTML = '<p class="muted">This assessment has no free-response questions to grade.</p>'; return; }
-  root.innerHTML = SNAPSHOT_FRQS.map(q => {
-    const rows = Object.entries(RESPONSES)
-      .filter(([, r]) => ["submitted","auto_submitted_late"].includes(r.status))
+  if(!SNAPSHOT.length){ root.innerHTML = '<p class="muted">This assessment has no questions.</p>'; return; }
+  const submittedEntries = () => Object.entries(RESPONSES)
+    .filter(([, r]) => ["submitted","auto_submitted_late"].includes(r.status));
+
+  root.innerHTML = SNAPSHOT.map(q => {
+    if(q.qtype !== "frq"){
+      // Read-only reference block -- see .auto-block above. Every other
+      // qtype is auto-graded already; nothing here is editable or saved.
+      const rows = submittedEntries().map(([username, r]) => {
+        const answer = r.answers[String(q.number)];
+        const ag = (r.auto_grade || {})[String(q.number)] || {};
+        const ptsShown = ag.points_earned != null
+          ? `${ag.points_earned} / ${ag.points_possible ?? q.max_points ?? 1}`
+          : "—";
+        return `
+        <div class="answer-row">
+          <span class="student">${esc(username)}</span>
+          <span class="ans">${autoAnswerSummaryHTML(q, answer, ag)}</span>
+          <span class="pts"><span class="max">${esc(ptsShown)}</span></span>
+        </div>`;
+      }).join("");
+      return `
+      <div class="auto-block">
+        <h3>Q${esc(q.number)} <span class="muted" style="font-weight:400">(${q.max_points} pt · auto-graded)</span></h3>
+        <p class="muted" style="font-size:12px">${esc(q.text)}</p>
+        ${rows || '<p class="muted">No submissions yet.</p>'}
+      </div>`;
+    }
+    const rows = submittedEntries()
       .map(([username, r]) => {
         const answer = r.answers[String(q.number)];
         const grade = r.manual_grade[String(q.number)];

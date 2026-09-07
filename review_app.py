@@ -2265,10 +2265,22 @@ def api_export_assessment_markdown(assessment_id: str, which: str):
 def api_get_grading(assessment_id):
     test = _select_assessment(assessment_id)
     snapshot_frqs = [q for q in (test.snapshot or []) if q.get("qtype") == "frq"]
-    responses = {u: {"answers": r.answers, "manual_grade": r.manual_grade, "status": r.status}
+    # "auto_grade" here (previously omitted) is what lets the grading page
+    # show a student's answer/points on every non-FRQ question too, not
+    # just the ones needing a manual grade -- see "snapshot" below.
+    responses = {u: {"answers": r.answers, "manual_grade": r.manual_grade,
+                     "auto_grade": r.auto_grade, "status": r.status}
                 for u, r in assessments.get_responses_for_assessment(assessment_id).items()}
-    return jsonify({"snapshot_frqs": snapshot_frqs, "responses": responses,
-                    "grading_complete": assessments.assessment_grading_complete(assessment_id, test.snapshot or [])})
+    return jsonify({
+        # Full snapshot, every qtype, in question order -- so the grading
+        # page can show a coach the WHOLE submission (what was answered on
+        # every question), not only the free-response items that need a
+        # manual grade. snapshot_frqs stays as its own field, unchanged:
+        # updateProgress()'s completeness math and the release gate are
+        # correctly FRQ-only and must keep reading exactly that list.
+        "snapshot": test.snapshot or [],
+        "snapshot_frqs": snapshot_frqs, "responses": responses,
+        "grading_complete": assessments.assessment_grading_complete(assessment_id, test.snapshot or [])})
 
 
 @app.route("/api/assessments/<assessment_id>/grading/<student_username>/<number>", methods=["PATCH"])

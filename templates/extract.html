@@ -809,6 +809,13 @@ let target = "test";
 // non-test target is active. Populated in load() and refreshSupplementaryDocs().
 let PAGE_COUNTS = {};
 function currentPageCount(){ return PAGE_COUNTS[target] ?? STATE.page_count; }
+// Last-viewed page per render target, keyed the same way PAGE_COUNTS is.
+// Without this, switching Test<->Key kept whatever page number you were on
+// -- almost always the wrong page, since a key is usually far shorter than
+// the test and answers aren't page-aligned with their questions (a
+// question on test p3 can have its answer on key p1). First visit to a
+// target has no entry yet and falls back to page 1.
+let LAST_PAGE = {};
 let dirty = false;
 let selectedImage = null;     // filename in the bay user clicked
 let LAST_CAPTURE = null;      // remembered drag region for Haiku fallback re-extract
@@ -2097,11 +2104,12 @@ function wireTargetButton(b){
   b.addEventListener("click", () => {
     document.querySelectorAll("#targetToggle button").forEach(x=>x.classList.remove("on"));
     b.classList.add("on");
+    LAST_PAGE[target] = curPage;           // remember where we were leaving
     target = b.dataset.target;
     const pc = currentPageCount();
     document.getElementById("pageCount").textContent = "/ " + pc;
     document.getElementById("pageInput").max = pc;
-    if(curPage > pc) curPage = Math.max(1, pc);
+    curPage = Math.max(1, Math.min(LAST_PAGE[target] ?? 1, pc));
     renderImage();
     renderThumbStrip();
   });
