@@ -100,6 +100,7 @@ From here you can:
 - **Drag a rectangle** on the PDF and use the capture button next to the field it targets (**📋 Capture stem**, **📋 Capture choices**, **📋 Capture answer**, or **Math → Stem** / **Math → Answer** in the row below) to pull text or convert an equation to LaTeX directly into that field. These buttons render on every expanded card rather than only the focused one — normally that's just the one card you have open, but if you've used **Expand all** they show up on all of them — and clicking one focuses/selects that question and starts the capture in a single step.
 - **Choices that run across two columns or continue on the next page**: use **➕ Add choices from page** instead of **📋 Capture choices**. Capture *replaces* the question's choices; Add *appends* to them and then re-letters the whole list A, B, C… in order. Capture the first column, then use Add for the second — a source column that restarts its own lettering at "A" won't leave you with two A's. If the split comes out wrong, **✨ Try Haiku on this region** re-reads just what that last Add contributed rather than stacking a second copy on top. That button appears only when vision is available — either the instance has an `ANTHROPIC_API_KEY` configured, or you've put your own Anthropic key in Settings → LLM API Keys. Without either, it stays hidden, since the vision re-extract it calls isn't available, and the capture hint tells you to redraw the region or edit the field by hand instead.
 - **+ Add question from region** — drag once over an unextracted question; it gets the next free number automatically, with multiple-choice options auto-split into the choices list if present.
+- **🧩 Add multi-part question from region** — drag once around a whole shared-context block, intro plus every lettered sub-part (`(a)`/`(b)`/`(c)`, the same marker shape as MCQ options — see "Fixing a mis-parsed question group" below for why that's ambiguous). Builds the group directly: a new shared context from the intro text, and one free-response question per sub-part, numbered following the extractor's own convention (`14`, `14b`, `14c`, …). If the region turns out not to have 2+ lettered parts, it falls back to a single question instead — same as **+ Add question from region** — with a status message telling you so.
 - **+ Add matching question** — for a "match each term to its definition" table the automatic extraction missed or mis-split: drag the left column, then the right column (it auto-advances, no second click needed). You get an editable two-column card — fix up any row, attach an image to a cell the same way you'd reassign any other figure, and set the correct A→B pairs in the dropdown list at the bottom. The pipeline also detects these tables on its own when processing a PDF now (previously the whole table landed as one unstructured question); this button is for fixing one up or building one from scratch. Wrapped multi-line entries, either-charset labels (numbers or letters, on either column), and leading answer-blank placeholders ("____") are all handled automatically during capture. If a table continues onto another page, each column header on the card has a 📋 **Capture more from PDF** button — navigate to that page and drag the continuation; it appends to the existing column instead of starting a new question.
 - **Setting a question's type** — see "Setting a question's type" below.
 - **+ Add context from region** — for a shared passage/table/diagram/intro that several questions reference; the captured text becomes a context block other questions can link to. See "Grouping questions around a shared diagram" below for the full workflow, including attaching a figure to the context itself.
@@ -189,7 +190,7 @@ Once linked, the shared context (text and any figures) renders once above the wh
 
 To remove a figure from a context, click the **×** on its thumbnail — this only unlinks it from that context (the underlying PNG stays on disk, since another context or question may still use it).
 
-### Fixing a mis-parsed question group ("⤵ Split into question group")
+### Fixing a mis-parsed question group ("⤵ Split into group")
 
 Some source PDFs label the sub-questions of a shared-context set `a.` `b.`
 `c.` — which reads exactly like MCQ choice markers, so the extractor's
@@ -198,11 +199,13 @@ question instead of recognizing them as separate, separately-graded
 sub-questions. The tell: the "choices" are full questions in their own
 right (sometimes even carrying their own `(1 point)` marker, which a real
 choice never does), and the question's Answer field is usually empty because
-there's no single answer for the group.
+there's no single answer for the group. (Capturing straight from the PDF
+instead of fixing an already-extracted question? **🧩 Add multi-part
+question from region**, above, does the same split in one step.)
 
-Use this when you spot that shape: open the question, and in its **Choices**
-row (visible once it has 2 or more choices) click **⤵ Split into question
-group**. This:
+Use this when you spot that shape: open the question — its **Type** row
+(MCQ / T/F / FRQ / Matching, right at the top of Content) grows a 5th button,
+**⤵ Split into group**, whenever it's an MCQ with 2+ choices. Click it. This:
 - Turns the question's stem (and any attached figure) into a shared context
   — reusing the question's existing context if it already had one, otherwise
   creating a new one, exactly like **+ Add context from region** produces.

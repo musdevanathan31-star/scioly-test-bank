@@ -522,6 +522,10 @@ details.q-zone .zone-body{padding:2px 10px 10px}
           ▭ Add question from region
           <span class="menu-desc">Drag a rectangle on the page; the region is OCR'd into a new question. Shift-drag to span the next page too.</span>
         </button>
+        <button id="addGroupRegion" title="Draw a rectangle around a question with lettered sub-parts — e.g. (a)/(b)/(c). Creates a shared context plus one question per part. If no sub-parts are found, it's added as a single question instead.">
+          🧩 Add multi-part question from region
+          <span class="menu-desc">Drag a rectangle around a block with (a)/(b)/(c) sub-parts. Creates a shared context plus one question per part.</span>
+        </button>
         <button id="addMatching" title="Draw two rectangles — the left column, then the right column — to create a matching question (e.g. 'match each term to its definition').">
           ⇄ Add matching question
           <span class="menu-desc">Draw two rectangles — left column, then right — for a "match the term" question.</span>
@@ -986,6 +990,18 @@ document.addEventListener("click", e => {
 // mid-string reach.
 function stripTrailingPointMarker(text){
   return (text || "").replace(/\s*\(\s*[\d.\/]+\s*(?:points?|pts?)\.?\s*\)\s*$/i, "").trim();
+}
+// Next available bare integer question number, given the numbers already in
+// use (e.g. STATE.questions.map(q => q.number)). Pure -- shared by every
+// "create a new question" capture path so the three copies of this loop
+// don't drift.
+function nextQuestionNumber(existingNumbers){
+  let maxN = 0;
+  (existingNumbers || []).forEach(n => {
+    const m = String(n || "").match(/^([0-9]+)/);
+    if(m){ const v = parseInt(m[1]); if(v > maxN) maxN = v; }
+  });
+  return String(maxN + 1);
 }
 // Extractor numbering convention (verified against real corpus data): the
 // first sub-question keeps the original bare number, later ones get a
@@ -2595,6 +2611,19 @@ function cardHTML(q){
   const qtypeSeg = (val, label, hint) => `
     <button type="button" class="${curQtype === val ? "on" : ""}" data-act="setQtype" data-qtype="${val}"
             title="${esc(hint)}${curQtype === val ? " (current)" : ""}">${label}</button>`;
+  // "Split into group" rides along in the same row as the type segments
+  // but isn't one itself -- there's no qtype:"group" (the question stops
+  // existing, replaced by several new ones), so it never gets the "on"
+  // class. Shown only for an MCQ (the shape this can act on at all), and
+  // `disabled` -- same pattern as the gradeability-gated "✓ Correct" option
+  // below and the state-gated ocr/swapTestKey toolbar buttons -- when there
+  // aren't yet 2+ choices to split.
+  const canSplitGroup = (q.choices || []).length >= 2;
+  const splitGroupSeg = curQtype !== "mcq" ? "" : `
+    <button type="button" data-act="splitQuestionGroup" ${canSplitGroup ? "" : "disabled"}
+            title="${canSplitGroup
+              ? "Convert this question's choices into separate sub-questions sharing a context — use when ‘(a)/(b)/(c)’ sub-parts got mis-read as MCQ options. Undoable (Ctrl+Z)."
+              : "Needs 2+ choices to split into a group."}">⤵ Split into group</button>`;
   const qtypeSegHTML = `
     <div class="qtype-seg" role="group" aria-label="Question type">
       <span class="seg-lbl">Type</span>
@@ -2602,6 +2631,7 @@ function cardHTML(q){
       ${qtypeSeg("tf", "T/F", "True/False — clears choices, swaps the answer field for a True/False dropdown")}
       ${qtypeSeg("frq", "FRQ", "Free response — clears choices, plain-text answer")}
       ${qtypeSeg("matching", "Matching", "Two-column matching — add rows here, or drag-capture columns from the PDF")}
+      ${splitGroupSeg}
     </div>`;
   const v = q.validation;
   // Verification gate (client-side half — see questionGradeabilityJS above).
@@ -2749,9 +2779,6 @@ function cardHTML(q){
               title="Drag a rectangle that contains A/B/C/D options; they're split and REPLACE this question's choices. Falls back to line-splitting if option letters were dropped during PDF extraction.">📋 Capture choices</button>
       <button class="ghost btn-tiny field-capture-btn" data-act="capture" data-field="choicesAppend"
               title="Drag a rectangle containing more options; they're split and ADDED after the existing ones, then re-lettered in order. Use when the choices run across two columns or continue on the next page.">➕ Add choices from page</button>
-      ${(q.choices || []).length >= 2 ? `
-      <button class="ghost btn-tiny" data-act="splitQuestionGroup"
-              title="Use when these 'choices' are really separate sub-questions sharing a stem/figure (e.g. a., b., c. labels mis-read as MCQ options). Splits each choice into its own FRQ linked to a shared context. Undoable (Ctrl+Z).">⤵ Split into question group</button>` : ""}
     </div>
     ${choices}
     <div class="field-row" style="margin-top:6px">
@@ -3550,6 +3577,7 @@ function startCapture(field, qid){
   const labels = {stem:"the question stem", choices:"the multiple-choice options",
                   choicesAppend:"the ADDITIONAL options to add after the existing ones",
                   answer:"the answer", newQ:"the new question",
+                  newGroup:"the whole multi-part question block (intro + all lettered sub-parts)",
                   newContext:"the shared context (passage, intro, table)",
                   pickImage:"the image you want to attach to this question",
                   contextImage:"the figure you want to attach to this context",
@@ -3784,7 +3812,8 @@ async function performCapture(mode, x, y, w, h){
       method:"POST",headers:{"Content-Type":"application/json"},
       body: JSON.stringify({
         x, y, w, h, dpi: 120, target,
-        parse_choices: (mode.field === "choices" || mode.field === "choicesAppend" || mode.field === "newQ"),
+        parse_choices: (mode.field === "choices" || mode.field === "choicesAppend"
+                        || mode.field === "newQ" || mode.field === "newGroup"),
       }),
     });
   } catch(err){ setStatus("Extract failed: " + err.message, "err"); cancelCapture(); return; }
@@ -3960,6 +3989,32 @@ function applyMathCapture(mode, delimitedLatex){
   setStatus(`Inserted LaTeX into ${into}.`);
 }
 
+// Builds and inserts a single new question from a captured region --
+// shared by "newQ" and the newGroup fallback (a captured block that turned
+// out not to contain 2+ lettered sub-parts, so there's nothing to split
+// into a group; see the "newGroup" branch below). Mutates STATE.questions
+// and annotations; returns the new question. Caller still owns
+// renderCards()/setStatus() since the right message differs per caller.
+function _insertSingleQuestionFromCapture(stem, choices, r){
+  const num = nextQuestionNumber(STATE.questions.map(q => q.number));
+  const q = {
+    _id: nextLocalId++,
+    number: num,
+    topic: "Other / General",
+    text: stem, choices, answer: "", images: [],
+    source: STATE.questions[0]?.source || "",
+    year: STATE.questions[0]?.year || "",
+    division: STATE.questions[0]?.division || "",
+    page: curPage,
+  };
+  STATE.questions.push(q);
+  focusQuestion(q._id);
+  annAddQuestion(q);
+  annNoteRegion(q.number, "stem", r.page, r.target, r.x, r.y, r.w, r.h);
+  setDirty(true);
+  return q;
+}
+
 function applyCapture(mode, j, text){
   if(mode.field === "contextImage"){
     // mode.id is the context id passed to startCapture("contextImage", ctxId).
@@ -3994,33 +4049,52 @@ function applyCapture(mode, j, text){
     return;
   }
   if(mode.field === "newQ"){
-    // Auto-assign the next available numeric question number
-    let maxN = 0;
-    STATE.questions.forEach(q => {
-      const m = String(q.number || "").match(/^([0-9]+)/);
-      if(m){ const n = parseInt(m[1]); if(n > maxN) maxN = n; }
-    });
-    const num = String(maxN + 1);
     // If the region also contained MC options, use the parsed stem + choices
     const stem    = (j.stem && j.choices && j.choices.length) ? j.stem : text;
     const choices = (j.choices && j.choices.length) ? j.choices : [];
-    const q = {
-      _id: nextLocalId++,
-      number: num,
-      topic: "Other / General",
-      text: stem, choices, answer: "", images: [],
-      source: STATE.questions[0]?.source || "",
-      year: STATE.questions[0]?.year || "",
-      division: STATE.questions[0]?.division || "",
-      page: curPage,
-    };
-    STATE.questions.push(q);
-    focusQuestion(q._id);
-    annAddQuestion(q);
-    annNoteRegion(q.number, "stem", r.page, r.target, r.x, r.y, r.w, r.h);
-    setDirty(true); renderCards();
+    const q = _insertSingleQuestionFromCapture(stem, choices, r);
+    renderCards();
     const choiceMsg = choices.length ? ` with ${choices.length} choices` : "";
-    setStatus(`Captured into new Q#${num}${choiceMsg}.`);
+    setStatus(`Captured into new Q#${q.number}${choiceMsg}.`);
+    return;
+  }
+  if(mode.field === "newGroup"){
+    // split_choices() (backend) never returns exactly 1 choice -- it bails
+    // out to 0 below 2 matches -- so ">= 2" here is really "were any
+    // lettered sub-parts found at all".
+    if(j.choices && j.choices.length >= 2){
+      const id = `ctx_${nextContextId++}`;
+      const ctxText = j.stem || text;
+      const ctx = { id, text: ctxText, images: [], pages: [curPage] };
+      annAddContext(ctx);
+      const base = nextQuestionNumber(STATE.questions.map(q => q.number));
+      const numbers = nextGroupQuestionNumbers(base, j.choices.length,
+                                               STATE.questions.map(q => q.number));
+      const newQs = j.choices.map((c, i) => ({
+        _id: nextLocalId++,
+        number: numbers[i],
+        topic: "Other / General",
+        text: stripTrailingPointMarker(c.text || ""),
+        qtype: "frq",
+        choices: [], answer: "", images: [],
+        context_id: id,
+        source: STATE.questions[0]?.source || "",
+        year: STATE.questions[0]?.year || "",
+        division: STATE.questions[0]?.division || "",
+        page: curPage,
+      }));
+      newQs.forEach(nq => { STATE.questions.push(nq); annAddQuestion(nq); });
+      focusQuestion(newQs[0]._id);
+      setDirty(true); renderCards(); renderImageBay();
+      setStatus(`Captured ${newQs.length} sub-questions (Q#${numbers.join(", #")}) sharing a new context.`, "ok");
+      return;
+    }
+    // No lettered sub-parts found -- fall back to exactly what "Add
+    // question from region" does: a single question, no context.
+    const q = _insertSingleQuestionFromCapture(text, [], r);
+    renderCards();
+    setStatus(`No lettered sub-parts found in that region — captured as a single Q#${q.number} instead. `
+             + `If it does have (a)/(b)/(c) parts, try redrawing a tighter region around just that block.`, "warn");
     return;
   }
   const q = findQ(mode.id);
@@ -4060,12 +4134,7 @@ function finalizeMatchingDraft(){
     setStatus("Matching capture incomplete — need at least one item in each column.", "err");
     return;
   }
-  let maxN = 0;
-  STATE.questions.forEach(q => {
-    const m = String(q.number || "").match(/^([0-9]+)/);
-    if(m){ const n = parseInt(m[1]); if(n > maxN) maxN = n; }
-  });
-  const num = String(maxN + 1);
+  const num = nextQuestionNumber(STATE.questions.map(q => q.number));
   const q = {
     _id: nextLocalId++,
     number: num,
@@ -4149,6 +4218,10 @@ function splitQuestionIntoGroup(q){
 
 document.getElementById("addRegion").addEventListener("click", ()=>{
   startCapture("newQ");
+});
+
+document.getElementById("addGroupRegion").addEventListener("click", ()=>{
+  startCapture("newGroup");
 });
 
 document.getElementById("addMatching").addEventListener("click", ()=>{

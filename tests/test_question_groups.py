@@ -182,3 +182,35 @@ def test_valid_qtype_is_persisted_via_patch_question(tmp_path, monkeypatch):
 def test_valid_qtypes_constant_matches_documented_set():
     import review_app
     assert review_app._VALID_QTYPES == {"mcq", "frq", "tf", "matching"}
+
+
+# ---------------------------------------------------------------------------
+# split_choices() treats lowercase "(a)/(b)/(c)" sub-part markers exactly
+# like uppercase "A./B./C." MCQ option markers. This isn't new behavior --
+# _MC_OPTION has always matched both cases -- but nothing pinned it, and the
+# extract page's "Add multi-part question from region" (templates/extract.html,
+# applyCapture's "newGroup" branch) and "⤵ Split into group" both depend on
+# it: they ask POST .../extract-region with parse_choices=true and interpret
+# whatever comes back as sub-parts. If this regex were ever tightened to
+# uppercase-only, both features would silently stop finding any parts to
+# split, with no error -- just always falling through to "no sub-parts found".
+# ---------------------------------------------------------------------------
+
+def test_split_choices_treats_lowercase_letter_markers_as_choices():
+    stem, choices = bqb.split_choices(
+        "A circuit has R = 10 ohms and V = 5 volts. "
+        "(a) Find the current through the resistor. "
+        "(b) Find the power dissipated by the resistor."
+    )
+    assert stem == "A circuit has R = 10 ohms and V = 5 volts."
+    assert [c["letter"] for c in choices] == ["A", "B"]
+    assert choices[0]["text"] == "Find the current through the resistor."
+    assert choices[1]["text"] == "Find the power dissipated by the resistor."
+
+
+def test_split_choices_finds_nothing_below_two_lettered_parts():
+    # A single "(a)" with no sibling isn't enough to call it multi-part --
+    # this is the case the new region-capture feature's single-question
+    # fallback exists for.
+    stem, choices = bqb.split_choices("A plain question with (a) parenthetical aside.")
+    assert choices == []
