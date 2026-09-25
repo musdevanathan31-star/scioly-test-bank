@@ -43,6 +43,8 @@ markdownify>=0.11
 beautifulsoup4>=4.12
 requests>=2.31
 gunicorn>=21.2
+# Unit conversion for numerical questions (units.py). Pure Python.
+pint>=0.24
 
 # Optional at runtime, installed by default. Both back real features, and
 # leaving them out of this file meant no deployment ever installed them --

@@ -43,6 +43,7 @@ import doc_convert
 
 import jobs
 import llm_providers
+import units
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -613,6 +614,13 @@ def question_gradeability(q: dict) -> tuple[bool, str]:
         pairs = (q.get("matching") or {}).get("pairs") or {}
         if not pairs:
             return False, "no matching pairs recorded"
+        return True, ""
+    if qtype == "numerical":
+        # Needs a key the grader can convert against: a value, a unit that
+        # parses, and a unit that fits the stated quantity (units.key_problem).
+        problem = units.key_problem(q.get("numeric"))
+        if problem:
+            return False, problem
         return True, ""
     # frq (or any other/unrecognized qtype -- same fallback assessments.py uses)
     if not (q.get("answer") or "").strip():
@@ -1683,6 +1691,15 @@ def validate_answer(q: dict, keys: dict | None = None) -> dict:
         "\nThis is a True/False question — answer only with the word "
         '"True" or "False".\n' if is_tf else ""
     )
+    if q.get("qtype") == "numerical":
+        num = q.get("numeric") or {}
+        tf_note = (
+            "\nThis is a numerical question: the recorded answer is a value with a "
+            f"unit, and students are marked right within {num.get('sig_figs') or '?'} "
+            "significant figures. Judge the value and unit together; an equivalent "
+            "value in a different unit is still correct. Give correct_answer as a "
+            "value with its unit.\n"
+        )
 
     prompt = (
         f"You are checking a Science Olympiad {_ev().name} answer for correctness.\n"
@@ -2586,7 +2603,7 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
             for k in ("text", "choices", "answer", "topic", "focus", "page",
                       "extra_pages", "context_id", "image_descriptions",
                       "lastEditedBy", "lastEditedDateTime", "validation",
-                      "qtype", "matching", "difficulty"):
+                      "qtype", "matching", "difficulty", "numeric"):
                 if k in ov:
                     # "difficulty" is the one override field with a
                     # meaningful "clear" state: unrated is the *absence*
@@ -2599,6 +2616,23 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
                         q.pop("difficulty", None)
                     else:
                         q[k] = ov[k]
+            # A numerical key is the source of truth for the display answer:
+            # keep `answer` in step so markdown/CSV/AI-validate read it right.
+
+    # 3b. Numerical keys (overridden, added or extracted alike).
+    for q in questions:
+        # The editor sends the key as typed; normalise it here (parsed
+        # float value, inferred quantity, default sig figs) so grading
+        # never trusts a client-computed number. An invalid key is kept
+        # as typed — question_gradeability() reports it.
+        if q.get("qtype") == "numerical" and isinstance(q.get("numeric"), dict):
+            n = q["numeric"]
+            try:
+                q["numeric"] = units.make_key(n.get("value_text") or "", n.get("unit") or "",
+                                              n.get("quantity"), n.get("sig_figs"))
+            except units.UnitError:
+                pass
+            q["answer"] = units.format_key(q["numeric"])
 
     # 4. Image overrides
     img_ov = ann.get("image_overrides") or {}
@@ -2704,10 +2738,15 @@ def _render_question_block(lines: list[str], q: dict, i: int) -> None:
     elif q.get("qtype") == "tf":
         lines.append("**True / False** ______")
         lines.append("")
+    elif q.get("qtype") == "numerical":
+        lines.append("**Numerical answer:** ______")
+        lines.append("")
     for img in q.get("images", []):
         lines.append(f"![Figure](images/{img})")
         lines.append("")
     ans = q.get("answer", "").strip()
+    if q.get("qtype") == "numerical" and isinstance(q.get("numeric"), dict):
+        ans = f"{units.format_key(q['numeric'])} ({q['numeric'].get('sig_figs')} s.f.)"
     if ans:
         lines.append(f"**Answer:** {ans}")
         lines.append("")
@@ -2949,7 +2988,24 @@ def install_graceful_shutdown() -> None:
 
 # Latest schema version. Older state files are migrated forward on load. Bump
 # the constant and add a migrate_to_N entry when a breaking change ships.
-STATE_SCHEMA_VERSION = 3
+STATE_SCHEMA_VERSION = 4
+
+
+def _promote_imported_numericals(state: dict) -> int:
+    promoted = 0
+    for qs in (state.get("questions") or {}).values():
+        for q in qs or []:
+            meta = q.get("import_meta") or {}
+            if q.get("qtype") != "frq" or meta.get("qtype") != "numerical":
+                continue
+            key = units.key_from_answer_text(q.get("answer") or "")
+            if key is None:
+                continue
+            q["qtype"] = "numerical"
+            q["numeric"] = key
+            q["answer"] = units.format_key(key)
+            promoted += 1
+    return promoted
 
 
 def _migrate_state(state: dict) -> dict:
@@ -2963,6 +3019,12 @@ def _migrate_state(state: dict) -> dict:
     # overrides, keyed by test filename) if missing (no field changes).
     if v < 3:
         state.setdefault("pdf_meta", {})
+    # v3 → v4: numerical questions exist. Promote questions a bundle import
+    # stored as frq-with-numerical-metadata (bundle_import, before numerical
+    # was a real qtype) whose answer splits cleanly into value + unit.
+    # Anything that doesn't parse stays frq, untouched.
+    if v < 4:
+        _promote_imported_numericals(state)
     state["_schema_version"] = STATE_SCHEMA_VERSION
     return state
 

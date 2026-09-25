@@ -23,10 +23,11 @@ into memory, sniffed, and written under a server-chosen filename, so a
 hostile member path ("../../x") has nowhere to go.
 
 Mapping notes (see spec.md "Question bundle import"):
-  - `numerical` is not a stored qtype yet; it lands as `frq`, with
-    `import_meta.qtype = "numerical"` and a best-effort parsed
-    `import_meta.numeric = {value, unit}` so a later numerical-question
-    feature can promote these without re-importing.
+  - `numerical` lands as a real numerical question (`qtype: "numerical"` +
+    `numeric` key, see units.py) when its answer splits into value + unit
+    (or the bundle gives `unit`/`quantity`/`sig_figs` explicitly). One that
+    doesn't parse falls back to `frq`, keeping `import_meta.qtype =
+    "numerical"` so it's still recognisable.
   - Topics not in the event's taxonomy are remapped (case-insensitive match,
     else `classify_topic()`); the bundle's own name is kept in
     `import_meta.topic`.
@@ -45,6 +46,7 @@ from typing import Callable
 
 import build_question_bank as bqb
 import qgen
+import units
 from text_utils import parse_answer_letters
 
 MANIFEST_NAME = "manifest.json"
@@ -268,6 +270,33 @@ def context_prefix(digest: str) -> str:
     return f"imp{digest}_"
 
 
+def _numeric_key(bq: dict, answer: str) -> dict | None:
+    """Numerical key from a bundle question: explicit `unit`/`quantity`/
+    `sig_figs` fields when present (optional since prompt v1.1), else the
+    answer text split into value + unit."""
+    unit = bq.get("unit")
+    quantity = str(bq.get("quantity") or "").strip().lower().replace(" ", "_") or None
+    if quantity and quantity not in units.QUANTITIES and quantity != units.OTHER:
+        quantity = None
+    sig = bq.get("sig_figs")
+    if unit is not None:
+        # The value is whatever precedes the unit in the answer ("4.20 m/s"),
+        # or the whole answer when it's a bare number.
+        m = re.match(r"^\s*(.*?)\s*" + re.escape(str(unit).strip()) + r"\s*$", answer) if str(unit).strip() else None
+        value_text = m.group(1) if m else answer
+        try:
+            return units.make_key(value_text, str(unit), quantity, sig)
+        except units.UnitError:
+            pass
+    key = units.key_from_answer_text(answer, quantity)
+    if key is not None and sig not in (None, ""):
+        try:
+            key = units.make_key(key["value_text"], key["unit"], key["quantity"], sig)
+        except units.UnitError:
+            pass
+    return key
+
+
 def _clean_difficulty(v) -> tuple[float | None, str]:
     if v is None or v == "":
         return None, ""
@@ -357,8 +386,14 @@ def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
             answer = norm
         else:
             issues.append("tf answer isn't True/False")
+    numeric_key = None
     if stored_qtype == "numerical":
-        stored_qtype = "frq"
+        numeric_key = _numeric_key(bq, answer)
+        if numeric_key is None:
+            issues.append("numerical answer isn't a value with a recognised unit, imported as frq")
+            stored_qtype = "frq"
+        else:
+            answer = units.format_key(numeric_key)
     if not answer:
         issues.append("no answer")
 
@@ -376,6 +411,8 @@ def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
         "page":     1,
         "qtype":    stored_qtype,
     }
+    if numeric_key is not None:
+        q["numeric"] = numeric_key
 
     for ref in (bq.get("images") or []):
         stored = image_names.get(str(ref))
@@ -417,7 +454,10 @@ def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
         issues.append("no justification")
 
     meta: dict = {"bundle": digest, "id": str(bq.get("id") or "")}
-    if raw_qtype == "numerical":
+    if raw_qtype == "numerical" and stored_qtype == "frq":
+        # Kept so the question can still be recognised as numerical once
+        # someone fixes its answer (the Extract/Browse NUM button pre-fills
+        # from the answer text).
         meta["qtype"] = "numerical"
         parsed = parse_numeric_answer(answer)
         if parsed:

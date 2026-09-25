@@ -96,6 +96,13 @@
         — correct {{ "answers (select all that apply)" if q.select_multiple else "answer" }}: <b>{{ q.correct_answer }}</b></div>
     {% elif q.qtype == "tf" %}
       <div class="ans">Your answer: <b>{{ row.answer.picked or "(none)" }}</b> — correct answer: <b>{{ q.correct_answer }}</b></div>
+    {% elif q.qtype == "numerical" %}
+      {% set nv = (row.auto.numeric if row.auto else {}) or {} %}
+      <div class="ans">Your answer: <b>{{ ((row.answer.value or "") ~ " " ~ (row.answer.unit or "")).strip() or "(none)" }}</b>
+        — correct answer: <b>{{ q.correct_answer }}</b>{% if q.correct_numeric and q.correct_numeric.sig_figs %} ({{ q.correct_numeric.sig_figs }} significant figure{{ "" if q.correct_numeric.sig_figs == 1 else "s" }}){% endif %}</div>
+      {% if nv.status and nv.status != "correct" %}
+      <div class="ans muted">{{ nv.message }}{% if nv.given_in_key_unit is not none and nv.status == "wrong_value" and row.answer.unit %} — yours is {{ "%g"|format(nv.given_in_key_unit) }} {{ nv.key_unit }}{% endif %}{% if nv.low is defined and nv.low is not none %}; accepted {{ "%g"|format(nv.low) }} to {{ "%g"|format(nv.high) }} {{ nv.key_unit }}{% endif %}</div>
+      {% endif %}
     {% elif q.qtype == "frq" %}
       <div class="ans">Your answer: {{ row.answer.text or "(none)" }}</div>
       <div class="ans muted">Reference answer: {{ q.correct_answer }}</div>

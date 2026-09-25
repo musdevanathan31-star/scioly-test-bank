@@ -124,6 +124,7 @@ Each collapsed row packs in, left to right: the **▶** expand arrow, the **ques
 | MCQ | stem text, at least 2 choices, and a non-empty answer |
 | T/F | stem text and an answer that's exactly `True` or `False` |
 | FRQ | stem text and a non-empty answer |
+| NUM | stem text and a value |
 | Matching | stem text, at least one left item, at least one right item, and at least one pair |
 
 An extracted T/F answer the pipeline couldn't parse (preserved as-is elsewhere in the app rather than silently blanked or guessed) always counts as incomplete here too — the marker will say "no answer" rather than pretend an unparseable value is close enough.
@@ -136,16 +137,36 @@ Each card is split into five sections. **Identity** and **Content** are always v
 
 ### Setting a question's type
 
-Every question card shows a **Type** control — `MCQ · T/F · FRQ · Matching` — as the first thing in the card's Content section, always visible, not tucked into a corner button. The highlighted segment is the question's current type; click a different one to change it.
+Every question card shows a **Type** control — `MCQ · T/F · FRQ · NUM · Matching` — as the first thing in the card's Content section, always visible, not tucked into a corner button. The highlighted segment is the question's current type; click a different one to change it.
 
 - **MCQ** (Multiple Choice) — a two-column table: choice text on the left, a **correct** checkbox on the right. Tick the box(es) for the correct choice(s) and the answer is rebuilt automatically as the comma-joined letters in choice order (`"A"`, or `"A, D, E"` if more than one is correct — some real Sci-Oly MCQs do have more than one correct answer, and the app now supports that end to end). A free-text answer field stays underneath as the escape hatch for the handful of questions whose answer is prose rather than a letter (a numeric value with units, etc.) — when the answer doesn't parse as letters, the checkboxes stay unticked and the text is left alone rather than being cleared. Ticking a box when the current answer is prose discards that prose text (an undo-able edit, like everything else on this page).
 - **T/F** (True/False) — clears any choices and swaps the answer field for a **True**/**False** dropdown. Most Sci-Oly True/False items print no lettered options at all (e.g. `14. True or False: Ohm's law applies to all resistors. ____`) — the extraction pipeline recognizes this on its own (a "True or false:"/"T/F:" cue in the stem, or a source that DID print lettered `A. True B. False` options) and tags the question this way automatically, with the answer normalized to the word `"True"` or `"False"`. Use the Type control to fix a missed one or convert one by hand.
 - **FRQ** (Free Response) — clears any choices; plain free-text answer, no dropdown.
+- **NUM** (Numerical) — an answer that's a number with a unit. See "Making a numerical question" below.
 - **Matching** — switches straight to the two-column editor (the same one **+ Add matching question**'s two-drag capture produces): each column has its own **+** (add a row by hand) and **📋** (drag-capture more rows from the PDF) buttons, so you can build a matching question either by typing rows in directly or by capturing from the PDF, in any mix. The pipeline also detects "match the following"-style tables on its own during extraction.
 
 Switching type is undo-able like any other destructive edit here — **↶ Undo** (or Ctrl+Z) puts back whatever the switch cleared. There's no confirmation dialog on purpose; mis-clicking and hitting Undo is faster than clicking through a dialog every time.
 
 A True/False question behaves like MCQ everywhere else in the app: it auto-grades on a season assessment (no manual grading needed), shows up in Browse under its own **T/F** filter/badge, and exports to markdown/CSV/PDF/Anki like any other type — just with no lettered choices to print.
+
+### Making a numerical question (value + unit)
+
+Use **NUM** for any question whose answer is a measured or calculated amount: a speed, a resistance, a charge, a fraction. Students can answer in any unit of the right kind, and it's graded automatically.
+
+1. On the Extract page, click **NUM** in the card's Type row. If the answer was already something like `4.2 m/s`, the fields fill in from it.
+2. Check the four fields:
+   - **Value**: type it the way the answer key writes it. Its significant figures matter: `4.20` means 3.
+   - **Unit**: any unit, such as `m/s`, `km/h`, `kΩ`, `µF` (or `uF`), `mA`, `°C` or `%`. Leave it blank for a plain number.
+   - **Quantity**: what the answer measures (Velocity, Resistance, Fraction, …). It fills in from the unit; change it only if it picked the wrong one (for example Torque rather than Energy for `N·m`).
+   - **Sig figs**: sets how close a student must be. With 3, a `4.20 m/s` key accepts 4.195 to 4.205 m/s. Lower it to be more lenient. The line under the fields shows the accepted range.
+3. A warning under the fields means the unit isn't recognised or doesn't match the quantity. The question can't be marked ✓ Correct until that's fixed.
+4. **Save.**
+
+You can also edit these fields on any numerical question in **Browse**. Browse refuses a unit of the wrong kind rather than changing the quantity for you.
+
+**How students are graded:** their answer is converted to your unit, so `15.12 km/h` or `420 cm/s` is right for `4.20 m/s`. A unit of the wrong kind scores 0. **The right number with no unit gets half credit.** On a fraction or percentage question, a bare number is a full answer (`75`, `0.75` or `3/4` all answer `75 %`).
+
+**Watch out for whole numbers ending in zeros.** `10` or `1200` counts only the non-zero digits as significant, so a `10 ms` key accepts anything from 5 to 15 ms. Raise the sig figs if you want it tighter.
 
 ### Rating a question's difficulty
 
@@ -350,7 +371,7 @@ Numerical questions show as **numerical** in the result but are stored as free-r
 
 ### Taking or building a practice quiz
 
-Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only" and "True/False only" are among the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
+Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only", "True/False only" and "Numerical only" are among the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.
 
 A matching question shows a dropdown next to each left-column item listing every right-column label, with the right column displayed alongside so you can see every option before picking. It's graded with **partial credit** — getting 3 of 5 pairs right adds 0.6 to your running score, not all-or-nothing — and the feedback/mistake-review screens show exactly which pairs you got right or wrong.
 
@@ -618,6 +639,8 @@ If your coach has given you a separate window (a makeup or an extension), every 
 ### Taking a test
 
 Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.
+
+**Numerical questions** have two boxes: the **value** and the **unit**. Use any unit that fits (`km/h` and `m/s` both work for a speed); the unit box suggests some. Write the value as `4.2`, `3.0e8`, `3.0 × 10^8` or `3/4`. If the unit box shows ⚠, it doesn't recognise the unit or the unit can't be right for this question. Always include the unit: a right number without one only earns half credit.
 
 If you missed the window, ask a coach for a personal makeup window — once granted, the test becomes accessible to you on your own separate schedule, regardless of whether the class window is open.
 

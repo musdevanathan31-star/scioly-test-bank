@@ -127,6 +127,14 @@ function autoAnswerSummaryHTML(q, answer, autoGrade){
   if(q.qtype === "tf"){
     return `Your answer: <b>${esc(picked || "(none)")}</b> — correct answer: <b>${esc(q.correct_answer)}</b>`;
   }
+  if(q.qtype === "numerical"){
+    const given = answer ? `${answer.value || ""} ${answer.unit || ""}`.trim() : "";
+    const v = (autoGrade && autoGrade.numeric) || {};
+    const sf = (q.correct_numeric || {}).sig_figs;
+    const note = v.status && v.status !== "correct" ? ` <span class="muted">(${esc(v.message || v.status)})</span>` : "";
+    return `Your answer: <b>${esc(given || "(none)")}</b> — correct answer: <b>${esc(q.correct_answer)}</b>`
+      + (sf ? ` <span class="muted">(${esc(sf)} s.f.)</span>` : "") + note;
+  }
   if(q.qtype === "matching"){
     const pairs = (autoGrade && autoGrade.per_pair) || [];
     if(!pairs.length) return `<span class="muted">(no pairs answered)</span>`;

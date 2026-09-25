@@ -332,6 +332,17 @@ def candidate_to_question(cand: dict, number: str, source_label: str) -> dict:
         "division": "",
         "page":     1,
     }
+    # A "numerical" candidate becomes a real numerical question when its
+    # answer splits into value + unit ("4.2 m/s"); otherwise it stays free
+    # response exactly as before.
+    if cand.get("type") == "numerical":
+        import units
+        key = units.key_from_answer_text(q["answer"])
+        if key is not None:
+            q["qtype"] = "numerical"
+            q["numeric"] = key
+            q["answer"] = units.format_key(key)
+            q["choices"] = []
     # External candidates (other LLMs, hand-written JSON) may carry a textual
     # description of a referenced diagram even before any image file exists.
     # Preserve it so the per-question "Generate diagram" chat is pre-seeded

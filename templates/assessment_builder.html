@@ -44,6 +44,7 @@ section{background:var(--bg-card);border:1px solid var(--line);border-radius:6px
           <option value="frq">FRQ</option>
           <option value="matching">Matching</option>
           <option value="tf">True/False</option>
+          <option value="numerical">Numerical</option>
         </select>
         <select id="f_difficulty">
           <option value="">(any difficulty)</option>
@@ -126,6 +127,7 @@ function findPoolQ(bucket, number){
 function questionTypeOf(q){
   if(q._is_matching) return "matching";
   if(q._is_tf) return "tf";
+  if(q._is_numerical) return "numerical";
   if(q._is_mcq) return "mcq";
   return "frq";
 }

@@ -708,6 +708,15 @@ def _snapshot_one_question(q: dict, bucket: str, max_points: float) -> dict:
             # answer (parse_answer_letters returns empty for those, same as
             # a genuinely single-answer one -- both render as single-select).
             entry["select_multiple"] = len(parse_answer_letters(answer, choices)) > 1
+        if qtype == "numerical":
+            # `quantity` is safe for students (it drives the unit
+            # suggestions, and the question itself asks for it);
+            # `correct_numeric` is the key and is stripped from the take
+            # page alongside correct_answer (api_take_assessment).
+            numeric = dict(q.get("numeric") or {})
+            entry["choices"] = []
+            entry["correct_numeric"] = numeric
+            entry["quantity"] = numeric.get("quantity") or ""
     return entry
 
 
@@ -848,6 +857,16 @@ def _render_question(q: dict, index: int, *, include_answers: bool) -> list[str]
         lines.append("")
         if include_answers:
             lines.append(f"**Answer:** {q.get('correct_answer') or '(no key recorded)'}")
+            lines.append("")
+    elif qtype == "numerical":
+        lines.append("Answer: ______________ (include units)")
+        lines.append("")
+        if include_answers:
+            n = q.get("correct_numeric") or {}
+            key = q.get("correct_answer") or "(no key recorded)"
+            if n.get("sig_figs"):
+                key += f" ({n['sig_figs']} significant figure{'' if n['sig_figs'] == 1 else 's'})"
+            lines.append(f"**Answer:** {key}")
             lines.append("")
     elif q.get("choices"):
         for choice in q["choices"]:
@@ -1525,6 +1544,19 @@ def _grade_tf(picked: str | None, correct_answer: str, max_points: float = 1.0) 
     return {"correct": ok, "points_earned": max_points if ok else 0.0, "points_possible": max_points}
 
 
+def _grade_numerical(numeric: dict, value, unit, max_points: float = 1.0) -> dict:
+    """Numerical grading via units.grade(): converts the student's value to
+    the key's unit and accepts it within the key's significant figures. A
+    right number with no unit earns units.NO_UNIT_CREDIT of the points.
+    The full verdict is kept (status/message/given_in_key_unit/low/high) so
+    the results and grading pages can show why."""
+    import units
+    verdict = units.grade(numeric, str(value or ""), str(unit or ""))
+    earned = round(float(verdict.get("credit") or 0.0) * max_points, 4)
+    return {"correct": verdict.get("status") == "correct", "points_earned": earned,
+            "points_possible": max_points, "numeric": verdict}
+
+
 def _grade_matching(matching: dict, picks: dict, max_points: float) -> dict:
     """Direct Python port of quiz.html's submitMatchingAnswer() partial-
     credit logic — a real test cannot trust a client-computed score, so
@@ -1573,6 +1605,10 @@ def submit_response(assessment_id: str, username: str, snapshot: list, now: date
             elif q.get("qtype") == "matching":
                 auto_grade[number] = _grade_matching(q.get("matching") or {}, answer.get("picks") or {},
                                                      float(q.get("max_points") or 1))
+            elif q.get("qtype") == "numerical":
+                auto_grade[number] = _grade_numerical(q.get("correct_numeric") or {},
+                                                      answer.get("value"), answer.get("unit"),
+                                                      float(q.get("max_points") or 1))
             # frq: no auto-grade entry — graded manually (Part 5)
         updated = replace(existing, auto_grade=auto_grade,
                           status="auto_submitted_late" if late else "submitted",

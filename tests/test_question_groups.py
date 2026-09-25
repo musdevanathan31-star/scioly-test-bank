@@ -181,7 +181,7 @@ def test_valid_qtype_is_persisted_via_patch_question(tmp_path, monkeypatch):
 
 def test_valid_qtypes_constant_matches_documented_set():
     import review_app
-    assert review_app._VALID_QTYPES == {"mcq", "frq", "tf", "matching"}
+    assert review_app._VALID_QTYPES == {"mcq", "frq", "tf", "matching", "numerical"}
 
 
 # ---------------------------------------------------------------------------

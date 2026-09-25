@@ -60,6 +60,9 @@
 .quiz-context-banner .images{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .quiz-context-banner .images img{max-width:160px;max-height:160px;border:1px solid var(--line);
   border-radius:4px;background:#fff}
+.quiz-num{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.quiz-num .quiz-frq-input{flex:1;min-width:160px}
+.quiz-num-hint{width:100%;font-size:12px;color:#666}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -96,6 +99,7 @@
         <option value="frq">FRQ only</option>
         <option value="matching">Matching only</option>
         <option value="tf">True/False only</option>
+        <option value="numerical">Numerical only</option>
       </select>
 
       <label for="qc_timer">Per-Q timer</label>
@@ -137,6 +141,11 @@
     <div class="quiz-q" id="q_text"></div>
     <div class="quiz-choices" id="q_choices"></div>
     <input id="q_frq" class="quiz-frq-input" style="display:none" placeholder="Type your answer…">
+    <div id="q_num" class="quiz-num" style="display:none">
+      <input id="q_num_value" class="quiz-frq-input" placeholder="Value (e.g. 4.2 or 3.0e8)" autocomplete="off">
+      <input id="q_num_unit" class="quiz-frq-input" placeholder="Unit (e.g. m/s)" autocomplete="off">
+      <div class="quiz-num-hint" id="q_num_hint"></div>
+    </div>
     <div id="q_matching" style="display:none"></div>
     <div id="q_feedback" class="quiz-feedback" style="display:none"></div>
     <div style="text-align:right">
@@ -200,7 +209,7 @@ function parseAnswerLettersJS(answer, choices){
 }
 
 async function loadPool(){
-  const r = await fetch(`${API}/all-questions`);
+  const [r] = await Promise.all([fetch(`${API}/all-questions`), Units.load()]);
   const j = await r.json();
   POOL = j.questions || [];
   CONTEXTS = j.contexts || {};
@@ -220,8 +229,10 @@ function filteredPool(){
     const isMcq = q.choices && q.choices.length;
     const isMatching = !!q._is_matching;
     const isTf = !!q._is_tf;
+    const isNum = !!q._is_numerical;
     if(CONFIG.type === "mcq" && !isMcq) return false;
-    if(CONFIG.type === "frq" && (isMcq || isMatching || isTf)) return false;
+    if(CONFIG.type === "frq" && (isMcq || isMatching || isTf || isNum)) return false;
+    if(CONFIG.type === "numerical" && !isNum) return false;
     if(CONFIG.type === "matching" && !isMatching) return false;
     if(CONFIG.type === "tf" && !isTf) return false;
     if(CONFIG.bucket){
@@ -372,7 +383,19 @@ function presentQuestion(){
   const isMatching = !!q._is_matching;
   const isTf = !!q._is_tf;
   document.getElementById("q_matching").style.display = "none";
-  if(isMatching){
+  document.getElementById("q_num").style.display = "none";
+  if(q._is_numerical){
+    document.getElementById("q_choices").style.display = "none";
+    document.getElementById("q_frq").style.display = "none";
+    document.getElementById("q_num").style.display = "";
+    const n = q.numeric || {};
+    const valEl = document.getElementById("q_num_value"), unitEl = document.getElementById("q_num_unit");
+    valEl.value = ""; unitEl.value = ""; valEl.disabled = false; unitEl.disabled = false;
+    unitEl.setAttribute("list", Units.datalistId(n.quantity || ""));
+    document.getElementById("q_num_hint").textContent =
+      n.quantity && n.quantity !== "other" ? `Answer is a ${Units.label(n.quantity).toLowerCase()} — any unit of it is fine.` : "";
+    valEl.focus();
+  } else if(isMatching){
     document.getElementById("q_choices").style.display = "none";
     document.getElementById("q_frq").style.display = "none";
     document.getElementById("q_matching").style.display = "";
@@ -482,6 +505,7 @@ function submitAnswer(timedOut){
   const isTf = !!q._is_tf;
 
   if(isMatching){ submitMatchingAnswer(q, timedOut); return; }
+  if(q._is_numerical){ submitNumericalAnswer(q, timedOut); return; }
 
   let picked;
   if(isTf){
@@ -608,6 +632,61 @@ function submitMatchingAnswer(q, timedOut){
     if(rightEl) rightEl.classList.add("correct");
   });
   document.querySelectorAll(".q-match-pick").forEach(sel => sel.disabled = true);
+  document.getElementById("btn_submit").style.display = "none";
+  document.getElementById("btn_skip").disabled = true;
+  document.getElementById("btn_next").style.display = "";
+  document.getElementById("q_score_run").textContent = formatScore(SCORE);
+}
+
+// Numerical grading is done server-side (units.py via /api/units/grade) —
+// unit conversion and the significant-figure range live in one place. The
+// quiz already holds the key client-side, so it's sent along; nothing here
+// is secret. A right number with no unit earns partial credit, added to
+// SCORE like a matching question's fraction.
+async function submitNumericalAnswer(q, timedOut){
+  const valEl = document.getElementById("q_num_value"), unitEl = document.getElementById("q_num_unit");
+  const value = valEl.value.trim(), unit = unitEl.value.trim();
+  if(!value && !timedOut){
+    toast("Enter a value (or click Skip).", "warn");
+    return;
+  }
+  document.getElementById("btn_submit").disabled = true;
+  let v;
+  try {
+    const r = await fetch(`${APP_ROOT}/api/units/grade`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({key: q.numeric || {}, value, unit}),
+    });
+    v = await r.json();
+  } catch(err){
+    document.getElementById("btn_submit").disabled = false;
+    toast("Couldn't grade that answer: " + err.message, "err");
+    return;
+  }
+  if(v.error){
+    document.getElementById("btn_submit").disabled = false;
+    toast(v.error, "err");
+    return;
+  }
+  const credit = Number(v.credit) || 0;
+  const correct = v.status === "correct";
+  SCORE += credit;
+  const picked = value ? `${value} ${unit}`.trim() : (timedOut ? "(timed out)" : "(skipped)");
+  RESPONSES.push({q, picked, correct, creditFraction: credit, timedOut});
+  const fb = document.getElementById("q_feedback");
+  fb.style.display = "";
+  fb.className = "quiz-feedback " + (correct ? "correct" : "wrong");
+  const range = (v.low != null && v.high != null)
+    ? ` (accepted ${Number(v.low.toPrecision(6))} to ${Number(v.high.toPrecision(6))} ${esc(v.key_unit || "")})` : "";
+  const conv = (!correct && v.given_in_key_unit != null && unit)
+    ? ` You gave ${esc(picked)} = ${Number(v.given_in_key_unit.toPrecision(6))} ${esc(v.key_unit || "")}.` : "";
+  fb.innerHTML = correct
+    ? `✓ Correct — answer was <b>${esc(v.expected)}</b>`
+    : (v.status === "no_unit"
+        ? `◐ Right number, but no unit — half credit. Answer was <b>${esc(v.expected)}</b>`
+        : `✗ ${timedOut ? "Out of time" : "Not quite"} — ${esc(v.message || "")}. Answer was <b>${esc(v.expected)}</b>${range}.${conv}`);
+  valEl.disabled = true; unitEl.disabled = true;
+  document.getElementById("btn_submit").disabled = false;
   document.getElementById("btn_submit").style.display = "none";
   document.getElementById("btn_skip").disabled = true;
   document.getElementById("btn_next").style.display = "";

@@ -111,7 +111,9 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
   "text":     "What is ... ?",      // the stem; MC options live in `choices`
   "choices":  [ { "letter": "A", "text": "..." }, ... ],
   "answer":   "10V",
-  "qtype":    "matching",           // optional discriminator: "mcq"|"frq"|"matching"|"tf"; absent = legacy inference (bool(choices) -> mcq, else frq)
+  "qtype":    "matching",           // optional discriminator: "mcq"|"frq"|"matching"|"tf"|"numerical"; absent = legacy inference (bool(choices) -> mcq, else frq)
+  "numeric":  {"value": 4.2, "value_text": "4.20", "unit": "m/s", "quantity": "velocity", "sig_figs": 3},
+                                    // numerical questions only (§4b); `answer` mirrors units.format_key(numeric)
   "matching": {                     // present only when qtype=="matching"
     "left":  [ { "label": "1", "text": "Resistor", "image": null }, ... ],
     "right": [ { "label": "A", "text": "Limits current flow", "image": null }, ... ],
@@ -136,6 +138,8 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
 **Matching questions** (`qtype: "matching"`) deliberately leave `answer: ""` and `choices: []` — every code path that treats `answer` as a plain string (`validate_answer`'s `(q.get("answer") or "").strip()`, both inline editors' answer field) would otherwise need to handle it being a dict for this one type. The actual correct-pairing data lives entirely in `matching.pairs`, nested where only matching-aware code looks for it. `qtype` is the single explicit discriminator (`isMcq = !!choices.length`, `isMatching = qtype === "matching"`, `isFrq = neither`) — existing MCQ/FRQ questions simply have no `qtype` key, so every pre-existing `bool(choices)`-based check anywhere in the codebase is unaffected by this addition. Cell images (`matching.left[i].image`/`right[i].image`) are filenames from the same `images/` directory as everything else, just referenced per-cell instead of via the question's top-level `images[]` — `associate_images()` explicitly excludes matching questions so it never double-claims those files.
 
 **MCQ answer format — comma-separated letters, one or more.** `answer` for a `qtype:"mcq"` question is a plain string: a single letter (`"B"`) for the common case, or comma-separated letters (`"A, D, E"`) when more than one choice is correct — this is already the de-facto convention in the data (a scan of every `.qbank_state.json` found two real MCQs with multi-letter answers), so there's no schema/migration involved, and a single letter is just the one-element case of the same shape. `text_utils.parse_answer_letters(answer, choices)` is the **one place** this parsing rule lives — it returns the `set[str]` of valid choice letters `answer` names (uppercased, deduplicated, order-independent; a letter with no matching entry in `choices` is dropped), or an **empty set** when `answer` doesn't parse as letters at all. That empty-set case is the fallback signal for **prose answers**: 23 real MCQs in the bank have a non-letter `answer` (a numeric value with units, etc.) instead of a lettered pick, and every caller of `parse_answer_letters` must treat empty as "not letter-shaped" and fall back to the pre-existing (string-compare) behavior for that question rather than mangling it. Every grading/rendering path that cares which letters are correct — `assessments._grade_mcq` (server grading), `templates/quiz.html` (practice-quiz grading, which has `answer` client-side so it can tell single- from multi-answer directly), `templates/assessment_take.html` (student's live pick, via the published `select_multiple` flag — see below), and `templates/extract.html`'s choices-table editor — routes through this same rule, either by importing the Python helper directly (`assessments.py`, no circular-import risk since `text_utils` has zero dependencies on it) or via a hand-kept JS port (`parseAnswerLettersJS`, duplicated per-template rather than shared, since this codebase has no inline-JS build step or shared JS module to put it in).
+
+**Numerical questions** (`qtype: "numerical"`) — see §4b.
 
 **True/False questions** (`qtype: "tf"`) always carry `choices: []` and `answer` normalized to the literal string `"True"` or `"False"` — never a synthesized 2-choice MCQ. Most Sci-Oly True/False items print no lettered options at all (e.g. `14. True or False: Ohm's law applies to all resistors. ____`); modeling this as MCQ with fabricated `[{letter:"A",text:"True"},{letter:"B",text:"False"}]` choices would leak those invented choices into every markdown/CSV/PDF export and the Browse type filter. `build_question_bank._looks_like_tf(text, choices)` flags a question as tf during `extract_questions()` when the stem carries an explicit cue (`_TF_CUE`: "true or false" / "true/false" / "t/f") or the source printed exactly a True/False pair as lettered choices. When the source DID print lettered choices, the raw letter answer key (merged from the answer-key page later in `process_pair`) is resolved against those choices to the word first, via `build_question_bank._finalize_tf_answers()` — then `choices` is cleared to the uniform `[]` shape. `build_question_bank._normalize_tf_answer(raw)` is the single source of truth for turning `T`/`t`/`TRUE`/`true`/`F`/`f`/`FALSE`/`false` (with surrounding whitespace/punctuation) into `"True"`/`"False"`; it returns `None` for anything unparseable, and every caller leaves the original value untouched in that case rather than blanking it — an unparseable key is a review-UI problem, not a reason to destroy data. `assessments._grade_tf()` (mirrors `_grade_mcq`) grades a submitted response by normalizing both the student's pick and the snapshot's `correct_answer` through the same `_normalize_tf_answer()` — deliberately not reusing `_grade_mcq`'s `correct_raw.upper()[:1]` first-letter compare, which would mis-grade some True/False combinations by accident rather than by design.
 
@@ -265,6 +269,45 @@ Whichever happens most recently simply overwrites `q["validation"]` server-side 
 - `renderSidebar()` — the filter-dropdown/topic-chart/stat-list population, split out of `load()` unchanged so both the initial load and a post-edit refresh share one implementation. Reuses `fillSelect()` as-is, which already captures a `<select>`'s current value before rebuilding its options and restores it afterward if still valid — the exact property that makes "filter set to an existing topic, a *different* question gets retagged onto a brand-new topic" work correctly: the new topic appears in the option list and the active filter selection is untouched, verified live and pinned by `test_fill_select_keeps_the_current_selection_when_a_new_topic_appears`.
 - `refreshSidebarStats()` — `DATA.stats = recomputeStats(DATA.questions); renderSidebar();`, called after every mutation above. `setValidation()`/the delete handler/`undoLastChange()` also gained a `rerender()` call (re-applies the active filters, redraws `#results`) they didn't have before — needed so a question that stopped matching the active filter actually disappears without a reload, verified live (retagging a question away from an active "Topic: General" filter drops it from `#results` immediately, `Showing 1 of 3` updating from `Showing 3 of 3`).
 - **`flushAutosave()` is deliberately more conservative**: it always calls `refreshSidebarStats()` (cheap, and correct even for a field that doesn't affect any stat) but only calls `rerender()` — a full `#results.innerHTML` rebuild — when the dirty payload includes `topic` or `focus`, the two fields that actually feed a stat/filter. `text`/`answer`/`choices`/`matching` edits skip it: this debounced autosave can fire while the user is still actively typing in one of those fields on a *different* card (or even the same one, mid-edit), and replacing that DOM node out from under them would drop focus and cursor position — the exact "UI jumping" this fix was asked not to introduce.
+
+## 4b. Numerical questions (`units.py`)
+
+A numerical answer is a value, a unit and the quantity it measures; grading converts the student's unit and accepts the value within the key's significant figures. `units.py` is the only module that touches `pint` (the unit algebra); everything else calls it.
+
+**Key shape** (`q["numeric"]`, built and validated only by `units.make_key(value_text, unit, quantity=None, sig_figs=None)`):
+
+| Field | Meaning |
+|---|---|
+| `value_text` | the value exactly as the author typed it (`"4.20"`, `"3.0 × 10^8"`, `"3/4"`) — `parse_value()` accepts e-notation, `× 10^n`, superscript exponents, thousands commas, fractions, `$…$`/`\times` |
+| `value` | float parsed from `value_text` **server-side** (`apply_annotations`, `api_save`, the PATCH handler all re-run `make_key`; a client-sent `value` is ignored) |
+| `unit` | as typed (`"km/h"`, `"kΩ"`, `"µF"`, `"°C"`, `"%"`, `""` for a plain number) |
+| `quantity` | key into `units.QUANTITIES` (32 named quantities: length … specific_heat, fraction) or `"other"`; inferred by `infer_quantity(unit)` when absent — an exact spelling match in a quantity's unit list ranks first, so `N·m` → torque, `J` → energy |
+| `sig_figs` | defaults to `sig_figs_of(value_text)` (standard rules: `4.20`→3, `0.0042`→2, `1200`→2, `1200.`→4, zero `0.00`→3); 1–15 |
+
+`q["answer"]` is kept equal to `units.format_key(numeric)` (`"4.20 m/s"`, `"75%"`) so markdown, CSV, Anki and AI validation need no numerical-specific code. The quantity is stored rather than derived because some share a dimension (torque/energy, angle/fraction) and the UI needs to know which one the author meant. A new unit never changes the stored quantity implicitly: a unit of the wrong kind is refused (Browse PATCH → 400) or flagged (Extract), so what a question measures only changes when someone picks a new quantity.
+
+**Grading** (`units.grade(numeric, value_text, unit_text)` → `{status, credit, message, expected, low, high, key_unit, given_in_key_unit}`):
+
+- tolerance = half a unit in the key's last significant figure: `0.5 × 10^(floor(log10|v|) − sig_figs + 1)`; for a zero key, `0.5 × 10^−(sig_figs−1)` (so `0.00` → ±0.005). Boundaries are inclusive.
+- the student's value is converted into the key's unit with pint (`autoconvert_offset_to_baseunit` so °C/°F/K convert correctly); `correct` (credit 1) if within tolerance, else `wrong_value`
+- `wrong_dimension` (0) when the unit is of a different kind; `unparseable` (0) for an unknown unit or non-number; `blank` (0)
+- **no unit given**: for a dimensionless key the bare number is a complete answer, accepted read either as a plain number or in the key's unit (`75 %` accepts `75` and `0.75`); otherwise a bare number that would be right in the key's unit is `no_unit` with credit `units.NO_UNIT_CREDIT` (0.5) — the user's chosen policy.
+
+**Gradeability** (`question_gradeability`): numerical needs `units.key_problem(numeric) == ""` — a value, a unit that parses, and a unit that fits the quantity.
+
+**Routes** (top-level, so the student take page can use them; students can't reach `/event/...`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/units/catalog` | `{quantities: [{name, label, units}], no_unit_credit}` — the editors' quantity dropdown and the unit `<datalist>` suggestions |
+| `POST /api/units/check` | `{unit, quantity?, value?, describe?}` → `{ok, message}` (+ `quantities`, `sig_figs` when `describe`). Says only whether a unit parses/fits the quantity and whether the value is a number — never anything about an answer, so it's open to students (the take page's live hint) |
+| `POST /api/units/grade` | `{key, value, unit}` → the `grade()` verdict. Stateless; used by the quiz page, which already has every answer client-side. 403 for students (no reason for them to hold keys) |
+
+**Assessments.** `_snapshot_one_question` stores `correct_numeric` (the key) and `quantity` on a numerical snapshot entry; the take-page sanitiser strips `correct_numeric` alongside `correct_answer`, and keeps `quantity` (it drives unit suggestions; the question itself asks for the quantity). The student's answer is `{"qtype":"numerical","value":"15.12","unit":"km/h"}`; `submit_response` auto-grades it via `_grade_numerical`, storing the full verdict under `auto_grade[n]["numeric"]` so the results/grading pages can show the accepted range and why. Numerical questions never need manual grading.
+
+**Where numerical questions come from.** Extract **NUM** / Browse editing; `qgen.candidate_to_question` for a `type:"numerical"` candidate (AI generation, JSON import) when `units.key_from_answer_text(answer)` parses; `bundle_import` (§11d.2, which also honours explicit `unit`/`quantity`/`sig_figs`); and state migration v3→v4 (`_promote_imported_numericals`), which promotes questions an earlier bundle import stored as `frq` with `import_meta.qtype == "numerical"`. Anything that doesn't parse stays `frq`, untouched.
+
+**Client side.** `common_ui.py`'s `window.Units` holds only input chrome (catalog loader, `<datalist>` builder, quantity `<option>`s, the check call) and two pure helpers mirrored from Python — `sigFigs` (↔ `sig_figs_of`) and `formatKey` (↔ `format_key`) — with a Node parity test in `tests/test_units.py`. Conversion and grading are never done in JS.
 
 ## 5. Annotation replay (`apply_annotations`)
 
@@ -866,7 +909,7 @@ A **bundle** is what [`QUESTION_EXPORT_PROMPT.md`](QUESTION_EXPORT_PROMPT.md) as
 | Bundle | Stored |
 |---|---|
 | `qtype` mcq/tf/frq | same `qtype`; unknown → `mcq` if it has choices else `frq` (noted as an issue) |
-| `qtype` numerical | `qtype: "frq"` + `import_meta.qtype = "numerical"` + `import_meta.numeric = {value, unit}` from `parse_numeric_answer()` (best effort: `4.2 m/s`, `3.0 × 10^8`, `2.5 × 10⁻³ A`, `$4.2\ \text{m/s}$`; prose tails give none). The answer text is never rewritten. Kept so a future numerical qtype can be backfilled without re-importing. |
+| `qtype` numerical | a real numerical question (§4b): `qtype: "numerical"` + `numeric` from `_numeric_key()` — explicit `unit`/`quantity`/`sig_figs` fields when the bundle gives them (prompt v1.1), else `units.key_from_answer_text(answer)`; `answer` becomes `units.format_key(...)`. When neither parses: `qtype: "frq"`, answer untouched, `import_meta.qtype = "numerical"` + a best-effort `import_meta.numeric` from `parse_numeric_answer()`, and an issue in the summary. |
 | mcq `choices`/`answer` | choices re-lettered A, B, C…; the answer's letters (parsed with `text_utils.parse_answer_letters`) are remapped to the new letters, so multi-answer `"A, C"` survives. `select_multiple` is ignored — it's derived at snapshot time from the answer. |
 | tf `answer` | `bqb._normalize_tf_answer`; left as-is (and noted) if unparseable |
 | `difficulty` | float, clamped to 0-1 (noted); `null`/non-numeric → key absent (unrated) |
@@ -1186,7 +1229,10 @@ Two new modules, both following `auth.py`'s exact persistence idiom (frozen data
     {"bucket":"...", "number":"15", "qtype":"matching", "text":"...",
      "matching":{"left":[...],"right":[...],"pairs":{"1":"A"}}, "max_points":1, ...},
     {"bucket":"...", "number":"20", "qtype":"tf", "text":"...",
-     "choices":[], "correct_answer":"True", "max_points":1, ...}
+     "choices":[], "correct_answer":"True", "max_points":1, ...},
+    {"bucket":"...", "number":"31", "qtype":"numerical", "text":"...", "choices":[],
+     "correct_answer":"4.20 m/s", "quantity":"velocity",
+     "correct_numeric":{"value":4.2,"value_text":"4.20","unit":"m/s","quantity":"velocity","sig_figs":3}, ...}
   ],
   "snapshot_contexts": {"bucket::ctx_1": {...}},
   "overrides": {"asmith": {"opens_at":"2027-07-22T20:00:00+00:00","closes_at":"2027-07-22T21:00:00+00:00","granted_by":"coach1","granted_at":"...","reason":"absent"}},
@@ -1199,7 +1245,7 @@ Two new modules, both following `auth.py`'s exact persistence idiom (frozen data
 {
   "question_order": [2,0,1],
   "answers": {"7": {"qtype":"mcq","picked":"B"}, "12": {"qtype":"frq","text":"..."},
-              "20": {"qtype":"tf","picked":"True"}},
+              "20": {"qtype":"tf","picked":"True"}, "31": {"qtype":"numerical","value":"15.12","unit":"km/h"}},
   "auto_grade": {"7": {"correct":true,"points_earned":1,"points_possible":1}},
   "manual_grade": {"12": {"points_earned":2.5,"points_possible":3,"graded_by":"vol1","graded_at":"...","comment":""}},
   "status": "submitted", "released": true, "released_at": "...", "released_by": "coach1", ...

@@ -441,6 +441,12 @@ details.q-zone .zone-body{padding:2px 10px 10px}
   border:1px solid var(--line);border-radius:4px}
 .cases-panel .jump-q{color:var(--accent);cursor:pointer;text-decoration:underline;
   font-size:11px}
+.num-key{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:4px}
+.num-key label{display:flex;flex-direction:column;font-size:11px;color:#555;gap:2px}
+.num-key input[type=text]{width:110px}
+.num-key input[type=number]{width:60px}
+.num-status{font-size:11px;color:#1f6f3a;margin-top:4px}
+.num-status.err{color:#b04000}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -1186,6 +1192,11 @@ function questionCompleteness(q){
     if(q.answer !== "True" && q.answer !== "False") return {complete: false, reason: "no answer"};
     return {complete: true, reason: null};
   }
+  if(qtype === "numerical"){
+    const n = q.numeric || {};
+    if(!String(n.value_text || "").trim()) return {complete: false, reason: "no value"};
+    return {complete: true, reason: null};
+  }
   if(qtype === "matching"){
     const m = q.matching || {};
     if(!(m.left && m.left.length)) return {complete: false, reason: "needs left items"};
@@ -1229,10 +1240,71 @@ function questionGradeabilityJS(q){
     if(!Object.keys(pairs).length) return {gradeable: false, reason: "no matching pairs recorded"};
     return {gradeable: true, reason: null};
   }
+  if(qtype === "numerical"){
+    // Unit parsing is server-side (units.py); NUM_PROBLEMS holds the last
+    // live check's verdict for this card (see numericEditorHTML's handler).
+    const n = q.numeric || {};
+    if(!String(n.value_text || "").trim()) return {gradeable: false, reason: "no numerical answer recorded"};
+    const problem = NUM_PROBLEMS.get(q._id);
+    if(problem) return {gradeable: false, reason: problem};
+    return {gradeable: true, reason: null};
+  }
   // frq
   if(!(q.answer || "").toString().trim()) return {gradeable: false, reason: "no reference answer recorded"};
   return {gradeable: true, reason: null};
 }
+// Numerical questions: last live-check problem per card (by _id), shown under
+// the editor and used by questionGradeabilityJS. Transient, never saved.
+const NUM_PROBLEMS = new Map();
+Units.load().then(() => { if(typeof renderCards === "function" && STATE && STATE.questions) renderCards(); });
+
+// Ask the server whether the key's unit parses and fits its quantity; fill
+// an empty quantity from the unit. Re-renders the card when anything changed.
+async function numericDescribe(q){
+  const n = q.numeric || {};
+  const res = await Units.check({unit: n.unit || "", quantity: n.quantity || null,
+                                 value: n.value_text || "", describe: true});
+  let changed = false;
+  if(res.ok && !n.quantity && res.quantities && res.quantities.length){
+    n.quantity = res.quantities[0];
+    annOverride(q.number, "numeric", n);
+    annUpdateAdded(q.number, q);
+    changed = true;
+  }
+  const prev = NUM_PROBLEMS.get(q._id) || "";
+  const now = res.ok ? "" : (res.message || "unit not recognised");
+  if(now) NUM_PROBLEMS.set(q._id, now); else NUM_PROBLEMS.delete(q._id);
+  if(changed || prev !== now) renderCards();
+}
+
+function numericEditorHTML(q){
+  const n = q.numeric || {};
+  const problem = NUM_PROBLEMS.get(q._id) || "";
+  const dl = Units.datalistId(n.quantity || "");
+  const sf = Number(n.sig_figs) || null;
+  let range = "";
+  const v = Number(String(n.value_text || "").replace(/,/g, ""));
+  if(sf && isFinite(v) && String(n.value_text || "").trim() && !problem){
+    const tol = v === 0 ? 0.5 * Math.pow(10, -(sf - 1))
+                        : 0.5 * Math.pow(10, Math.floor(Math.log10(Math.abs(v))) - sf + 1);
+    const fmt = x => Number(x.toPrecision(sf + 1)).toString();
+    range = `accepts ${fmt(v - tol)} to ${fmt(v + tol)} ${esc(n.unit || "")} (or the same amount in any unit of this quantity)`;
+  }
+  return `
+    <div class="field-row" style="margin-top:6px"><span class="lbl">Answer</span>
+      <span class="muted" style="font-size:11px">value + unit; students may answer in any equivalent unit</span></div>
+    <div class="num-key">
+      <label>Value <input type="text" data-numedit="value_text" value="${esc(n.value_text || "")}"
+             placeholder="4.20" title="The answer as you'd write it — its significant figures set the default tolerance"></label>
+      <label>Unit <input type="text" data-numedit="unit" list="${dl}" value="${esc(n.unit || "")}"
+             placeholder="m/s" title="Any unit: m/s, km/h, kΩ, µF, °C, % … (blank for a plain number)"></label>
+      <label>Quantity <select data-numedit="quantity">${Units.quantityOptionsHTML(n.quantity || "")}</select></label>
+      <label>Sig figs <input type="number" min="1" max="15" data-numedit="sig_figs" value="${sf || ""}"
+             title="Grading tolerance: half a unit in this many significant figures"></label>
+    </div>
+    <div class="num-status ${problem ? "err" : ""}">${problem ? "⚠ " + esc(problem) : range}</div>`;
+}
+
 function annOverrideQtype(q, newType){
   if(newType === "tf"){
     q.qtype = "tf";
@@ -1247,6 +1319,18 @@ function annOverrideQtype(q, newType){
   } else if(newType === "frq"){
     q.qtype = "frq";
     q.choices = [];
+  } else if(newType === "numerical"){
+    q.qtype = "numerical";
+    q.choices = [];
+    // Pre-fill from an FRQ-style answer ("4.2 m/s"). The quantity is left
+    // for the live check to infer (numericDescribe) — never guessed here.
+    if(!q.numeric){
+      const parts = Units.splitAnswer(q.answer);
+      q.numeric = {value_text: parts.value_text, unit: parts.unit, quantity: "",
+                   sig_figs: Units.sigFigs(parts.value_text)};
+    }
+    annOverride(q.number, "numeric", q.numeric);
+    numericDescribe(q);
   } else if(newType === "mcq"){
     q.qtype = "mcq";
     if(!Array.isArray(q.choices)) q.choices = [];
@@ -2638,6 +2722,7 @@ function cardHTML(q){
       ${qtypeSeg("mcq", "MCQ", "Multiple choice — lettered choice list, pick/typed answer")}
       ${qtypeSeg("tf", "T/F", "True/False — clears choices, swaps the answer field for a True/False dropdown")}
       ${qtypeSeg("frq", "FRQ", "Free response — clears choices, plain-text answer")}
+      ${qtypeSeg("numerical", "NUM", "Numerical — a value with a unit; graded automatically with unit conversion, within the key's significant figures")}
       ${qtypeSeg("matching", "Matching", "Two-column matching — add rows here, or drag-capture columns from the PDF")}
       ${splitGroupSeg}
     </div>`;
@@ -2772,7 +2857,7 @@ function cardHTML(q){
     </div>
     <textarea data-edit="text">${esc(q.text)}</textarea>
     <div class="math-preview" data-preview-for="text"></div>
-    ${curQtype === "matching" ? matchingHTML(q) : curQtype === "tf" ? `
+    ${curQtype === "matching" ? matchingHTML(q) : curQtype === "numerical" ? numericEditorHTML(q) : curQtype === "tf" ? `
     <div class="field-row" style="margin-top:6px"><span class="lbl">Answer</span></div>
     <select data-edit="answer" class="${q.answer === "True" || q.answer === "False" ? "" : "unset"}">
       ${q.answer === "True" || q.answer === "False" ? "" : `
@@ -2942,6 +3027,32 @@ function bindCardEvents(){
         focusQuestion(Number(id));
         renderCards();
       }
+    });
+    card.querySelectorAll("[data-numedit]").forEach(el => {
+      el.addEventListener("change", () => {
+        const q = findQ(id);
+        const n = q.numeric = q.numeric || {};
+        const key = el.dataset.numedit;
+        if(key === "sig_figs"){
+          n.sig_figs = el.value ? Number(el.value) : null;
+        } else {
+          n[key] = el.value.trim();
+          // Retyping the value resets sig figs to what was typed; the
+          // field can still be changed afterwards.
+          if(key === "value_text") n.sig_figs = Units.sigFigs(n.value_text);
+          // A new unit keeps the chosen quantity: a unit of the wrong kind
+          // shows as a problem (and blocks "✓ Correct") instead of silently
+          // changing what the question measures. An empty quantity is
+          // still filled in from the unit by numericDescribe().
+        }
+        q.answer = Units.formatKey(n);
+        annOverride(q.number, "numeric", n);
+        annOverride(q.number, "answer", q.answer);
+        annUpdateAdded(q.number, q);
+        setDirty(true);
+        numericDescribe(q);
+        renderCards();
+      });
     });
     card.querySelectorAll("[data-edit]").forEach(el => {
       const handler = () => {

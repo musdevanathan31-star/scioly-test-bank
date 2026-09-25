@@ -170,14 +170,30 @@ def test_parse_numeric_answer(answer, expected):
         assert got["value"] == pytest.approx(expected["value"])
 
 
-def test_numerical_is_stored_as_frq_but_remembered():
-    q, issues = _convert(_q(1, qtype="numerical", answer="4.2 m/s", topic="Alpha Topic"))
-    assert q["qtype"] == "frq"
-    assert q["answer"] == "4.2 m/s"          # answer text is never rewritten
-    assert q["import_meta"]["qtype"] == "numerical"
-    assert q["import_meta"]["numeric"]["unit"] == "m/s"
+def test_numerical_becomes_a_real_numerical_question():
+    q, issues = _convert(_q(1, qtype="numerical", answer="4.20 m/s", topic="Alpha Topic"))
+    assert q["qtype"] == "numerical"
+    assert q["numeric"]["unit"] == "m/s" and q["numeric"]["quantity"] == "velocity"
+    assert q["numeric"]["sig_figs"] == 3
+    assert q["answer"] == "4.20 m/s"
+    assert "qtype" not in q["import_meta"]
     assert q["choices"] == []
     assert not issues
+    assert bqb.question_gradeability(q) == (True, "")
+
+
+def test_numerical_explicit_unit_fields_win():
+    q, _ = _convert(_q(1, qtype="numerical", answer="4.2 N m", unit="N m",
+                       quantity="torque", sig_figs=2))
+    assert q["numeric"]["quantity"] == "torque" and q["numeric"]["value"] == 4.2
+    assert q["numeric"]["sig_figs"] == 2
+
+
+def test_unparseable_numerical_falls_back_to_frq_but_is_remembered():
+    q, issues = _convert(_q(1, qtype="numerical", answer="about four metres per second"))
+    assert q["qtype"] == "frq"
+    assert q["import_meta"]["qtype"] == "numerical"
+    assert any("imported as frq" in i for i in issues)
 
 
 def test_multi_letter_mcq_answer_is_kept():
@@ -374,8 +390,8 @@ def test_import_job_writes_questions_images_and_contexts(env):
     assert len(q1["images"]) == 1 and q1["images"][0].startswith("imp_")
     assert (bqb.EVENT.image_dir / q1["images"][0]).read_bytes() == PNG
 
-    assert by_id["q0003"]["qtype"] == "frq"
-    assert by_id["q0003"]["import_meta"]["qtype"] == "numerical"
+    assert by_id["q0003"]["qtype"] == "numerical"
+    assert by_id["q0003"]["numeric"]["unit"] == "m/s"
     # Ungradeable (no answer) is imported but not certified.
     assert by_id["q0004"]["validation"].get("status") != "correct"
     assert any(s["number"] == by_id["q0004"]["number"]

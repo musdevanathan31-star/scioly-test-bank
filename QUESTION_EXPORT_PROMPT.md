@@ -20,11 +20,10 @@ persisted in `.qbank_state.json` (spec.md §4) and the `import-generated`
 candidate shape (`qgen.py` `candidate_to_question()`), so importing is a
 mapping, not a conversion.
 
-Numerical questions: `qtype: "numerical"` isn't a type the server stores yet
-(its `_VALID_QTYPES` allowlist in `review_app.py` is `mcq`/`frq`/`tf`/
-`matching`). The importer stores them as `frq` and keeps the original type
-plus a parsed value/unit in `import_meta`, so they can be promoted
-automatically once numerical questions are supported.
+Numerical questions are stored as real numerical questions (value + unit +
+quantity + significant figures, graded with unit conversion — spec.md §4b).
+Since v1.1 the prompt asks for `unit`, `quantity` and `sig_figs` explicitly;
+bundles from v1.0 still import, with those read from the answer text.
 
 ## Version history
 
@@ -32,6 +31,7 @@ automatically once numerical questions are supported.
 |---------|------------|-------|
 | 1.0     | 2026-09-11 | Initial version. |
 | 1.0     | 2026-09-24 | Header only: the importer now exists (prompt text unchanged). |
+| 1.1     | 2026-09-25 | Numerical questions: optional `unit`, `quantity`, `sig_figs` fields. |
 
 ## The prompt
 
@@ -66,14 +66,25 @@ Normalize every question into this JSON shape:
   "images": ["q0001_fig1.png"],  // filenames inside this bundle's images/ folder; [] if none
   "image_description": "",       // only if a figure is needed but you didn't/couldn't generate one
   "source_snippet": "",          // optional short excerpt this question was derived from, if any
-  "context_id": null             // set to a contexts[].id if this question shares a passage/table/figure with others
+  "context_id": null,            // set to a contexts[].id if this question shares a passage/table/figure with others
+  "unit": "m/s",                 // numerical only: the answer's unit ("" for a plain number or ratio)
+  "quantity": "velocity",        // numerical only: what it measures — see the list below
+  "sig_figs": 3                  // numerical only: significant figures the key is given to
 }
 
 Answer format by qtype:
 - mcq: choice letter(s), comma-separated if more than one is correct (e.g. "A" or "A, C")
 - tf: exactly the string "True" or "False"
-- numerical: the value with units as plain text (e.g. "4.2 m/s"); put the
-  derivation/equation in "justification", not in "answer"
+- numerical: the value with units as plain text (e.g. "4.20 m/s"); put the
+  derivation/equation in "justification", not in "answer". Also fill
+  "unit" (as in the answer), "sig_figs" (how many significant figures the
+  answer is given to — write the value to that many, e.g. "4.20" for 3),
+  and "quantity", one of: length, area, volume, time, mass, velocity,
+  acceleration, force, momentum, energy, torque, power, pressure, density,
+  frequency, angle, temperature, amount, concentration, charge, current,
+  voltage, resistance, conductance, resistivity, capacitance, inductance,
+  magnetic_field, magnetic_flux, electric_field, heat_capacity,
+  specific_heat, fraction, or other
 - frq: the expected short-answer text
 
 Difficulty scale (0.0 = easiest, 1.0 = hardest): if you or I rated questions
@@ -99,7 +110,7 @@ image.
 
 ## Bundle wrapper
 {
-  "bundle_version": "1.0",
+  "bundle_version": "1.1",
   "event": "<name of the Science Olympiad event this conversation has been
             working on>",
   "season": "2027",

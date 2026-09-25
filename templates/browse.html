@@ -149,6 +149,8 @@ header{background:#fff;border-bottom:1px solid var(--line)}
   font-size:12px;padding:10px 6px}
 .dc-thinking .dc-star{display:inline-block;color:#d97757;font-size:17px;
   animation:dc-star-spin 1.1s ease-in-out infinite}
+.ie-num{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.ie-num input[type=text]{width:110px}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -229,6 +231,7 @@ header{background:#fff;border-bottom:1px solid var(--line)}
         <option value="frq">Short / free response</option>
         <option value="matching">Matching</option>
         <option value="tf">True / False</option>
+        <option value="numerical">Numerical (value + unit)</option>
       </select>
     </section>
     <section>
@@ -450,7 +453,7 @@ function refreshSidebarStats(){
 }
 
 async function load(){
-  const r = await fetch(`${API}/all-questions`);
+  const [r] = await Promise.all([fetch(`${API}/all-questions`), Units.load()]);
   DATA = await r.json();
   renderSidebar();
   // Restore filter state from URL (?search=...&topic=...&bucket=...) --
@@ -514,7 +517,8 @@ function rerender(){
     if(fv === "unvalidated" && q._validation_status) return false;
     if(fv && fv !== "unvalidated" && q._validation_status !== fv) return false;
     if(fy === "mcq" && !q._is_mcq) return false;
-    if(fy === "frq" && (q._is_mcq || q._is_matching || q._is_tf)) return false;
+    if(fy === "frq" && (q._is_mcq || q._is_matching || q._is_tf || q._is_numerical)) return false;
+    if(fy === "numerical" && !q._is_numerical) return false;
     if(fy === "matching" && !q._is_matching) return false;
     if(fy === "tf" && !q._is_tf) return false;
     if(fi === "yes" && !q._has_image) return false;
@@ -717,7 +721,7 @@ function renderCard(q){
     ${thumb}
     <div class="head">
       <span class="qnum" title="Question number in its source PDF">Q${esc(q.number)}</span>
-      <span class="badge type" title="${q._is_matching ? 'Matching' : q._is_tf ? 'True / False' : q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_matching ? TYPE_ICON.matching + " MATCH" : q._is_tf ? TYPE_ICON.tf + " T/F" : q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
+      <span class="badge type" title="${q._is_matching ? 'Matching' : q._is_tf ? 'True / False' : q._is_numerical ? 'Numerical (value + unit)' : q._is_mcq ? 'Multiple choice' : 'Free response / short answer'}">${q._is_matching ? TYPE_ICON.matching + " MATCH" : q._is_tf ? TYPE_ICON.tf + " T/F" : q._is_numerical ? TYPE_ICON.num + " NUM" : q._is_mcq ? TYPE_ICON.mcq + " MCQ" : TYPE_ICON.frq + " FRQ"}</span>
       <span class="badge bucket" title="State-file bucket: ${esc(q._bucket)}">${esc(bucketLabel)}</span>
     </div>
     <div class="inline-editor">
@@ -739,7 +743,7 @@ function renderCard(q){
         <label class="ie-lbl">Stem</label>
         <textarea class="qf" data-field="text">${esc(q.text)}</textarea>
       </div>
-      ${q._is_matching ? matchingEditorHtml(q) : `
+      ${q._is_matching ? matchingEditorHtml(q) : q._is_numerical ? numericEditorHtml(q) : `
       ${(q.choices && q.choices.length) ? `
       <div class="ie-row">
         <label class="ie-lbl">Choices</label>
@@ -799,6 +803,36 @@ function _findQ(bucket, num){
   return DATA.questions.find(x => x._bucket === bucket && String(x.number) === String(num));
 }
 
+// Numerical key editor. Every part is one PATCH field ("numeric", the whole
+// key) — the server validates it (units.make_key) and re-derives `answer`,
+// and a bad unit comes back as the save error.
+function numericEditorHtml(q){
+  const n = q.numeric || {};
+  const dl = Units.datalistId(n.quantity || "");
+  return `
+      <div class="ie-row">
+        <label class="ie-lbl">Answer</label>
+        <div class="ie-num">
+          <input type="text" class="qf" data-field="numeric" data-part="value_text" value="${esc(n.value_text || "")}" placeholder="value" title="Value as written — its significant figures set the default tolerance">
+          <input type="text" class="qf" data-field="numeric" data-part="unit" list="${dl}" value="${esc(n.unit || "")}" placeholder="unit" title="Any unit (m/s, kΩ, µF, °C, %…); blank for a plain number">
+          <select class="qf" data-field="numeric" data-part="quantity" title="What the answer measures — students may answer in any unit of it">${Units.quantityOptionsHTML(n.quantity || "")}</select>
+          <label class="muted" style="font-size:11px">s.f. <input type="number" min="1" max="15" class="qf" data-field="numeric" data-part="sig_figs" value="${esc(n.sig_figs || "")}" style="width:52px" title="Significant figures: grading accepts half a unit in the last one"></label>
+        </div>
+      </div>`;
+}
+function _readNumericFromCard(card, changedPart){
+  const get = part => card.querySelector(`.qf[data-field=numeric][data-part=${part}]`);
+  const out = {value_text: get("value_text").value.trim(), unit: get("unit").value.trim(),
+               quantity: get("quantity").value || null,
+               sig_figs: get("sig_figs").value ? Number(get("sig_figs").value) : null};
+  // Same rules as the Extract editor: retyping the value resets sig figs to
+  // what was typed. A new unit keeps the chosen quantity — a unit of the
+  // wrong kind is refused by the server (shown as the save error) rather
+  // than silently changing what the question measures.
+  if(changedPart === "value_text"){ out.sig_figs = Units.sigFigs(out.value_text); get("sig_figs").value = out.sig_figs || ""; }
+  return out;
+}
+
 function _setSaveStatus(card, text, cls){
   const el = card.querySelector('[data-role="save-status"]');
   if(!el) return;
@@ -816,11 +850,16 @@ function scheduleAutosave(card, q, field, value){
   if(!st.snapshot){
     // First change in this batch — remember the pre-edit values so Undo
     // has something to restore.
+    // Only snapshot the type-specific structure this question actually has:
+    // restoring `matching: null` on a non-matching question makes the PATCH
+    // handler drop its qtype (a tf or numerical question silently became
+    // frq on Undo).
     st.snapshot = {
       topic: q.topic, focus: q.focus, text: q.text, answer: q.answer,
       choices: (q.choices || []).map(c => ({...c})),
-      matching: q.matching ? JSON.parse(JSON.stringify(q.matching)) : null,
     };
+    if(q.matching) st.snapshot.matching = JSON.parse(JSON.stringify(q.matching));
+    if(q._is_numerical && q.numeric) st.snapshot.numeric = {...q.numeric};
   }
   st.dirty[field] = value;
   if(st.timer) clearTimeout(st.timer);
@@ -904,6 +943,10 @@ document.getElementById("results").addEventListener("input", e => {
   const q = _findQ(bucket, num);
   if(!q) return;
   const field = e.target.dataset.field;
+  if(field === "numeric"){
+    // Typing: wait for "change" (below) so a half-typed unit isn't PATCHed.
+    return;
+  }
   if(field === "choices"){
     scheduleAutosave(card, q, "choices", _readChoicesFromCard(card));
   } else if(field === "matching"){
@@ -913,6 +956,12 @@ document.getElementById("results").addEventListener("input", e => {
   }
 });
 document.getElementById("results").addEventListener("change", e => {
+  if(e.target.classList.contains("qf") && e.target.dataset.field === "numeric"){
+    const card = e.target.closest(".qcard");
+    const q = _findQ(card.dataset.bucket, card.dataset.qid);
+    if(q) scheduleAutosave(card, q, "numeric", _readNumericFromCard(card, e.target.dataset.part));
+    return;
+  }
   if(e.target.classList.contains("qf") && e.target.dataset.field === "matching"){
     // Pairs <select> uses "change", not "input" — same full-object PATCH as above.
     const card = e.target.closest(".qcard");

@@ -40,6 +40,11 @@
 .ctx-images img,.q-images img{max-width:100%;max-height:340px;object-fit:contain;
   border:1px solid var(--line);border-radius:4px;background:#fff}
 .save-status{font-size:11px;color:var(--muted);text-align:right;margin-top:6px}
+.test-num{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.test-num label{display:flex;flex-direction:column;font-size:13px;color:#555;gap:4px}
+.test-num .test-frq-input{min-height:0;height:auto;width:220px}
+.test-num-hint{width:100%;font-size:12px;color:#666}
+.test-num-hint.err{color:#b04000}
 </style></head>
 <body>
 {% include "_app_root.html" %}
@@ -61,6 +66,11 @@
     <textarea id="q_frq" class="test-frq-input" style="display:none" placeholder="Type your answer…"></textarea>
     <div id="q_matching" style="display:none"></div>
     <div class="test-choices" id="q_tf" style="display:none"></div>
+    <div id="q_num" class="test-num" style="display:none">
+      <label>Value <input id="q_num_value" class="test-frq-input" autocomplete="off" placeholder="e.g. 4.2, 3.0e8, 3/4"></label>
+      <label>Unit <input id="q_num_unit" class="test-frq-input" autocomplete="off" placeholder="e.g. m/s"></label>
+      <div class="test-num-hint" id="q_num_hint"></div>
+    </div>
     <div class="save-status" id="save_status"></div>
     <div style="text-align:right;margin-top:14px">
       <button id="btn_prev">← Previous</button>
@@ -191,7 +201,44 @@ function presentQuestion(){
   const frqEl = document.getElementById("q_frq");
   const matchEl = document.getElementById("q_matching");
   const tfEl = document.getElementById("q_tf");
+  const numEl = document.getElementById("q_num");
   choicesEl.style.display = "none"; frqEl.style.display = "none"; matchEl.style.display = "none"; tfEl.style.display = "none";
+  numEl.style.display = "none";
+
+  if(q.qtype === "numerical"){
+    // Value + unit, saved together. The key never reaches this page
+    // (correct_numeric is stripped server-side); `quantity` is only used to
+    // suggest units and to warn about a unit that can't be right — the
+    // live check says nothing about the answer itself.
+    numEl.style.display = "";
+    const valEl = document.getElementById("q_num_value"), unitEl = document.getElementById("q_num_unit");
+    const hintEl = document.getElementById("q_num_hint");
+    valEl.value = (saved && saved.value) || "";
+    unitEl.value = (saved && saved.unit) || "";
+    const quantity = q.quantity || "";
+    Units.load().then(() => {
+      unitEl.setAttribute("list", Units.datalistId(quantity));
+      hintEl.dataset.base = quantity && quantity !== "other"
+        ? `Give a ${Units.label(quantity).toLowerCase()} with its unit — any unit of it is fine.` : "Include a unit if the answer has one.";
+      if(!hintEl.classList.contains("err")) hintEl.textContent = hintEl.dataset.base;
+    });
+    let checkTimer = null;
+    const onEdit = () => {
+      clearTimeout(SAVE_TIMER);
+      SAVE_TIMER = setTimeout(() => saveAnswer(q.number, {qtype: "numerical",
+                                                         value: valEl.value.trim(), unit: unitEl.value.trim()}), 600);
+      clearTimeout(checkTimer);
+      checkTimer = setTimeout(async () => {
+        const res = await Units.check({unit: unitEl.value.trim(), quantity: quantity || null,
+                                       value: valEl.value.trim()});
+        hintEl.classList.toggle("err", !res.ok);
+        hintEl.textContent = res.ok ? (hintEl.dataset.base || "") : "⚠ " + res.message;
+      }, 400);
+    };
+    valEl.oninput = onEdit;
+    unitEl.oninput = onEdit;
+    return;
+  }
 
   if(q.qtype === "tf"){
     tfEl.style.display = "";

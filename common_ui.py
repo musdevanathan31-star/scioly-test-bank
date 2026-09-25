@@ -812,4 +812,83 @@ window.hydrateLocalTimes = function(root){
   });
 };
 document.addEventListener("DOMContentLoaded", function(){ window.hydrateLocalTimes(); });
+
+// ---- numerical questions (units.py) ----------------------------------
+// Unit conversion and grading live server-side only (units.py, via
+// /api/units/*); this is just the input chrome shared by the Extract/Browse
+// editors, the quiz and the take page: the quantity catalog, a <datalist> of
+// suggested units per quantity, a live unit check, and two tiny pure helpers
+// (sigFigs, formatKey) kept in lockstep with units.sig_figs_of/format_key —
+// tests/test_units_js.py checks that.
+window.Units = (function(){
+  let CATALOG = null, loading = null;
+  const root = () => (typeof APP_ROOT !== "undefined" ? APP_ROOT : "");
+  function load(){
+    if(CATALOG) return Promise.resolve(CATALOG);
+    if(!loading){
+      loading = fetch(`${root()}/api/units/catalog`)
+        .then(r => r.json()).then(j => { CATALOG = j.quantities || []; return CATALOG; })
+        .catch(() => { loading = null; return []; });
+    }
+    return loading;
+  }
+  function label(name){
+    const q = (CATALOG || []).find(x => x.name === name);
+    return q ? q.label : (name || "");
+  }
+  function datalistId(quantity){
+    const id = "units-dl-" + (quantity || "all");
+    if(document.getElementById(id)) return id;
+    const dl = document.createElement("datalist");
+    dl.id = id;
+    const qs = (CATALOG || []).filter(x => !quantity || quantity === "other" ? true : x.name === quantity);
+    const seen = new Set();
+    qs.forEach(x => (x.units || []).forEach(u => {
+      if(u === "" || seen.has(u)) return;
+      seen.add(u);
+      const o = document.createElement("option"); o.value = u; dl.appendChild(o);
+    }));
+    document.body.appendChild(dl);
+    return id;
+  }
+  function quantityOptionsHTML(selected){
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+    const opts = (CATALOG || []).map(x =>
+      `<option value="${esc(x.name)}" ${x.name === selected ? "selected" : ""}>${esc(x.label)}</option>`);
+    if(!selected) opts.unshift(`<option value="" selected>(pick from unit)</option>`);
+    return opts.join("");
+  }
+  function check(body){
+    return fetch(`${root()}/api/units/check`, {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    }).then(r => r.json()).catch(() => ({ok: true, message: ""}));
+  }
+  // Mirror of units.sig_figs_of for plain decimals / e-notation / "× 10^n".
+  function sigFigs(text){
+    let s = String(text || "").trim().replace(/\$/g, "")
+      .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]/g, c => "0123456789-+"["⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺".indexOf(c)]);
+    const m = s.match(/^\s*[+\-−]?\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:\s*[eE]\s*[+\-−]?\d+|\s*(?:x|×|\*|·)\s*10\s*(?:\^|\*\*)?\s*\(?\s*[+\-−]?\d+\s*\)?)?\s*$/);
+    if(!m) return null;
+    const mant = m[1].replace(/,/g, "");
+    const hasPoint = mant.includes(".");
+    let digits = mant.replace(".", "").replace(/^0+/, "");
+    if(!digits) return 1 + (hasPoint ? mant.split(".")[1].length : 0);
+    if(!hasPoint) digits = digits.replace(/0+$/, "") || digits.slice(0, 1);
+    return digits.length;
+  }
+  function formatKey(n){
+    if(!n) return "";
+    const txt = String(n.value_text != null && n.value_text !== "" ? n.value_text : (n.value ?? "")).trim();
+    const unit = String(n.unit || "").trim();
+    if(unit === "%") return txt + "%";
+    return (txt + " " + unit).trim();
+  }
+  // "4.2 m/s" -> {value_text, unit} (no validation; the server decides).
+  function splitAnswer(answer){
+    const m = String(answer || "").trim().match(/^([+\-−]?\s*(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:\s*[eE]\s*[+\-−]?\d+|\s*(?:x|×|\*|·)\s*10\s*(?:\^|\*\*)?\s*\(?\s*[+\-−]?\d+\s*\)?)?)\s*(.*?)\s*\.?$/);
+    return m ? {value_text: m[1].trim(), unit: m[2].trim()} : {value_text: "", unit: ""};
+  }
+  return {load, label, datalistId, quantityOptionsHTML, check, sigFigs, formatKey, splitAnswer,
+          get catalog(){ return CATALOG; }};
+})();
 """

@@ -72,6 +72,7 @@ import archive_map  # noqa: E402
 import archive_ops  # noqa: E402
 import archive_import  # noqa: E402
 import bundle_import  # noqa: E402
+import units  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -162,7 +163,7 @@ app.config["SESSION_COOKIE_PATH"] = APPLICATION_ROOT or "/"
 # outside this set is rejected/ignored rather than persisted, so a stray or
 # malformed value can never silently skip the type-specific auto-grading
 # path (assessments._grade_mcq/_grade_tf/_grade_matching each key off qtype).
-_VALID_QTYPES = {"mcq", "frq", "tf", "matching"}
+_VALID_QTYPES = {"mcq", "frq", "tf", "matching", "numerical"}
 
 # Routes reachable without being logged in.
 _PUBLIC_ENDPOINTS = {"login", "favicon", "static"}
@@ -1926,7 +1927,8 @@ def api_take_assessment(assessment_id):
     # Never leak correct_answer/matching.pairs to the student during the test.
     sanitized = []
     for q in ordered:
-        clean = {k: v for k, v in q.items() if k not in ("correct_answer", "source_question_ref")}
+        clean = {k: v for k, v in q.items()
+                 if k not in ("correct_answer", "correct_numeric", "source_question_ref")}
         if clean.get("qtype") == "matching" and "matching" in clean:
             m = dict(clean["matching"])
             m.pop("pairs", None)
@@ -2150,6 +2152,11 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
                     f"<b>{_e(c.get('letter','?'))}.</b> {_e(c.get('text',''))}",
                     choice_style))
             answer = _e(q.get("correct_answer") or "—")
+            if qtype == "numerical":
+                sf = (q.get("correct_numeric") or {}).get("sig_figs")
+                if sf:
+                    answer += f" ({sf} s.f.)"
+                block.append(Paragraph("Answer: ______________ (include units)", choice_style))
             if not q.get("choices") and layout == "none":
                 # Free response on the student copy needs somewhere to write.
                 block.append(Spacer(1, 0.55 * inch))
@@ -3120,6 +3127,17 @@ def api_save(event_slug, pdfname):
             clean_q["qtype"] = qtype
         if qtype == "matching" and q.get("matching") is not None:
             clean_q["matching"] = q.get("matching")
+        # numerical: re-validated server-side (units.make_key) rather than
+        # trusted, and the display answer is re-derived from the key.
+        if qtype == "numerical" and isinstance(q.get("numeric"), dict):
+            n = q["numeric"]
+            try:
+                clean_q["numeric"] = units.make_key(n.get("value_text") or str(n.get("value") or ""),
+                                                    n.get("unit") or "", n.get("quantity"),
+                                                    n.get("sig_figs"))
+                clean_q["answer"] = units.format_key(clean_q["numeric"])
+            except units.UnitError:
+                pass
         # difficulty: additive, optional. Absent/None means unrated -- don't
         # set the key at all (matches apply_annotations' "clear pops the
         # key" semantics rather than storing a literal None).
@@ -4809,6 +4827,7 @@ def api_all_questions(event_slug):
             qcopy["_is_mcq"]      = bool(qcopy.get("choices"))
             qcopy["_is_matching"] = qcopy.get("qtype") == "matching"
             qcopy["_is_tf"]       = qcopy.get("qtype") == "tf"
+            qcopy["_is_numerical"] = qcopy.get("qtype") == "numerical"
             qcopy["_edited_at"] = bucket_edited_at
             v = qcopy.get("validation") or {}
             qcopy["_validation_status"] = v.get("status") if v else None
@@ -4894,9 +4913,33 @@ def _apply_question_field_edits(q: dict, data: dict) -> list[str]:
             q["qtype"] = "matching"
         edited_fields.append("matching")
         edited_fields.append("qtype")
+    elif "numeric" in data:
+        n = data["numeric"]
+        if n is None:
+            q.pop("numeric", None)
+        elif isinstance(n, dict):
+            # Already validated by the caller (_numeric_patch_error) before
+            # the transaction opened, so make_key can't raise here.
+            q["numeric"] = units.make_key(n.get("value_text") or "", n.get("unit") or "",
+                                          n.get("quantity"), n.get("sig_figs"))
+            q["answer"] = units.format_key(q["numeric"])
+            q["qtype"] = "numerical"
+            q["choices"] = []
+            edited_fields.extend(["numeric", "answer", "qtype", "choices"])
     elif "qtype" in data:
         new_qtype = (data["qtype"] or "").strip() or None
-        if new_qtype == "tf":
+        if new_qtype == "numerical":
+            q["qtype"] = "numerical"
+            q["choices"] = []
+            # Switching an FRQ like "4.2 m/s" pre-fills the key from its answer.
+            if not isinstance(q.get("numeric"), dict):
+                key = units.key_from_answer_text(q.get("answer") or "")
+                if key is not None:
+                    q["numeric"] = key
+                    q["answer"] = units.format_key(key)
+                    edited_fields.extend(["numeric", "answer"])
+            edited_fields.extend(["choices", "qtype"])
+        elif new_qtype == "tf":
             q["qtype"] = "tf"
             q["choices"] = []  # tf storage is always choices: []
             edited_fields.append("choices")
@@ -4917,6 +4960,20 @@ def _apply_question_field_edits(q: dict, data: dict) -> list[str]:
     return edited_fields
 
 
+def _numeric_patch_error(data: dict) -> str:
+    """User-facing reason a PATCH's `numeric` key is unusable, else ""."""
+    n = data.get("numeric")
+    if n is None or "numeric" not in data:
+        return ""
+    if not isinstance(n, dict):
+        return "numeric must be an object"
+    try:
+        units.make_key(n.get("value_text") or "", n.get("unit") or "", n.get("quantity"), n.get("sig_figs"))
+    except units.UnitError as e:
+        return f"numerical answer: {e}"
+    return ""
+
+
 @app.route("/event/<event_slug>/api/q/<bucket>/<num>", methods=["PATCH"])
 def api_patch_question(event_slug, bucket, num):
     """Apply a single-field edit to one question, without going through the
@@ -4929,6 +4986,9 @@ def api_patch_question(event_slug, bucket, num):
     # before this check if it lived inside the loop below. Pre-validating
     # keeps a bad request a true no-op, matching the original behaviour
     # where _save_state() was only ever called once, at the very end.
+    numeric_error = _numeric_patch_error(data)
+    if numeric_error:
+        return jsonify({"error": numeric_error}), 400
     if "validation" in data and isinstance(data["validation"], dict):
         status = data["validation"].get("status")
         if status is not None and status not in _VALIDATION_STATUSES:
@@ -5670,6 +5730,8 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
                 pairs_str = "—"
                 if q.get("qtype") == "tf":
                     block.append(Paragraph("True / False ______", choice_style))
+                if q.get("qtype") == "numerical":
+                    block.append(Paragraph("Answer: ______________ (include units)", choice_style))
                 if q.get("qtype") == "matching":
                     m = q.get("matching") or {}
                     left, right = m.get("left") or [], m.get("right") or []
@@ -6503,6 +6565,53 @@ def api_import_generated(event_slug):
         "bucket_total": len(bucket),
         "questions": [dict(q, _bucket=cache_key) for q in added_questions],
     })
+
+
+# ---------------------------------------------------------------------------
+# Routes — units for numerical questions (units.py)
+#
+# Top-level, not per-event: the student take page uses them, and students
+# can't reach /event/<slug>/... routes. None of them reveal an answer: the
+# catalog and check only say what units exist / whether a unit fits a
+# quantity, and /grade grades against a key the caller already holds (the
+# quiz page, which has every answer client-side by design).
+# ---------------------------------------------------------------------------
+
+@app.route("/api/units/catalog")
+def api_units_catalog():
+    return jsonify({"quantities": units.catalog(), "no_unit_credit": units.NO_UNIT_CREDIT})
+
+
+@app.route("/api/units/check", methods=["POST"])
+def api_units_check():
+    data = request.get_json() or {}
+    unit = str(data.get("unit") or "")
+    quantity = data.get("quantity") or None
+    out = units.check_unit(unit, quantity)
+    value = data.get("value")
+    if value is not None and str(value).strip():
+        try:
+            units.parse_value(str(value))
+        except units.UnitError as e:
+            out = {"ok": False, "message": str(e)}
+    # Editors also want the implied quantity and sig figs for a key.
+    if out["ok"] and data.get("describe"):
+        out["quantities"] = units.quantities_for_unit(unit) or [units.OTHER]
+        if value is not None:
+            out["sig_figs"] = units.sig_figs_of(str(value))
+    return jsonify(out)
+
+
+@app.route("/api/units/grade", methods=["POST"])
+def api_units_grade():
+    """Stateless grade of {key, value, unit} — the quiz page's grader."""
+    if g.user.role == "student":
+        abort(403)
+    data = request.get_json() or {}
+    key = data.get("key")
+    if not isinstance(key, dict):
+        return jsonify({"error": "no key"}), 400
+    return jsonify(units.grade(key, str(data.get("value") or ""), str(data.get("unit") or "")))
 
 
 # ---------------------------------------------------------------------------
