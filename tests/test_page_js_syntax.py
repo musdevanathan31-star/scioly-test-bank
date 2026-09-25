@@ -215,6 +215,7 @@ _BUILTINS = {
     "Array", "Object", "String", "Number", "Boolean", "Math", "JSON", "Date",
     "Promise", "RegExp", "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Error",
     "URL", "URLSearchParams", "FormData", "Blob", "File", "FileReader",
+    "XMLHttpRequest",
     "atob", "btoa", "structuredClone", "queueMicrotask", "requestAnimationFrame",
     "Image", "Audio", "AbortController", "IntersectionObserver",
     "MutationObserver", "ResizeObserver", "CustomEvent", "Event", "Intl",

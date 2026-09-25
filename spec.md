@@ -124,6 +124,9 @@ Generated questions live under the synthetic key `_generated_<event>.pdf` so the
   "page":     3,                    // for the review UI
   "context_id": "ctx_1",            // optional: links to a shared Context block (a passage, table, or diagram — see Context below)
   "difficulty": 0.6,                // optional float 0.0-1.0; absent = unrated. See "Difficulty rating" below
+  "import_meta": {"bundle": "4cee7e48", "id": "q0003", "qtype": "numerical",
+                  "numeric": {"value": 10.0, "unit": "ms"}, "topic": "RC circuits"},
+                                    // optional, bundle-imported questions only (§11d.2): provenance + what the bank can't store natively yet
   "validation": Validation,         // optional, set by either an LLM check or a human (see Validation below)
   "lastEditedBy":       "srikanth", // username of whoever last edited this question (server-stamped from the session, never client-supplied)
   "lastEditedDateTime": "2026-06-21T13:04:47"  // ISO-8601, set alongside lastEditedBy
@@ -495,6 +498,8 @@ Reusable components added alongside the extraction (used across every template, 
 | `POST /event/<slug>/api/sources/upload` | Multipart file upload of a `.pdf`/`.md`/`.txt` into `texts/`. |
 | `POST /event/<slug>/api/generate` | Validates/resolves the source (or textbook chapter) synchronously, then enqueues `qgen.generate_questions` as a background job (`kind="generate"`, §16b) and returns `{ok, job_id}`. Body: either `{source, n, types, max_chunks}` (per-event source) or `{textbook, chapter_index, n, types, max_chunks}` (shared textbook — extracts just that chapter's page range from the textbook PDF and feeds it in place of `source`). The job's `result` is candidates + auto-rejected duplicates — note `qgen.generate_questions` never raises on an LLM-level problem (parse failure, `max_tokens` hit, no key configured); it returns `{error: ...}` instead, so the job itself still reports `status="succeeded"` and the frontend has to check `result.error` separately from `job.error`/`job.status`. |
 | `POST /event/<slug>/api/generate/accept` | Persist accepted candidates into `state.questions["_generated_<slug>.pdf"]` with their LLM rationale stored on the `validation` field. |
+| `POST /event/<slug>/api/sources/bundle/stage` | Multipart upload (field `file`) of a question bundle — a `.zip` of `manifest.json` + `images/`, or a bare `manifest.json`. Saved to `<event>/.imports/<token>.bundle` (+ a `<token>.json` sidecar with filename/uploader), checked by `bundle_import.open_bundle()`, and previewed by `bundle_import.preview()` against the bank as it is now. Writes nothing to state. Returns `{ok, token, filename, preview}`; a bad file is deleted and answered 400 with a user-facing reason. Staged files older than 24h are swept on each stage call. See §11d.2. |
+| `POST /event/<slug>/api/sources/bundle/import` | Body `{token, mark_validated?}`. Enqueues a background job (`kind="import_bundle"`, §16b) running `bundle_import.run_import()`; returns `{ok, job_id}`. 404 if the token's upload is gone (expired or already imported), 409 if it's already queued (the sidecar is claimed under a lock before submit). The job deletes the staged upload when it ends, whatever the outcome. |
 
 ### API — shared textbooks
 
@@ -836,6 +841,49 @@ Pipeline:
 
 `candidate_to_question(cand, number, source_label)` converts a kept candidate to the canonical Question shape used by the rest of the bank, populating the `validation` field with the LLM rationale, source snippet, and `generated: true` so generated questions are distinguishable in the markdown and UI. Generated questions are stored under a synthetic state key `_generated_<event>.pdf` so they survive reprocess and show up alongside real ones.
 
+## 11d.2. Question bundle import (`bundle_import.py`)
+
+A **bundle** is what [`QUESTION_EXPORT_PROMPT.md`](QUESTION_EXPORT_PROMPT.md) asks another Claude conversation to produce: a zip holding `manifest.json` and an `images/` folder. It exists because the JSON importer (`import-generated`, §9) only round-trips MCQ/FRQ text and drops difficulty, image files, T/F, numerical and shared contexts.
+
+```jsonc
+{
+  "bundle_version": "1.0", "event": "Circuit Lab", "season": "2027", "generated_at": "ISO-8601",
+  "contexts":  [ {"id": "ctx1", "title": "...", "text": "...", "images": ["ctx1_fig.png"]} ],
+  "questions": [ {"id": "q0001", "topic": "...", "qtype": "mcq|tf|numerical|frq", "text": "...",
+                  "choices": [{"letter": "A", "text": "..."}], "answer": "A, C",
+                  "select_multiple": true, "justification": "...", "difficulty": 0.4,
+                  "images": ["q0001_fig1.png"], "image_description": "", "source_snippet": "",
+                  "context_id": "ctx1"} ]
+}
+```
+
+**Two steps, so the slow part survives navigation.** *Stage* is the upload request: the file is saved under `<event>/.imports/`, opened, and previewed (convert + whole-bank dedup, read-only). The Sources page blocks the whole UI with an upload-progress overlay (XHR `upload.onprogress`) during this request and warns on `beforeunload`, since leaving would abort the upload. *Import* is a `jobs.py` job. Its id is kept in `localStorage` (`bundleImportJob:<slug>`); on load the Sources page polls that job — showing live progress if it's still running, or its stored `result` if it finished while the user was away — until the user dismisses it. The page only forgets the job after 3 consecutive 404s, so a single failed read of the job index doesn't lose it.
+
+**Reading the upload (`open_bundle`).** A zip is detected by its `PK\x03\x04` magic; anything else is parsed as a bare manifest (UTF-8, with `bqb._parse_json`'s LaTeX-repair fallback). The shallowest `manifest.json` in the zip is used, so a zipped folder works; `__MACOSX/` and `._*` entries are ignored. Limits: 2,000 zip entries, 20 MB manifest, 5,000 questions, 10 MB per image, 200 MB of images in total (declared sizes, then enforced again while reading). **No member is ever extracted by its own name**: images are read into memory, checked by magic bytes against their extension (`sniff_image`: PNG/JPEG/GIF/WebP; SVG always refused because `serve_image()` serves same-origin), and written as `imp_<sha256[:8] of the upload>_<secure_filename(stem)><ext>`. The name depends only on the file's contents, so re-importing the same bundle maps to the same files.
+
+**Field mapping (`convert_question`).**
+
+| Bundle | Stored |
+|---|---|
+| `qtype` mcq/tf/frq | same `qtype`; unknown → `mcq` if it has choices else `frq` (noted as an issue) |
+| `qtype` numerical | `qtype: "frq"` + `import_meta.qtype = "numerical"` + `import_meta.numeric = {value, unit}` from `parse_numeric_answer()` (best effort: `4.2 m/s`, `3.0 × 10^8`, `2.5 × 10⁻³ A`, `$4.2\ \text{m/s}$`; prose tails give none). The answer text is never rewritten. Kept so a future numerical qtype can be backfilled without re-importing. |
+| mcq `choices`/`answer` | choices re-lettered A, B, C…; the answer's letters (parsed with `text_utils.parse_answer_letters`) are remapped to the new letters, so multi-answer `"A, C"` survives. `select_multiple` is ignored — it's derived at snapshot time from the answer. |
+| tf `answer` | `bqb._normalize_tf_answer`; left as-is (and noted) if unparseable |
+| `difficulty` | float, clamped to 0-1 (noted); `null`/non-numeric → key absent (unrated) |
+| `topic` | exact → case-insensitive match to `EVENT.topics`, else `classify_topic("<bundle topic> <stem>")`. The bundle's topic name goes first because a stem's incidental keywords can mislead the classifier on their own (live: an Ohm's-law stem mentioning "voltage" classified as AC Circuits). Original kept in `import_meta.topic` when remapped. |
+| `justification` / `source_snippet` | `validation` with `status: "uncertain"`, `model: "import"`, `generated: true` — same slot `qgen.candidate_to_question` uses |
+| `images` | stored filenames; a missing/refused image is dropped from the list and reported |
+| `image_description` | `image_descriptions.__pending__` (seeds the "Generate diagram" chat) |
+| `context_id` | `imp<digest>_<id>`; the context itself goes to `annotations["_generated_<slug>.pdf"].contexts` (§4 Context), so `bqb._all_contexts()`, Browse, markdown and assessment snapshots pick it up with no further code |
+| `season` | `year` when it's 4 digits |
+| — | `import_meta = {bundle: <digest>, id: <bundle id>, ...}`, `source: "Imported · <event>"` |
+
+**Dedup** uses `qgen.is_duplicate` (Jaccard 0.4) against the whole bank plus earlier accepted questions from the same bundle, *except* siblings sharing a `context_id` — sub-parts of one group ("Using the table, …") legitimately look alike.
+
+**The job (`run_import`)** checks images → copies them into `EVENT.image_dir` (only files that don't already exist, remembered in `created`) → one `bqb._state_transaction()` that re-runs convert + dedup against the *current* state, numbers questions from `_next_global_q_number()`, applies `mark_validated` behind `bqb.question_gradeability()` (ungradeable ones are imported unvalidated and listed), appends to `_generated_<slug>.pdf`, and adds only contexts some added question uses. `should_cancel` is checked per image and per question; since `_state_transaction()` only saves when its body doesn't raise, a cancel or failure leaves state untouched, and every file in `created` is deleted. Newly created images that no added question or context ended up using (all their questions were duplicates) are deleted too. Phase names are fixed per stage (`checking images`, `copying images`, `importing questions`) with the count in `done`/`total`, because `jobs.py` rewrites the job index on every *phase change* but throttles count-only updates to ~1/s. The job's `result` is the preview-shaped summary plus `added`, `bucket`, `skipped_validation_ungradeable`, and the first 200 added questions (capped because the result is persisted in the job index).
+
+**Cost.** Dedup is O(bundle × bank) Jaccard comparisons and runs twice (preview, then job). Measured locally: previewing a 1,500-question bundle against a small bank took ~15 s inside the upload request, under the overlay.
+
 ## 11e. `.docx`/`.doc` ingestion (`doc_convert.py`)
 
 Not every scioly.org test submission is a PDF — a direct count across `scioly_assessments.json`'s `test_link`/`key_link`/`notes_link`/`other_links` fields found 1750 `.pdf`, 144 `.docx`, and 11 `.doc` (plus assorted images/spreadsheets/etc. this app doesn't otherwise act on). `download_event.py` already fetches these (no extension filter), but until this module nothing downstream could open them — `_list_test_pdfs()`'s glob, `pdf_safety.py`'s magic-byte check, and `process_pair`'s page-based extraction model are all PDF-only.
@@ -1022,11 +1070,13 @@ The measure-don't-compute reasoning still holds for what's left: the remaining c
 
 **Why no Celery/RQ/Redis**: `deploy/qbank.service` runs `gunicorn --workers 1 --threads 8` — `--workers 1` is load-bearing today (see §2 and `build_question_bank.py`'s `_state_lock()`, an in-process `threading.RLock` that only serialises correctly within one process). A dedicated task-queue service would add a new dependency, a new thing to run/monitor, and more memory pressure on a machine this constrained, for no benefit a single in-process worker thread doesn't already provide given there's only ever one process to coordinate within.
 
-**`JobRecord`** (dataclass): `id` (12 hex chars, same shape `_DOWNLOAD_JOBS` used to mint), `event`, `kind` (`reprocess` | `upload_extract` | `scioly_download` | `scioly_scrape` | `generate` | `wiki_scrape`), `label`, `started_by` (username — stable across logout/login, unlike anything session-derived), `status` (`queued`|`running`|`succeeded`|`failed`|`cancelled`|`interrupted`), `phase`, `done_count`/`total`, `created_at`/`started_at`/`finished_at`, `cancel_requested`, `error` (truncated to 500 chars — the full traceback goes to the log file, not this record), `result` (whatever dict the job's target function returned).
+**`JobRecord`** (dataclass): `id` (12 hex chars, same shape `_DOWNLOAD_JOBS` used to mint), `event`, `kind` (`reprocess` | `upload_extract` | `scioly_download` | `scioly_scrape` | `generate` | `wiki_scrape` | `import_bundle`), `label`, `started_by` (username — stable across logout/login, unlike anything session-derived), `status` (`queued`|`running`|`succeeded`|`failed`|`cancelled`|`interrupted`), `phase`, `done_count`/`total`, `created_at`/`started_at`/`finished_at`, `cancel_requested`, `error` (truncated to 500 chars — the full traceback goes to the log file, not this record), `result` (whatever dict the job's target function returned).
 
 **On-disk layout**, per event, alongside `.qbank_state.json`:
 - `<event>/.qbank_jobs.json` — `{"jobs": [JobRecord, ...]}`, newest first, capped at the last 200 (older entries simply drop off the index — this is metadata about *runs*, not user content, so the no-permanent-deletion policy in §14 doesn't extend to it the way it does to questions/annotations).
 - `<event>/.qbank_jobs/<job_id>.log` — append-only console output for that job, capped at 2000 lines (oldest truncated, with a `...[truncated]...` marker).
+
+Readers of the index (`_load_index`) don't take the per-slug index lock. On Windows a read that lands in the instant `_atomic_replace()` swaps the file raises `PermissionError`; `_load_index` retries that briefly (like `_atomic_replace` itself) instead of treating it as an empty index — which had made a job poll 404 mid-run, intermittently failing `tests/test_vision_key.py` and the bundle-import tests. POSIX renames don't have this problem.
 
 **Execution model**: exactly one job runs at a time, globally, across every event — a single dedicated worker thread (`jobs._worker_loop`, started lazily on first `submit_job()` call) pulls the next entry off an in-process FIFO `collections.deque`. `submit_job(event, kind, label, started_by, target, max_queued_per_event=8)` refuses to enqueue (raises `JobQueueFull`, routes turn this into HTTP 429) once an event already has that many queued+running jobs — a per-event cap, not global, so one event's backlog can't starve every other event's queue.
 
@@ -1044,7 +1094,7 @@ The measure-don't-compute reasoning still holds for what's left: the remaining c
 
 **Log/console visibility is deliberately unrestricted beyond normal event access** — anyone who can reach `/event/<slug>/...` at all sees that job's full console output and error detail, same as `_select_event`'s existing gate. No coach-only redaction: a volunteer already trusted to edit an event's PDFs/questions isn't getting new exposure by also seeing that event's extraction log.
 
-**Scope — Tier 1 vs Tier 2**: only genuinely long, multi-call operations became jobs (reprocess, bulk reprocess, upload-extract, scio.ly download/scrape, generate, wiki scrape). Short single-LLM-call actions (validate one question, one region/math capture, one diagram-chat turn, single-page OCR, image upload, generate-similar, textbook chapter detection) stay synchronous fetches — converting those to persisted jobs would add plumbing disproportionate to their ~2-15s runtime, since they already complete within one request lifecycle.
+**Scope — Tier 1 vs Tier 2**: only genuinely long, multi-call operations became jobs (reprocess, bulk reprocess, upload-extract, scio.ly download/scrape, generate, wiki scrape, question-bundle import). Short single-LLM-call actions (validate one question, one region/math capture, one diagram-chat turn, single-page OCR, image upload, generate-similar, textbook chapter detection) stay synchronous fetches — converting those to persisted jobs would add plumbing disproportionate to their ~2-15s runtime, since they already complete within one request lifecycle.
 
 ## 16c. Presence / active-user counts (`presence.py`)
 

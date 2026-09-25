@@ -51,3 +51,6 @@ facts.md
 events_custom.json
 scioly_tests.json
 large test packets/
+
+# Scratch/staging output — never source, never committed
+_scratch/

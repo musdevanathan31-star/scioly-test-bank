@@ -45,6 +45,23 @@
 .upload-form{display:flex;gap:8px;align-items:center}
 .upload-form input[type=file]{font-size:12px}
 .btn-tiny{padding:2px 8px;font-size:11px}
+/* Question-bundle import: full-page lock while the upload is in flight. */
+.bnd-overlay{position:fixed;inset:0;z-index:10000;background:rgba(20,24,30,.55);
+             display:none;align-items:center;justify-content:center}
+.bnd-overlay .box{background:#fff;border-radius:8px;padding:22px 26px;width:420px;
+                  box-shadow:0 10px 40px rgba(0,0,0,.3)}
+.bnd-overlay h3{margin:0 0 10px;font-size:15px}
+.bnd-bar-wrap{height:10px;background:#eee;border-radius:5px;overflow:hidden}
+.bnd-bar{height:100%;width:0;background:#0066cc;transition:width .2s}
+.bnd-overlay .meta{font-size:12px;color:#666;margin-top:8px}
+.bnd-summary{font-size:13px;margin-top:10px}
+.bnd-summary table{border-collapse:collapse;margin:6px 0}
+.bnd-summary th,.bnd-summary td{border:1px solid var(--line);padding:3px 8px;font-size:12px;text-align:left}
+.bnd-summary th{background:#fafafa}
+.bnd-summary .warn{color:#8a5a00;background:#fff6e0;padding:4px 8px;border-radius:4px;margin:4px 0}
+.bnd-summary details{margin:4px 0}
+.bnd-summary details li{font-size:12px}
+.bnd-running{font-size:13px;margin-top:10px;padding:8px 10px;background:#eaf3fb;border-radius:4px}
 </style></head>
 <body>
 <script>{{ common_js|safe }}</script>
@@ -290,6 +307,53 @@ Thermodynamics, 58"></textarea>
     <div id="imp_results" style="display:none;margin-top:14px">
       <h3 style="font-size:13px;color:#888;margin:0 0 6px">Imported into the bank:</h3>
       <div id="imp_candidates"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="bundle_panel">
+    <h2>Import a question bundle (.zip)</h2>
+    <p class="muted">
+      A bundle is a zip holding <code>manifest.json</code> plus an <code>images/</code>
+      folder, as produced by the question-export prompt (<code>QUESTION_EXPORT_PROMPT.md</code>).
+      A bare <code>manifest.json</code> works too, without images. Upload it to see a
+      preview first — nothing is added until you click <b>Import</b>. The import runs
+      in the background: you can leave this page and come back to check on it.
+    </p>
+    <div class="gen-form" style="margin-bottom:10px">
+      <label title="A .zip bundle, or a bare manifest.json">Bundle file
+        <input id="bnd_file" type="file" accept=".zip,.json,application/zip,application/json">
+      </label>
+      <label class="types"
+             title="If on, every imported question that can be graded is marked validated 'correct'. Questions that can't be graded are imported but left unvalidated.">
+        <input type="checkbox" id="bnd_validated"> Mark all as validated
+      </label>
+      <button id="bnd_upload" class="primary">Upload &amp; preview</button>
+      <span class="muted" id="bnd_status" style="font-size:11px"></span>
+    </div>
+    <div id="bnd_preview" style="display:none">
+      <div class="bnd-summary" id="bnd_preview_body"></div>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button id="bnd_import" class="primary">Import</button>
+        <button id="bnd_discard">Discard</button>
+      </div>
+    </div>
+    <div id="bnd_running" class="bnd-running" style="display:none">
+      <span id="bnd_running_text"></span>
+      <button id="bnd_show_progress" class="btn-tiny" style="margin-left:8px">Show progress</button>
+    </div>
+    <div id="bnd_result" style="display:none">
+      <div class="bnd-summary" id="bnd_result_body"></div>
+      <button id="bnd_dismiss" class="btn-tiny" style="margin-top:8px">Dismiss</button>
+      <div id="bnd_questions" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <div class="bnd-overlay" id="bnd_overlay" role="dialog" aria-modal="true" aria-labelledby="bnd_ov_title">
+    <div class="box">
+      <h3 id="bnd_ov_title">Uploading bundle…</h3>
+      <div class="bnd-bar-wrap"><div class="bnd-bar" id="bnd_ov_bar"></div></div>
+      <div class="meta" id="bnd_ov_meta"></div>
+      <div class="meta">Keep this page open until the upload finishes.</div>
     </div>
   </div>
 
@@ -1103,29 +1167,297 @@ document.getElementById("btn_import").addEventListener("click", async () => {
   }
 });
 
-function renderImportedQuestions(questions){
-  const wrap = document.getElementById("imp_results");
-  const root = document.getElementById("imp_candidates");
-  if(!questions.length){ wrap.style.display = "none"; return; }
-  root.innerHTML = questions.map(q => {
+// Shared by the JSON importer and the bundle importer. The type badge shows
+// the stored qtype when there is one; a bundle's "numerical" questions are
+// stored as frq but keep their original type in import_meta, so show that.
+function importedQuestionCardsHtml(questions){
+  return questions.map(q => {
     const pending = (q.image_descriptions || {}).__pending__ || "";
+    const kind = (q.import_meta && q.import_meta.qtype)
+              || q.qtype || (q.choices && q.choices.length ? "mc" : "short");
+    const imgs = (q.images || []).map(n =>
+      `<img src="${APP_ROOT}/event/${EVENT_SLUG}/images/${encodeURIComponent(n)}" alt=""
+            style="max-height:90px;max-width:160px;margin:4px 6px 0 0;border:1px solid var(--line)">`).join("");
     return `
     <div class="cand">
       <div class="row">
         <span class="topic">${esc(q.topic)}</span>
-        <span class="type">${esc(q.choices && q.choices.length ? "mc" : "short")}</span>
+        <span class="type">${esc(kind)}</span>
         <span class="muted">Q${esc(q.number)}</span>
       </div>
       <div class="stem">${esc(q.text)}</div>
+      ${imgs ? `<div>${imgs}</div>` : ""}
       ${q.choices && q.choices.length ? `<ul>${q.choices.map(ch =>
         `<li><b>${esc(ch.letter)}.</b> ${esc(ch.text)}</li>`).join("")}</ul>` : ""}
       <div class="ans"><b>Answer:</b> ${esc(q.answer || "(none)")}</div>
       ${pending ? `<div class="ratio">🖼️ Diagram recommended: ${esc(pending)}</div>` : ""}
     </div>`;
   }).join("");
+}
+
+function renderImportedQuestions(questions){
+  const wrap = document.getElementById("imp_results");
+  const root = document.getElementById("imp_candidates");
+  if(!questions.length){ wrap.style.display = "none"; return; }
+  root.innerHTML = importedQuestionCardsHtml(questions);
   renderMath(root);
   wrap.style.display = "block";
 }
+
+// ---------- Question bundle import ----------
+// Two steps. (1) Upload + preview: an XHR (not fetch — fetch has no upload
+// progress) while a full-page overlay blocks the UI, since leaving the page
+// mid-upload would abort it. (2) Import: a background job. Its id is kept in
+// localStorage so that coming back to this page re-attaches to it — live
+// progress if it's still running, the result if it finished while away —
+// until the user dismisses the result.
+const BND_JOB_KEY = `bundleImportJob:${EVENT_SLUG}`;
+const BND_TERMINAL = ["succeeded", "failed", "cancelled", "interrupted"];
+let BND_TOKEN = null;
+let BND_UPLOADING = false;
+let BND_POLL = null;
+
+function bndSaved(){
+  try { return JSON.parse(localStorage.getItem(BND_JOB_KEY) || "null"); } catch(e){ return null; }
+}
+function bndSave(v){
+  try {
+    if(v) localStorage.setItem(BND_JOB_KEY, JSON.stringify(v));
+    else localStorage.removeItem(BND_JOB_KEY);
+  } catch(e){ /* storage unavailable: re-attach just won't work */ }
+}
+function bndCsrf(){
+  const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return m ? m[1] : "";
+}
+function bndMB(n){ return (n / (1024 * 1024)).toFixed(1); }
+
+window.addEventListener("beforeunload", e => {
+  if(BND_UPLOADING){ e.preventDefault(); e.returnValue = ""; }
+});
+
+function bndSummaryHtml(p, {result = false} = {}){
+  const kinds = ["mcq", "tf", "numerical", "frq"];
+  const topics = Object.keys(p.by_topic || {}).sort();
+  const parts = [];
+  for(const w of (p.warnings || [])) parts.push(`<div class="warn">⚠ ${esc(w)}</div>`);
+  if(result){
+    parts.push(`<div><b>${p.added}</b> question(s) added to <code>${esc(p.bucket)}</code>
+      (of ${p.total} in the bundle).</div>`);
+  } else {
+    parts.push(`<div>Bundle for <b>${esc(p.event || "(no event named)")}</b>
+      ${p.season ? `· season ${esc(p.season)}` : ""} — <b>${p.importable}</b> of ${p.total}
+      question(s) will be imported.</div>`);
+  }
+  if(topics.length){
+    parts.push(`<table><tr><th>Topic</th>${kinds.map(k => `<th>${k}</th>`).join("")}</tr>` +
+      topics.map(t => `<tr><td>${esc(t)}</td>${kinds.map(k =>
+        `<td>${(p.by_topic[t] || {})[k] || ""}</td>`).join("")}</tr>`).join("") + `</table>`);
+  }
+  parts.push(`<div class="muted">${p.with_images} with images · ${p.with_difficulty} with a difficulty
+    rating · ${p.contexts} shared context block(s)</div>`);
+  const list = (title, items, fmt) => items && items.length
+    ? `<details><summary>${esc(title)} (${items.length})</summary><ul>${items.map(fmt).join("")}</ul></details>` : "";
+  const remapped = Object.entries(p.remapped_topics || {});
+  parts.push(list("Topics remapped to this event's taxonomy", remapped,
+    ([a, b]) => `<li>${esc(a)} → ${esc(b)}</li>`));
+  parts.push(list("Duplicates of questions already in the bank (skipped)", p.duplicates,
+    d => `<li>${esc(d.id)} ≈ Q${esc(d.matched)}: ${esc(d.text)}</li>`));
+  parts.push(list("Can't be imported", p.invalid,
+    d => `<li>${esc(d.id)}: ${esc(d.reason)}</li>`));
+  parts.push(list("Image problems (image left off)", p.image_problems,
+    d => `<li>${esc(d.image)}: ${esc(d.reason)}</li>`));
+  parts.push(list("Imported with issues to clean up", p.issues,
+    d => `<li>${esc(d.id)}: ${esc(d.issues.join("; "))}</li>`));
+  if(result){
+    parts.push(list("Not gradeable, left unvalidated", p.skipped_validation_ungradeable,
+      d => `<li>Q${esc(d.number)}: ${esc(d.reason)}</li>`));
+  }
+  return parts.join("");
+}
+
+function bndShowOverlay(show){
+  document.getElementById("bnd_overlay").style.display = show ? "flex" : "none";
+}
+
+document.getElementById("bnd_upload").addEventListener("click", () => {
+  const input = document.getElementById("bnd_file");
+  const f = input.files && input.files[0];
+  const stEl = document.getElementById("bnd_status");
+  if(!f){ stEl.textContent = "Pick a bundle file first."; return; }
+  document.getElementById("bnd_preview").style.display = "none";
+  BND_TOKEN = null;
+
+  const bar = document.getElementById("bnd_ov_bar");
+  const meta = document.getElementById("bnd_ov_meta");
+  const title = document.getElementById("bnd_ov_title");
+  title.textContent = `Uploading ${f.name}…`;
+  bar.style.width = "0%";
+  meta.textContent = `0 / ${bndMB(f.size)} MB`;
+  bndShowOverlay(true);
+  BND_UPLOADING = true;
+  pushBusy();
+
+  const fd = new FormData();
+  fd.append("file", f);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `${API}/sources/bundle/stage`);
+  xhr.setRequestHeader("X-CSRF-Token", bndCsrf());
+  xhr.upload.onprogress = e => {
+    if(!e.lengthComputable) return;
+    bar.style.width = Math.round(100 * e.loaded / e.total) + "%";
+    meta.textContent = `${bndMB(e.loaded)} / ${bndMB(e.total)} MB`;
+  };
+  xhr.upload.onload = () => {
+    bar.style.width = "100%";
+    title.textContent = "Checking bundle…";
+    meta.textContent = "Reading the manifest and images";
+  };
+  const finish = () => { BND_UPLOADING = false; bndShowOverlay(false); popBusy(); };
+  xhr.onerror = () => { finish(); stEl.textContent = "Upload failed (network error)."; };
+  xhr.onload = () => {
+    finish();
+    let j = null;
+    try { j = JSON.parse(xhr.responseText); } catch(e){ /* non-JSON error page */ }
+    if(xhr.status === 413){ stEl.textContent = "That file is too large to upload."; return; }
+    if(!j || j.error || xhr.status >= 400){
+      stEl.textContent = "Error: " + ((j && j.error) || `HTTP ${xhr.status}`);
+      return;
+    }
+    BND_TOKEN = j.token;
+    stEl.textContent = `Uploaded ${j.filename}.`;
+    const body = document.getElementById("bnd_preview_body");
+    body.innerHTML = bndSummaryHtml(j.preview);
+    document.getElementById("bnd_import").disabled = !j.preview.importable;
+    document.getElementById("bnd_preview").style.display = "block";
+  };
+  xhr.send(fd);
+});
+
+document.getElementById("bnd_discard").addEventListener("click", () => {
+  BND_TOKEN = null;
+  document.getElementById("bnd_preview").style.display = "none";
+  document.getElementById("bnd_status").textContent = "";
+  document.getElementById("bnd_file").value = "";
+});
+
+document.getElementById("bnd_import").addEventListener("click", async () => {
+  if(!BND_TOKEN) return;
+  const stEl = document.getElementById("bnd_status");
+  pushBusy();
+  let j;
+  try {
+    const r = await fetch(`${API}/sources/bundle/import`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({token: BND_TOKEN,
+                            mark_validated: document.getElementById("bnd_validated").checked}),
+    });
+    j = await r.json();
+  } catch(err){
+    popBusy();
+    stEl.textContent = "Import failed: " + err.message;
+    return;
+  }
+  popBusy();
+  if(j.error && !j.job_id){ stEl.textContent = "Error: " + j.error; return; }
+  const filename = (document.getElementById("bnd_file").files[0] || {}).name || "bundle";
+  BND_TOKEN = null;
+  document.getElementById("bnd_preview").style.display = "none";
+  document.getElementById("bnd_file").value = "";
+  stEl.textContent = "";
+  bndSave({jobId: j.job_id, filename});
+  bndWatch(j.job_id, filename);
+  bndOpenModal(j.job_id, filename);
+});
+
+function bndOpenModal(jobId, filename){
+  // The modal is just a window onto the job; closing it doesn't stop
+  // anything. bndWatch() below owns the page's own status + result.
+  openJobProgress({eventSlug: EVENT_SLUG, jobId, title: `Importing ${filename}`});
+}
+
+function bndRenderResult(job, filename){
+  document.getElementById("bnd_running").style.display = "none";
+  const body = document.getElementById("bnd_result_body");
+  const qsEl = document.getElementById("bnd_questions");
+  qsEl.innerHTML = "";
+  if(job.status === "succeeded" && job.result){
+    body.innerHTML = `<div><b>Import of ${esc(filename)} finished.</b></div>` +
+                     bndSummaryHtml(job.result, {result: true});
+    const qs = job.result.questions || [];
+    if(qs.length){
+      qsEl.innerHTML = `<h3 style="font-size:13px;color:#888;margin:0 0 6px">Imported into the bank${
+        job.result.added > qs.length ? ` (first ${qs.length} of ${job.result.added})` : ""}:</h3>` +
+        importedQuestionCardsHtml(qs);
+      renderMath(qsEl);
+    }
+  } else {
+    body.innerHTML = `<div class="warn">Import of ${esc(filename)} ${esc(job.status)}${
+      job.error ? ": " + esc(job.error) : ""}. Nothing was added to the bank.</div>`;
+  }
+  document.getElementById("bnd_result").style.display = "block";
+}
+
+function bndWatch(jobId, filename){
+  if(BND_POLL) clearTimeout(BND_POLL);
+  const runEl = document.getElementById("bnd_running");
+  const textEl = document.getElementById("bnd_running_text");
+  document.getElementById("bnd_result").style.display = "none";
+  document.getElementById("bnd_show_progress").onclick = () => bndOpenModal(jobId, filename);
+  // Toast only for a finish we actually watched happen, not on every page
+  // load that re-shows an already-finished result.
+  let sawActive = false;
+  let misses = 0;
+  async function tick(){
+    let job;
+    try {
+      const r = await fetch(`${API}/jobs/${jobId}`);
+      // Only forget the job after repeated 404s: one can be a transient
+      // read race on the server's job index, and forgetting it would lose
+      // the re-attach for good.
+      if(r.status === 404){
+        if(++misses >= 3){ bndSave(null); runEl.style.display = "none"; return; }
+        BND_POLL = setTimeout(tick, 1500);
+        return;
+      }
+      misses = 0;
+      job = await r.json();
+    } catch(e){
+      BND_POLL = setTimeout(tick, 3000);
+      return;
+    }
+    if(BND_TERMINAL.includes(job.status)){
+      bndRenderResult(job, filename);
+      if(sawActive && job.status === "succeeded" && job.result && job.result.added){
+        toast(`Imported ${job.result.added} question(s) from ${filename}.`, "ok");
+      }
+      return;
+    }
+    sawActive = true;
+    runEl.style.display = "block";
+    const count = job.total ? ` (${job.done_count}/${job.total})` : "";
+    textEl.textContent = `Importing ${filename}: ${job.status}` +
+                         (job.phase ? ` — ${job.phase}` : "") + count;
+    BND_POLL = setTimeout(tick, 1500);
+  }
+  tick();
+}
+
+document.getElementById("bnd_dismiss").addEventListener("click", () => {
+  bndSave(null);
+  document.getElementById("bnd_result").style.display = "none";
+});
+
+// Re-attach to an import started earlier (this visit or a previous one).
+(function(){
+  const saved = bndSaved();
+  if(saved && /^[a-f0-9]{12}$/.test(saved.jobId || "")){
+    bndWatch(saved.jobId, saved.filename || "bundle");
+  } else if(saved){
+    bndSave(null);
+  }
+})();
 
 document.getElementById("btn_generate").addEventListener("click", async () => {
   const source = document.getElementById("gen_source").value;

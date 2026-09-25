@@ -334,7 +334,19 @@ yet — wait for the next message with the source material and how many
 questions to generate.
 ```
 
-Fields outside this list (e.g. a difficulty rating) are silently dropped on import, not stored — see README's "Drafting questions in another LLM" for the full rationale. If you want difficulty tracked, fold it into `rationale` or `source_snippet` as free text instead.
+Fields outside this list (e.g. a difficulty rating) are silently dropped on import, not stored — see README's "Drafting questions in another LLM" for the full rationale. If you want difficulty tracked, fold it into `rationale` or `source_snippet` as free text instead, or use a question bundle (next section), which keeps it.
+
+### Importing a question bundle (.zip with images) from another Claude chat
+
+Use this when another Claude conversation wrote questions for you, including figures, difficulty ratings, true/false or numerical questions, or several questions sharing one passage or table.
+
+1. In that other conversation, paste the prompt from [`QUESTION_EXPORT_PROMPT.md`](QUESTION_EXPORT_PROMPT.md). It replies with a zip (`manifest.json` + `images/`). If it can't make a zip, it gives you the manifest and image files to zip yourself, or you can import the bare `manifest.json` without images.
+2. Open the event's **Generate** page (titled "Sources & Generation") and scroll to **Import a question bundle**. Pick the file and click **Upload & preview**. The page stays locked while the file uploads, so don't close the tab until the progress bar finishes.
+3. Read the preview. Nothing has been added yet. It shows how many questions of each type land in each topic, which topics were renamed to fit this event, which are duplicates of questions already in the bank (skipped), and any image or question problems.
+4. Tick **Mark all as validated** only if you trust the questions, then click **Import**. Questions that can't be graded (for example, no answer) are still imported but left unvalidated, and listed in the result.
+5. The import runs in the background. You can go to other pages; when you come back to the **Generate** page it shows the progress, or the result if it has finished. Click **Dismiss** when you've read the result. The import also appears on the event's **Jobs** page, where you can cancel it. A cancelled import adds nothing.
+
+Numerical questions show as **numerical** in the result but are stored as free-response for now, so they're hand-graded in assessments. The imported questions are in **Browse**, in the "generated" bucket.
 
 ### Taking or building a practice quiz
 
@@ -724,6 +736,7 @@ While a long action runs (upload/extract, reprocess, a scrape, LLM generation) a
 | Generate questions from a source | Coach, Volunteer (assigned events) | Generate page |
 | Upload a shared textbook | Coach only | Generate page → Shared textbooks |
 | Import questions from JSON | Coach, Volunteer (assigned events) | Generate page → Import panel |
+| Import a question bundle (.zip with images) | Coach, Volunteer (assigned events) | Generate page → Import a question bundle |
 | Export the bank, a filtered set, or just what you ticked | Coach, Volunteer (assigned events) | Browse page → Export ▾ (choose scope, then format) |
 | Take a quiz | Coach, Volunteer (assigned events) | Quiz |
 | See whether the server is busy before a big job | Coach, Volunteer | `👥 N active` / `⏳ N jobs` badges in the header |

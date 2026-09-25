@@ -71,6 +71,7 @@ import tournament_archive  # noqa: E402
 import archive_map  # noqa: E402
 import archive_ops  # noqa: E402
 import archive_import  # noqa: E402
+import bundle_import  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -6502,6 +6503,123 @@ def api_import_generated(event_slug):
         "bucket_total": len(bucket),
         "questions": [dict(q, _bucket=cache_key) for q in added_questions],
     })
+
+
+# ---------------------------------------------------------------------------
+# Routes — question bundle import (bundle_import.py)
+#
+# Two steps so the slow part survives the user leaving the page:
+#   stage  — the upload request: save the file under <event>/.imports/,
+#            check it, return a preview. Nothing is written to the bank.
+#   import — queue a jobs.py job that does the actual import. Progress and
+#            the result live on the job, so the Sources page can re-attach
+#            to it on its next load.
+# ---------------------------------------------------------------------------
+
+_BUNDLE_TOKEN_RE = re.compile(r"^[a-f0-9]{16}$")
+_BUNDLE_STAGE_TTL = 24 * 3600
+_bundle_submit_lock = threading.Lock()
+
+
+def _bundle_stage_dir() -> Path:
+    return bqb.EVENT.base_dir / ".imports"
+
+
+def _bundle_sweep_stale(stage_dir: Path) -> None:
+    """Drop staged uploads nobody imported within the TTL."""
+    cutoff = time.time() - _BUNDLE_STAGE_TTL
+    for p in stage_dir.glob("*"):
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink()
+        except OSError:
+            pass
+
+
+@app.route("/event/<event_slug>/api/sources/bundle/stage", methods=["POST"])
+def api_bundle_stage(event_slug):
+    """Upload a question bundle (.zip, or a bare manifest.json) and preview
+    what importing it would do. Multipart field `file`. Returns
+    `{ok, token, filename, preview}`; `token` is what /bundle/import takes."""
+    _select_event(event_slug)
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify({"error": "no file uploaded"}), 400
+    from werkzeug.utils import secure_filename
+    filename = secure_filename(f.filename) or "bundle"
+
+    stage_dir = _bundle_stage_dir()
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    _bundle_sweep_stale(stage_dir)
+    token = secrets.token_hex(8)
+    path = stage_dir / f"{token}.bundle"
+    f.save(str(path))
+    try:
+        bundle = bundle_import.open_bundle(path)
+        preview = bundle_import.preview(bundle, filename)
+    except bundle_import.BundleError as e:
+        path.unlink(missing_ok=True)
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    (stage_dir / f"{token}.json").write_text(json.dumps({
+        "filename": filename,
+        "uploaded_by": g.user.username,
+        "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+    }), encoding="utf-8")
+    return jsonify({"ok": True, "token": token, "filename": filename, "preview": preview})
+
+
+@app.route("/event/<event_slug>/api/sources/bundle/import", methods=["POST"])
+def api_bundle_import(event_slug):
+    """Queue the import of a staged bundle as a background job.
+    Body: `{token, mark_validated?}`. Returns `{ok, job_id}`."""
+    _select_event(event_slug)
+    data = request.get_json() or {}
+    token = str(data.get("token") or "")
+    if not _BUNDLE_TOKEN_RE.match(token):
+        return jsonify({"error": "bad token"}), 400
+    mark_validated = bool(data.get("mark_validated"))
+    stage_dir = _bundle_stage_dir()
+    path = stage_dir / f"{token}.bundle"
+    meta_path = stage_dir / f"{token}.json"
+    if not path.exists() or not meta_path.exists():
+        return jsonify({"error": "That upload has expired or was already imported. "
+                                 "Upload the bundle again."}), 404
+    with _bundle_submit_lock:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if meta.get("job_id"):
+            return jsonify({"error": "This upload is already being imported.",
+                            "job_id": meta["job_id"]}), 409
+        # Claimed before the job is queued: a fast job deletes this file when
+        # it finishes, and a second click must not queue the same upload twice.
+        meta["job_id"] = "pending"
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    filename = meta.get("filename") or "bundle"
+    bucket = f"_generated_{bqb.EVENT.slug}.pdf"
+
+    def _target(should_cancel, on_progress):
+        _job_target_setup(event_slug)
+        try:
+            bundle = bundle_import.open_bundle(path)
+            return bundle_import.run_import(
+                bundle, filename=filename, bucket=bucket,
+                mark_validated=mark_validated,
+                next_number=_next_global_q_number,
+                should_cancel=should_cancel, on_progress=on_progress)
+        finally:
+            path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+
+    try:
+        job_id = jobs.submit_job(event_slug, "import_bundle", f"Import bundle {filename}",
+                                 g.user.username, _target)
+    except jobs.JobQueueFull as e:
+        meta.pop("job_id", None)
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        return jsonify({"error": str(e)}), 429
+    return jsonify({"ok": True, "job_id": job_id})
 
 
 # ---------------------------------------------------------------------------

@@ -136,9 +136,22 @@ def _load_index(slug: str) -> list[JobRecord]:
     f = events_mod.EVENTS[slug].jobs_file
     if not f.exists():
         return []
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except Exception:
+    # Readers don't take _index_lock, so on Windows a read can land in the
+    # instant _atomic_replace() swaps the file in and raise PermissionError.
+    # Treating that as "no jobs" made a job poll 404 mid-run; retry briefly
+    # instead (same reasoning as _atomic_replace's own retry).
+    data = None
+    for attempt in range(5):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            break
+        except FileNotFoundError:
+            return []
+        except PermissionError:
+            time.sleep(0.02 * (attempt + 1))
+        except Exception:
+            return []
+    if data is None:
         return []
     out = []
     for d in data.get("jobs", []):
