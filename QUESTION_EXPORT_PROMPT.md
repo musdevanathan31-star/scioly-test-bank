@@ -32,6 +32,7 @@ bundles from v1.0 still import, with those read from the answer text.
 | 1.0     | 2026-09-11 | Initial version. |
 | 1.0     | 2026-09-24 | Header only: the importer now exists (prompt text unchanged). |
 | 1.1     | 2026-09-25 | Numerical questions: optional `unit`, `quantity`, `sig_figs` fields. |
+| 1.2     | 2026-09-25 | Quantity list adds `flow_rate` and `count`. |
 
 ## The prompt
 
@@ -81,10 +82,12 @@ Answer format by qtype:
   answer is given to — write the value to that many, e.g. "4.20" for 3),
   and "quantity", one of: length, area, volume, time, mass, velocity,
   acceleration, force, momentum, energy, torque, power, pressure, density,
-  frequency, angle, temperature, amount, concentration, charge, current,
-  voltage, resistance, conductance, resistivity, capacitance, inductance,
-  magnetic_field, magnetic_flux, electric_field, heat_capacity,
-  specific_heat, fraction, or other
+  flow_rate, frequency, angle, temperature, amount, concentration, charge,
+  current, voltage, resistance, conductance, resistivity, capacitance,
+  inductance, magnetic_field, magnetic_flux, electric_field, heat_capacity,
+  specific_heat, fraction, count, or other.
+  Use "count" when the answer is a number of things ("24 runs", "48
+  chromatids"): its "unit" is the thing counted, one or two words.
 - frq: the expected short-answer text
 
 Difficulty scale (0.0 = easiest, 1.0 = hardest): if you or I rated questions
@@ -110,7 +113,7 @@ image.
 
 ## Bundle wrapper
 {
-  "bundle_version": "1.1",
+  "bundle_version": "1.2",
   "event": "<name of the Science Olympiad event this conversation has been
             working on>",
   "season": "2027",
