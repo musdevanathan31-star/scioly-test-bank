@@ -46,8 +46,8 @@ def test_parse_value_rejects(text):
 
 
 @pytest.mark.parametrize("text, n", [
-    ("4.20", 3), ("0.0042", 2), ("1200", 2), ("1200.", 4), ("3.0×10^8", 2), ("0", 1),
-    ("0.00", 3), ("2.5×10⁻³", 2), ("1,200", 2), ("100.0", 4), ("7", 1), ("3/4", None),
+    ("4.20", 3), ("0.0042", 2), ("1200", 4), ("1200.", 4), ("10", 2), ("3.0×10^8", 2), ("0", 1),
+    ("0.00", 3), ("2.5×10⁻³", 2), ("1,200", 4), ("100.0", 4), ("7", 1), ("3/4", None),
 ])
 def test_sig_figs_of(text, n):
     assert units.sig_figs_of(text) == n
@@ -169,7 +169,8 @@ def test_grade_electrical_prefixes():
 def test_tolerance_follows_sig_figs():
     assert units.tolerance(units.make_key("4.20", "m")) == pytest.approx(0.005)
     assert units.tolerance(units.make_key("4.2", "m")) == pytest.approx(0.05)
-    assert units.tolerance(units.make_key("1200", "m")) == pytest.approx(50)
+    assert units.tolerance(units.make_key("1200", "m")) == pytest.approx(0.5)
+    assert units.tolerance(units.make_key("10", "ms")) == pytest.approx(0.5)     # 9.5 .. 10.5
     assert units.tolerance(units.make_key("0.00", "V")) == pytest.approx(0.005)
     loose = units.make_key("4.20", "m/s", sig_figs=2)
     assert units.grade(loose, "4.24", "m/s")["status"] == "correct"
@@ -198,7 +199,7 @@ def test_js_helpers_match_python():
     start = src.index("window.Units = (function(){")
     end = src.index("})();", start) + len("})();")
     iife = src[start:end]
-    samples = ["4.20", "0.0042", "1200", "1200.", "3.0×10^8", "0", "0.00", "2.5×10⁻³",
+    samples = ["4.20", "0.0042", "1200", "1200.", "10", "3.0×10^8", "0", "0.00", "2.5×10⁻³",
                "1,200", "100.0", "7", "3/4", "abc"]
     keys = [units.make_key("4.20", "m/s"), units.make_key("75", "%"), units.make_key("12", "")]
     script = ("const window = {};\n" + iife + "\n"
@@ -242,7 +243,22 @@ def test_migration_promotes_imported_numericals():
     assert q1["qtype"] == "numerical" and q1["numeric"]["unit"] == "ms"
     assert q2["qtype"] == "frq" and "numeric" not in q2
     assert q3["qtype"] == "frq"
-    assert state["_schema_version"] == bqb.STATE_SCHEMA_VERSION == 4
+    assert q1["numeric"]["sig_figs"] == 2                  # "10" counts both digits
+    assert state["_schema_version"] == bqb.STATE_SCHEMA_VERSION == 5
+
+
+def test_migration_upgrades_old_whole_number_sig_figs():
+    old_default = {"value": 10.0, "value_text": "10", "unit": "ms", "quantity": "time", "sig_figs": 1}
+    hand_set = {"value": 1200.0, "value_text": "1200", "unit": "m", "quantity": "length", "sig_figs": 3}
+    decimal = {"value": 4.2, "value_text": "4.20", "unit": "m/s", "quantity": "velocity", "sig_figs": 3}
+    state = {"_schema_version": 4, "questions": {"b": [
+        {"number": "1", "qtype": "numerical", "numeric": dict(old_default)},
+        {"number": "2", "qtype": "numerical", "numeric": dict(hand_set)},
+        {"number": "3", "qtype": "numerical", "numeric": dict(decimal)},
+    ]}}
+    bqb._migrate_state(state)
+    a, b, c = (q["numeric"]["sig_figs"] for q in state["questions"]["b"])
+    assert (a, b, c) == (2, 3, 3)    # default upgraded; hand-set and decimals untouched
 
 
 def test_qgen_numerical_candidate():

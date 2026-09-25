@@ -166,7 +166,7 @@ You can also edit these fields on any numerical question in **Browse**. Browse r
 
 **How students are graded:** their answer is converted to your unit, so `15.12 km/h` or `420 cm/s` is right for `4.20 m/s`. A unit of the wrong kind scores 0. **The right number with no unit gets half credit.** On a fraction or percentage question, a bare number is a full answer (`75`, `0.75` or `3/4` all answer `75 %`).
 
-**Watch out for whole numbers ending in zeros.** `10` or `1200` counts only the non-zero digits as significant, so a `10 ms` key accepts anything from 5 to 15 ms. Raise the sig figs if you want it tighter.
+**Whole numbers count every digit.** `10` is 2 significant figures and `1200` is 4, so a `10 ms` key accepts 9.5 to 10.5 ms. This is stricter than the textbook rule. If a key is really only good to one digit, lower its sig figs.
 
 ### Rating a question's difficulty
 

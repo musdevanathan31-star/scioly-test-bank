@@ -282,7 +282,7 @@ A numerical answer is a value, a unit and the quantity it measures; grading conv
 | `value` | float parsed from `value_text` **server-side** (`apply_annotations`, `api_save`, the PATCH handler all re-run `make_key`; a client-sent `value` is ignored) |
 | `unit` | as typed (`"km/h"`, `"kΩ"`, `"µF"`, `"°C"`, `"%"`, `""` for a plain number) |
 | `quantity` | key into `units.QUANTITIES` (32 named quantities: length … specific_heat, fraction) or `"other"`; inferred by `infer_quantity(unit)` when absent — an exact spelling match in a quantity's unit list ranks first, so `N·m` → torque, `J` → energy |
-| `sig_figs` | defaults to `sig_figs_of(value_text)` (standard rules: `4.20`→3, `0.0042`→2, `1200`→2, `1200.`→4, zero `0.00`→3); 1–15 |
+| `sig_figs` | defaults to `sig_figs_of(value_text)`: `4.20`→3, `0.0042`→2, zero `0.00`→3, and — stricter than the textbook rule, by the user's choice — every digit of a whole number counts (`10`→2, `1200`→4), because the textbook reading makes a `10 ms` key accept 5–15 ms. State migration v4→v5 (`_upgrade_whole_number_sig_figs`) moves keys still at the old default (`units.legacy_sig_figs_of`) to the new one and leaves hand-set values alone; 1–15 |
 
 `q["answer"]` is kept equal to `units.format_key(numeric)` (`"4.20 m/s"`, `"75%"`) so markdown, CSV, Anki and AI validation need no numerical-specific code. The quantity is stored rather than derived because some share a dimension (torque/energy, angle/fraction) and the UI needs to know which one the author meant. A new unit never changes the stored quantity implicitly: a unit of the wrong kind is refused (Browse PATCH → 400) or flagged (Extract), so what a question measures only changes when someone picks a new quantity.
 

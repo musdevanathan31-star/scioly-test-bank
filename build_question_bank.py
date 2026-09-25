@@ -2988,7 +2988,7 @@ def install_graceful_shutdown() -> None:
 
 # Latest schema version. Older state files are migrated forward on load. Bump
 # the constant and add a migrate_to_N entry when a breaking change ships.
-STATE_SCHEMA_VERSION = 4
+STATE_SCHEMA_VERSION = 5
 
 
 def _promote_imported_numericals(state: dict) -> int:
@@ -3008,6 +3008,21 @@ def _promote_imported_numericals(state: dict) -> int:
     return promoted
 
 
+def _upgrade_whole_number_sig_figs(state: dict) -> int:
+    changed = 0
+    for qs in (state.get("questions") or {}).values():
+        for q in qs or []:
+            n = q.get("numeric")
+            if q.get("qtype") != "numerical" or not isinstance(n, dict):
+                continue
+            text = str(n.get("value_text") or "")
+            old, new = units.legacy_sig_figs_of(text), units.sig_figs_of(text)
+            if old is not None and new is not None and old != new and n.get("sig_figs") == old:
+                n["sig_figs"] = new
+                changed += 1
+    return changed
+
+
 def _migrate_state(state: dict) -> dict:
     """Forward-migrate `state` to STATE_SCHEMA_VERSION in place."""
     v = state.get("_schema_version", 1)
@@ -3025,6 +3040,11 @@ def _migrate_state(state: dict) -> dict:
     # Anything that doesn't parse stays frq, untouched.
     if v < 4:
         _promote_imported_numericals(state)
+    # v4 → v5: whole numbers now count every digit as significant ("10" is
+    # 2 s.f., not 1). Upgrade keys still sitting at the old default; a
+    # sig_figs someone set by hand to anything else is left alone.
+    if v < 5:
+        _upgrade_whole_number_sig_figs(state)
     state["_schema_version"] = STATE_SCHEMA_VERSION
     return state
 

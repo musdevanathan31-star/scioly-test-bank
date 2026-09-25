@@ -165,9 +165,15 @@ def parse_value(text: str) -> float:
 
 def sig_figs_of(text: str) -> int | None:
     """Significant figures of a number as written: "4.20" -> 3, "0.0042" -> 2,
-    "1200" -> 2 (trailing zeros without a decimal point aren't significant),
-    "1200." -> 4, "3.0×10^8" -> 2. None when it isn't a plain decimal
-    (e.g. a fraction)."""
+    "1200" -> 4, "3.0×10^8" -> 2. None when it isn't a plain decimal (e.g. a
+    fraction).
+
+    Deliberately stricter than the textbook rule for whole numbers: every
+    digit of "10" or "1200" counts, where the standard rule would call their
+    trailing zeros insignificant. As a grading default the textbook reading
+    is far too loose (a "10 ms" key would accept 5-15 ms), and question
+    writers almost always mean the number as written. The sig-figs field
+    can still be lowered per question."""
     s = _clean_value_text(text)
     m = _VALUE_RE.match(s)
     if not m:
@@ -180,8 +186,6 @@ def sig_figs_of(text: str) -> int | None:
         # ("0" -> 1, "0.00" -> 3), so tolerance() lands on the last written
         # decimal place.
         return 1 + (len(mant.split(".")[1]) if has_point else 0)
-    if not has_point:
-        digits = digits.rstrip("0") or digits[:1]
     return len(digits)
 
 
@@ -263,6 +267,23 @@ def catalog() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Keys
 # ---------------------------------------------------------------------------
+
+def legacy_sig_figs_of(text: str) -> int | None:
+    """The pre-2026-09-25 default (textbook rule: a whole number's trailing
+    zeros aren't significant). Only used by the state migration that
+    upgrades keys saved with that default."""
+    s = _clean_value_text(text)
+    m = _VALUE_RE.match(s)
+    if not m:
+        return None
+    mant = m.group("mant").replace(",", "")
+    if "." in mant:
+        return sig_figs_of(text)
+    digits = mant.lstrip("0")
+    if not digits:
+        return 1
+    return len(digits.rstrip("0") or digits[:1])
+
 
 def make_key(value_text: str, unit: str, quantity: str | None = None,
              sig_figs: int | None = None) -> dict:

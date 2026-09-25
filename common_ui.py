@@ -873,7 +873,7 @@ window.Units = (function(){
     const hasPoint = mant.includes(".");
     let digits = mant.replace(".", "").replace(/^0+/, "");
     if(!digits) return 1 + (hasPoint ? mant.split(".")[1].length : 0);
-    if(!hasPoint) digits = digits.replace(/0+$/, "") || digits.slice(0, 1);
+    // Every digit of a whole number counts ("10" -> 2), matching units.py.
     return digits.length;
   }
   function formatKey(n){
