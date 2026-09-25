@@ -2991,6 +2991,22 @@ def install_graceful_shutdown() -> None:
 STATE_SCHEMA_VERSION = 5
 
 
+def next_global_q_number(state: dict) -> int:
+    """Next numeric Q# no question in any bucket uses (trailing letter
+    suffixes like "1b" stripped first). Synthetic buckets (`_generated_*`,
+    `_scioly_*`) number from this global pool so an added question never
+    shares a number with any other question in the event. Lives here (not
+    review_app) so CLI tools can use it without importing the web app."""
+    used: set[int] = set()
+    for qs in state.get("questions", {}).values():
+        for q in qs or []:
+            try:
+                used.add(int(re.sub(r"[a-z]+$", "", str(q.get("number", "0")))))
+            except (ValueError, TypeError):
+                continue
+    return (max(used) + 1) if used else 1
+
+
 def _promote_imported_numericals(state: dict) -> int:
     promoted = 0
     for qs in (state.get("questions") or {}).values():

@@ -1263,6 +1263,8 @@ function bndSummaryHtml(p, {result = false} = {}){
     ([a, b]) => `<li>${esc(a)} → ${esc(b)}</li>`));
   parts.push(list("Duplicates of questions already in the bank (skipped)", p.duplicates,
     d => `<li>${esc(d.id)} ≈ Q${esc(d.matched)}: ${esc(d.text)}</li>`));
+  parts.push(list("Already imported from this same file (skipped)", p.already_imported,
+    d => `<li>${esc(d.id)} → Q${esc(d.number)}</li>`));
   parts.push(list("Can't be imported", p.invalid,
     d => `<li>${esc(d.id)}: ${esc(d.reason)}</li>`));
   parts.push(list("Image problems (image left off)", p.image_problems,

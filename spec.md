@@ -309,6 +309,31 @@ A numerical answer is a value, a unit and the quantity it measures; grading conv
 
 **Client side.** `common_ui.py`'s `window.Units` holds only input chrome (catalog loader, `<datalist>` builder, quantity `<option>`s, the check call) and two pure helpers mirrored from Python — `sigFigs` (↔ `sig_figs_of`) and `formatKey` (↔ `format_key`) — with a Node parity test in `tests/test_units.py`. Conversion and grading are never done in JS.
 
+**Counts.** Quantity `count` (`units.COUNT`) is dimensionless with a free-text *label* as its unit ("runs", "chromatids", "per 100,000", "g⊕"). `_is_label()` is deliberately narrow: at most two words (or "per …" up to four), no operators, at least one letter. A label is accepted when the quantity is explicitly `count`, or on import (`key_from_answer_text` passes `allow_label=True`); editors never infer it, so a typo'd unit is an error there rather than a silent count. Grading: a bare number or the label (compared by `_label_norm`: case-, punctuation- and plural-insensitive) is a complete answer; any other word is `wrong_dimension`. `key_from_answer_text` no longer converts superscripts in the unit ("g/cm³" stays a cubic centimetre); only the number's exponent gets them translated.
+
+## 4c. Season setup CLI (`season_admin.py`)
+
+Operator tool run on the server against one instance (`--instance <name>` from `deploy/instances.conf`; the env file is `<app_dir>/../.env`, loaded before any app module imports, since they read `DATA_ROOT` at import time). `--data-root` targets a directory directly (tests, rehearsal).
+
+Safety: dry run unless `--apply`. With `--apply`, the tool refuses to run while the instance's systemd service is active (`systemctl is-active`), because every state lock is an in-process `RLock` (§2) and a second process writing would race the app. It also refuses unless it's running as the instance's user, so written files keep the ownership the app expects. It then tars every JSON state file (root-level JSON, each `*/.qbank_state.json`, the response directories) into `DATA_ROOT/.season_admin_backups/<utc>-<cmd>.tar.gz` before changing anything.
+
+- `inspect [BUNDLES]`: events with PDF-extracted vs other question counts, seasons with rosters per event, windows/tests/responses, and the bundle→event mapping.
+- `reset --season S --events-from BUNDLES [--copy-rosters-from OLD] [--keep-general]`:
+  - per event, removes every non-`_` bucket (PDF-extracted) from `questions`/`annotations`/`manual`, leaving PDFs, images and the vision cache
+  - in the `_*` buckets, keeps only questions that pass `question_gradeability` and have a topic other than "Other / General" (unless `--keep-general`)
+  - deletes every season through `deletion.delete_season` (windows, assessments, responses cascade), then any window or assessment left outside a season
+  - registers unmapped bundle events (`add_custom_event`, topics from the bundle) and unarchives archived ones
+  - creates S (auto-current when it's the only season) with the bundle events, and optionally copies rosters
+- `stage-week BUNDLES --season S --label L --date --start --end --tz [--go-live] [--register-missing] [--no-validate]`:
+  - resolves the window times in `--tz` to UTC, and refuses a same-label window with different times before any write
+  - per event: `events.extend_event_topics` with the bundle's topics, then `bundle_import.run_import(dedup=False, keep_topics=True, mark_validated=True)` into `_generated_<slug>.pdf`
+  - creates or reuses the window and, per event exam assessment still `preparing`: `update_assessment_kept` (every bundle question, bundle order, 1 point), `publish_assessment`, and with `--go-live` `go_live_assessment`
+  - re-runs are no-ops: `bundle_import` skips questions whose `(import_meta.bundle, import_meta.id)` already exist, and returns them under `already_imported` / `bundle_questions`; published/live tests are left alone
+
+Event mapping (`map_events`): bundle `event` names are matched against each event's name, slug and `event_match`, ignoring case and punctuation, then again ignoring the word "and" ("Anatomy and Physiology" → `anatomy_physiology`). Unmatched names get a new slug.
+
+Supporting changes: `bundle_import` gained `keep_topics`, `dedup` and exact re-import detection (`_already_imported`), keeps `level`/`chapter` in `import_meta`, and reports `already_imported`; `build_question_bank.next_global_q_number` (moved from `review_app`, which now delegates) so the CLI needn't import the web app; `events.extend_event_topics(slug, topics)`.
+
 ## 5. Annotation replay (`apply_annotations`)
 
 Order matters:

@@ -331,7 +331,8 @@ def _resolve_topic(raw: str, text: str, topics: list[str],
 
 def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
                      source_label: str, image_names: dict[str, str | None],
-                     classify: Callable[[str], str] | None = None
+                     classify: Callable[[str], str] | None = None,
+                     keep_topics: bool = False
                      ) -> tuple[dict | None, list[str]]:
     """Map one bundle question onto the bank's Question dict shape.
 
@@ -397,7 +398,12 @@ def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
     if not answer:
         issues.append("no answer")
 
-    topic, remapped = _resolve_topic(str(bq.get("topic") or ""), text, topics, classify)
+    if keep_topics and str(bq.get("topic") or "").strip():
+        # Curated bundles (season_admin.py) name their own syllabus topics;
+        # keep them verbatim rather than squeezing them into the event's list.
+        topic, remapped = str(bq["topic"]).strip(), False
+    else:
+        topic, remapped = _resolve_topic(str(bq.get("topic") or ""), text, topics, classify)
     year = season if re.fullmatch(r"\d{4}", season or "") else ""
     q: dict = {
         "topic":    topic,
@@ -454,6 +460,11 @@ def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
         issues.append("no justification")
 
     meta: dict = {"bundle": digest, "id": str(bq.get("id") or "")}
+    # Extra fields some bundles carry (practice-test generator: syllabus
+    # level 1-3 and source chapter) — kept verbatim, nothing reads them yet.
+    for extra in ("level", "chapter"):
+        if bq.get(extra) not in (None, ""):
+            meta[extra] = bq[extra]
     if raw_qtype == "numerical" and stored_qtype == "frq":
         # Kept so the question can still be recognised as numerical once
         # someone fixes its answer (the Extract/Browse NUM button pre-fills
@@ -517,14 +528,35 @@ def _dedup_pool(state: dict) -> list[dict]:
     return pool
 
 
+def _already_imported(state: dict, digest: str) -> dict[str, dict]:
+    """Bundle question id -> the bank question an earlier import of this
+    exact bundle file created. Makes re-importing the same file a no-op
+    (and lets season_admin.py find a bundle's questions again)."""
+    out: dict[str, dict] = {}
+    for bucket, qs in (state.get("questions") or {}).items():
+        for q in qs or []:
+            meta = q.get("import_meta") or {}
+            if meta.get("bundle") == digest and meta.get("id"):
+                out[str(meta["id"])] = dict(q, _bucket=bucket)
+    return out
+
+
 def _plan(bundle: Bundle, state: dict, filename: str, image_names: dict[str, str | None],
           should_cancel: Callable[[], bool] | None = None,
-          on_step: Callable[[int, int], None] | None = None) -> dict:
-    """Convert + dedup every question against `state`. Pure w.r.t. `state`."""
+          on_step: Callable[[int, int], None] | None = None,
+          dedup: bool = True, keep_topics: bool = False) -> dict:
+    """Convert + dedup every question against `state`. Pure w.r.t. `state`.
+
+    A question this same bundle file already imported is always skipped
+    (reported under `already_imported`). `dedup=False` turns off the fuzzy
+    whole-bank check — for curated sets like a weekly test, which must stay
+    complete even when a question resembles one already in the bank."""
     topics = list(bqb.EVENT.topics)
     season = str(bundle.manifest.get("season") or "")
     label = _label(bundle, filename)
-    existing = _dedup_pool(state)
+    existing = _dedup_pool(state) if dedup else []
+    previous = _already_imported(state, bundle.digest)
+    already: list[dict] = []
     accepted: list[dict] = []
     duplicates, invalid, issues = [], [], []
     raw_qs = bundle.manifest.get("questions") or []
@@ -533,8 +565,15 @@ def _plan(bundle: Bundle, state: dict, filename: str, image_names: dict[str, str
             from jobs import JobCancelled
             raise JobCancelled()
         bid = str(bq.get("id") or f"#{i + 1}") if isinstance(bq, dict) else f"#{i + 1}"
+        if bid in previous:
+            already.append({"id": bid, "bucket": previous[bid]["_bucket"],
+                            "number": str(previous[bid].get("number"))})
+            if on_step:
+                on_step(i + 1, len(raw_qs))
+            continue
         q, q_issues = convert_question(bq, digest=bundle.digest, topics=topics, season=season,
-                                       source_label=label, image_names=image_names)
+                                       source_label=label, image_names=image_names,
+                                       keep_topics=keep_topics)
         if q is None:
             invalid.append({"id": bid, "reason": "; ".join(q_issues)})
         else:
@@ -543,8 +582,8 @@ def _plan(bundle: Bundle, state: dict, filename: str, image_names: dict[str, str
             # against its own siblings from this bundle.
             siblings = {id(a) for a in accepted
                         if q.get("context_id") and a.get("context_id") == q.get("context_id")}
-            pool = existing + [a for a in accepted if id(a) not in siblings]
-            is_dup, matched = qgen.is_duplicate({"text": q["text"]}, pool)
+            pool = existing + [a for a in accepted if id(a) not in siblings] if dedup else []
+            is_dup, matched = qgen.is_duplicate({"text": q["text"]}, pool) if pool else (False, None)
             if is_dup:
                 duplicates.append({"id": bid, "matched": matched, "text": q["text"][:120]})
             else:
@@ -554,7 +593,7 @@ def _plan(bundle: Bundle, state: dict, filename: str, image_names: dict[str, str
         if on_step:
             on_step(i + 1, len(raw_qs))
     return {"accepted": accepted, "duplicates": duplicates, "invalid": invalid,
-            "issues": issues}
+            "issues": issues, "already_imported": already}
 
 
 def _summary(bundle: Bundle, plan: dict, image_problems: list[dict]) -> dict:
@@ -575,6 +614,7 @@ def _summary(bundle: Bundle, plan: dict, image_problems: list[dict]) -> dict:
         "by_topic":      by_topic,
         "remapped_topics": remapped,
         "duplicates":    plan["duplicates"],
+        "already_imported": plan.get("already_imported", []),
         "invalid":       plan["invalid"],
         "issues":        plan["issues"],
         "image_problems": image_problems,
@@ -625,7 +665,8 @@ def preview(bundle: Bundle, filename: str) -> dict:
 def run_import(bundle: Bundle, *, filename: str, bucket: str, mark_validated: bool,
                next_number: Callable[[dict], int],
                should_cancel: Callable[[], bool],
-               on_progress: Callable[..., None]) -> dict:
+               on_progress: Callable[..., None],
+               dedup: bool = True, keep_topics: bool = False) -> dict:
     """jobs.py target body. Caller has bound the event. Returns the summary
     dict stored as the job's `result`.
 
@@ -662,7 +703,8 @@ def run_import(bundle: Bundle, *, filename: str, bucket: str, mark_validated: bo
             def step(d, t):
                 on_progress(phase="importing questions", done=d, total=t)
             plan = _plan(bundle, state, filename, names,
-                         should_cancel=should_cancel, on_step=step)
+                         should_cancel=should_cancel, on_step=step,
+                         dedup=dedup, keep_topics=keep_topics)
 
             num = next_number(state)
             for q in plan["accepted"]:
@@ -736,6 +778,12 @@ def run_import(bundle: Bundle, *, filename: str, bucket: str, mark_validated: bo
     summary = _summary(bundle, plan, problems)
     summary.update({
         "added": len(added),
+        # Every question this bundle has in the bank now (this run's plus
+        # any an earlier run of the same file created), uncapped, in
+        # bundle order of this run's additions then earlier ones.
+        "bundle_questions": ([{"id": (q.get("import_meta") or {}).get("id"), "bucket": bucket,
+                               "number": q["number"]} for q in added]
+                             + plan.get("already_imported", [])),
         "bucket": bucket,
         "skipped_validation_ungradeable": skipped_validation,
         # Capped: the result is persisted in the event's job index, and the

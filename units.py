@@ -60,6 +60,7 @@ QUANTITIES: dict[str, tuple[str, str, list[str]]] = {
     "power":          ("Power", "[mass]*[length]**2/[time]**3", ["W", "mW", "kW", "MW", "hp"]),
     "pressure":       ("Pressure", "[mass]/[length]/[time]**2", ["Pa", "kPa", "MPa", "atm", "bar", "mmHg", "psi"]),
     "density":        ("Density", "[mass]/[length]**3", ["kg/m³", "g/cm³", "g/mL"]),
+    "flow_rate":      ("Flow rate (volume per time)", "[length]**3/[time]", ["m³/s", "L/s", "L/min", "mL/s", "gal/min"]),
     "frequency":      ("Frequency", "1/[time]", ["Hz", "kHz", "MHz", "GHz"]),
     "angle":          ("Angle", "", ["rad", "deg", "mrad"]),
     "temperature":    ("Temperature", "[temperature]", ["K", "°C", "°F"]),
@@ -79,7 +80,11 @@ QUANTITIES: dict[str, tuple[str, str, list[str]]] = {
     "heat_capacity":  ("Heat capacity / entropy", "[mass]*[length]**2/[time]**2/[temperature]", ["J/K", "kJ/K"]),
     "specific_heat":  ("Specific heat", "[length]**2/[time]**2/[temperature]", ["J/(kg·K)", "J/(g·K)", "kJ/(kg·K)"]),
     "fraction":       ("Fraction / ratio / dimensionless", "", ["", "%"]),
+    # A number of things ("24 runs", "48 chromatids", "200 per 100,000").
+    # Its unit is a free label, not a physical unit: see _is_label().
+    "count":          ("Count (number of things)", "", []),
 }
+COUNT = "count"
 OTHER = "other"
 
 _registry_lock = threading.Lock()
@@ -125,11 +130,14 @@ _VALUE_RE = re.compile(
 _FRACTION_RE = re.compile(r"^\s*(?P<sign>[+\-−]?)\s*(?P<n>\d+)\s*/\s*(?P<d>\d+)\s*$")
 
 
-def _clean_value_text(text: str) -> str:
+def _clean_math(text: str) -> str:
     s = str(text or "").strip()
     s = s.replace("$", "").replace("\\times", "×").replace("\\cdot", "·")
-    s = re.sub(r"\^\{([^}]*)\}", r"^\1", s)
-    return s.translate(_SUPERSCRIPTS)
+    return re.sub(r"\^\{([^}]*)\}", r"^\1", s)
+
+
+def _clean_value_text(text: str) -> str:
+    return _clean_math(text).translate(_SUPERSCRIPTS)
 
 
 def parse_value(text: str) -> float:
@@ -228,8 +236,41 @@ def _dimensionality(dim_expr: str):
     return ureg.get_dimensionality(dim_expr) if dim_expr else ureg.dimensionless.dimensionality
 
 
+_LABEL_WORD_RE = re.compile(r"^[^\W_][\w,.'⊕⊙-]*$")
+
+
+def _is_label(unit: str) -> bool:
+    """A count's unit: a word or two naming the things counted ("runs",
+    "chromatids", "g⊕", "per 100,000"). Deliberately narrow — no operators,
+    at most two words (or "per …" up to four) — so prose ("4 because it
+    doubles") and unit typos with operators never pass as a label."""
+    u = str(unit or "").strip()
+    if not u or len(u) > 40 or not any(c.isalpha() for c in u):
+        return False
+    words = u.split()
+    if words[0].lower() == "per":
+        return len(words) <= 4 and all(_LABEL_WORD_RE.match(w) for w in words)
+    return len(words) <= 2 and all(_LABEL_WORD_RE.match(w) for w in words)
+
+
+def _label_norm(unit: str) -> str:
+    """"Chromatids" == "chromatid", "per 100000" == "per 100,000"."""
+    t = re.sub(r"[^0-9a-z]", "", str(unit or "").lower())
+    return t[:-1] if len(t) > 2 and t.endswith("s") else t
+
+
+def _parses(unit: str) -> bool:
+    try:
+        parse_unit(unit)
+        return True
+    except UnitError:
+        return False
+
+
 def unit_matches_quantity(unit: str, quantity: str) -> bool:
     if quantity == OTHER or quantity not in QUANTITIES:
+        return True
+    if quantity == COUNT and _is_label(unit) and not _parses(unit):
         return True
     return parse_unit(unit).dimensionality == _dimensionality(QUANTITIES[quantity][1])
 
@@ -286,11 +327,24 @@ def legacy_sig_figs_of(text: str) -> int | None:
 
 
 def make_key(value_text: str, unit: str, quantity: str | None = None,
-             sig_figs: int | None = None) -> dict:
+             sig_figs: int | None = None, allow_label: bool = False) -> dict:
     """Validate and build a `numeric` key. Raises UnitError with a message
-    that names the problem."""
+    that names the problem.
+
+    A unit pint doesn't know is accepted as a count label ("24 runs") when
+    the quantity is explicitly "count", or — for imports, via
+    key_from_answer_text — when `allow_label` and it looks like a label.
+    Editors never pass allow_label, so a typo'd unit there is an error,
+    not a silently-created count."""
     value = parse_value(value_text)
-    parse_unit(unit)
+    try:
+        parse_unit(unit)
+    except UnitError:
+        if not ((quantity == COUNT or (allow_label and not quantity)) and _is_label(unit)):
+            if quantity == COUNT:
+                raise UnitError(f"\"{unit}\" isn't a unit or a short label for what's counted")
+            raise
+        quantity = COUNT
     if not quantity:
         quantity = infer_quantity(unit)
     if quantity != OTHER and quantity not in QUANTITIES:
@@ -357,8 +411,11 @@ def grade(numeric: dict, value_text: str, unit_text: str) -> dict:
     where status is one of correct | no_unit | wrong_value | wrong_dimension
     | unparseable | blank, and credit is the fraction of points earned."""
     expected = format_key(numeric)
+    label = None
+    if numeric.get("quantity") == COUNT and not _parses(numeric.get("unit") or ""):
+        label = _label_norm(numeric.get("unit"))
     try:
-        key_unit = parse_unit(numeric.get("unit") or "")
+        key_unit = _registry().dimensionless if label is not None else parse_unit(numeric.get("unit") or "")
         key_val = float(numeric["value"])
         tol = tolerance(numeric)
     except (UnitError, KeyError, TypeError, ValueError):
@@ -397,9 +454,19 @@ def grade(numeric: dict, value_text: str, unit_text: str) -> dict:
         return {**base, "status": "wrong_value", "credit": 0.0, "given_in_key_unit": v,
                 "message": "no unit, and the number isn't within the accepted range"}
 
+    if label is not None and _label_norm(unit_text) == label:
+        # The count's own label ("24 runs" for "24 runs") -- a plain number.
+        unit_text = ""
+        if within(v):
+            return {**base, "status": "correct", "credit": 1.0, "given_in_key_unit": v, "message": "correct"}
+        return {**base, "status": "wrong_value", "credit": 0.0, "given_in_key_unit": v,
+                "message": "not within the accepted range"}
     try:
         u = parse_unit(unit_text)
     except UnitError as e:
+        if label is not None:
+            return {**base, "status": "wrong_dimension", "credit": 0.0,
+                    "message": f"\"{unit_text}\" doesn't match what's being counted"}
         return {**base, "status": "unparseable", "credit": 0.0, "message": str(e)}
     if u.dimensionality != key_unit.dimensionality:
         return {**base, "status": "wrong_dimension", "credit": 0.0,
@@ -419,10 +486,18 @@ def check_unit(unit: str, quantity: str | None) -> dict:
     """Live input check for the editors and the student answer box:
     {ok, message}. Only says whether the unit parses and fits the quantity —
     never anything about the answer."""
+    if quantity == COUNT and (_is_label(unit) or not str(unit or "").strip()):
+        # Any short label is a legitimate way to write a count ("runs",
+        # "24 cells"); whether it's the RIGHT label is the grader's call.
+        if not _parses(unit) or parse_unit(unit).dimensionality == _dimensionality(""):
+            return {"ok": True, "message": ""}
     try:
         parse_unit(unit)
     except UnitError as e:
-        return {"ok": False, "message": str(e)}
+        msg = str(e)
+        if not quantity and _is_label(unit):
+            msg += " — if it names what's counted (e.g. \"runs\"), set Quantity to Count"
+        return {"ok": False, "message": msg}
     if quantity and quantity != OTHER and quantity in QUANTITIES:
         if not unit_matches_quantity(unit, quantity):
             if not str(unit or "").strip():
@@ -434,16 +509,22 @@ def check_unit(unit: str, quantity: str | None) -> dict:
 
 def key_from_answer_text(answer: str, quantity: str | None = None) -> dict | None:
     """Best-effort "4.2 m/s" -> numeric key, for promoting a free-response or
-    imported answer. None when it doesn't split cleanly into number + unit."""
-    s = _clean_value_text(answer)
+    imported answer. None when it doesn't split cleanly into number + unit.
+    A short non-unit word after the number ("24 runs") makes it a count.
+
+    Superscripts are only turned into digits inside the number's exponent
+    (parse_value does that); the unit keeps them, so "cm³" stays a cubic
+    centimetre rather than becoming "cm3"."""
+    s = _clean_math(answer)
     s = re.sub(r"^\s*(?:≈|~|about\s+|approx(?:imately|\.)?\s+)", "", s, flags=re.I)
     m = re.match(r"""^\s*(?P<num>[+\-−]?\s*(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)
-                     (?:\s*[eE]\s*[+\-−]?\d+|\s*(?:x|×|\*|·)\s*10\s*(?:\^|\*\*)?\s*\(?\s*[+\-−]?\d+\s*\)?)?)
+                     (?:\s*[eE]\s*[+\-−]?\d+
+                       |\s*(?:x|×|\*|·)\s*10\s*(?:\^|\*\*)?\s*\(?\s*[+\-−⁻⁺]?[\d⁰¹²³⁴⁵⁶⁷⁸⁹]+\s*\)?)?)
                      \s*(?P<unit>.*?)\s*\.?\s*$""", s, re.X)
     if not m:
         return None
     unit = m.group("unit").strip()
     try:
-        return make_key(m.group("num").strip(), unit, quantity)
+        return make_key(m.group("num").strip(), unit, quantity, allow_label=True)
     except UnitError:
         return None

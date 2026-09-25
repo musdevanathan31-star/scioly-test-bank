@@ -369,6 +369,25 @@ Use this when another Claude conversation wrote questions for you, including fig
 
 Numerical questions show as **numerical** in the result but are stored as free-response for now, so they're hand-graded in assessments. The imported questions are in **Browse**, in the "generated" bucket.
 
+### Setting up a season from the command line (coach, over SSH)
+
+`season_admin.py` resets an instance for a new season and stages a week of practice tests from the practice-test generator's zips. It works on **one instance** at a time (named in `deploy/instances.conf`) and changes nothing unless you add `--apply`. Run it as that instance's user, with its service stopped:
+
+```
+scp Week_01_all_events_2027.zip <server>:/tmp/
+sudo -u qbank /opt/qbank/venv/bin/python /opt/qbank/app/season_admin.py --instance ncms inspect /tmp/Week_01_all_events_2027.zip
+systemctl stop qbank.service
+sudo -u qbank /opt/qbank/venv/bin/python /opt/qbank/app/season_admin.py --instance ncms reset --season 2027 --events-from /tmp/Week_01_all_events_2027.zip [--copy-rosters-from <old-season>] --apply
+sudo -u qbank /opt/qbank/venv/bin/python /opt/qbank/app/season_admin.py --instance ncms stage-week /tmp/Week_01_all_events_2027.zip --season 2027 --label "Week 1" --date 2026-09-30 --start 12:00 --end 16:00 --tz America/New_York --go-live --apply
+systemctl start qbank.service
+```
+
+Run each command once without `--apply` first and read what it says it will do.
+
+- **`reset`** deletes every question extracted from a PDF (the PDFs and images stay), drops generated or imported questions that have no gradeable answer or no topic, and deletes **every season with its windows, tests and student answers**. It then creates the new season with the events in the zip, registering any event the instance doesn't have. User accounts are untouched. `--copy-rosters-from` carries an old season's rosters over; otherwise add students on the Club page.
+- **`stage-week`** imports each event's questions with their topics as written, adds those topics to the event, creates the window and, per event, keeps all of that event's questions, publishes and (`--go-live`) goes live. Running it again with the same zip does nothing new, and a window label that already exists with different times is refused before anything changes.
+- Every `--apply` run first saves a backup of all state files to `<data root>/.season_admin_backups/`.
+
 ### Taking or building a practice quiz
 
 Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only", "True/False only" and "Numerical only" are among the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.

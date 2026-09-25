@@ -535,6 +535,27 @@ def add_custom_event(
     return ev
 
 
+def extend_event_topics(slug: str, new_topics: list[str]) -> list[str]:
+    """Append topics a custom event doesn't list yet (keeping "Other /
+    General" last); returns the ones added. Built-in events' taxonomies live
+    in code and are left alone — returns [] for them. Used by
+    season_admin.py so imported syllabus topics become real topics rather
+    than falling into "Other / General" in the markdown export."""
+    if slug in _BUILTIN_SLUGS or slug not in EVENTS:
+        return []
+    import dataclasses
+    ev = EVENTS[slug]
+    have = [t for t in ev.topics if t != "Other / General"]
+    added = [t.strip() for t in new_topics
+             if t and t.strip() and t.strip() not in have and t.strip() != "Other / General"]
+    added = list(dict.fromkeys(added))
+    if not added:
+        return []
+    EVENTS[slug] = dataclasses.replace(ev, topics=tuple(have + added + ["Other / General"]))
+    _save_custom_events()
+    return added
+
+
 def _set_archived(slug: str, archived: bool) -> None:
     if slug in _BUILTIN_SLUGS:
         raise ValueError("cannot archive a built-in event")

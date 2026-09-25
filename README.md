@@ -214,6 +214,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `texts.py` | Scrapes the scioly.org wiki for an event into markdown; converts user-supplied source PDFs to markdown |
 | `doc_convert.py` | Normalizes `.docx`/`.doc` test/key files to PDF via headless LibreOffice (`soffice`) so the rest of the pipeline only ever deals with PDFs |
 | `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
+| `season_admin.py` | Operator CLI, run on the server per instance: `inspect`, `reset` (clean the bank, wipe old seasons, create a new one), `stage-week` (import a week's bundles and publish/go-live the tests). Dry run unless `--apply`; refuses while the service runs; backs up JSON state first |
 | `units.py` | Numerical questions: value/unit parsing, the quantity catalog, keys, and grading with unit conversion (via `pint`) |
 | `bundle_import.py` | Question-bundle import (zip of `manifest.json` + `images/`): upload checks, preview, and the background import job |
 | `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape, including scio.ly's own `difficulty` rating when present |
@@ -308,6 +309,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
    - Numerical questions auto-grade on assessments (no manual grading), work in the quiz, and show the student's answer, the key and the accepted range on the results page. Students type the unit freely; the unit box suggests common units for the question's quantity and warns about a unit it doesn't recognise or that can't be right — it never reveals the answer.
    - Unit handling uses the [`pint`](https://pint.readthedocs.io/) library (in `requirements.txt`). Prefixes (`k`, `m`, `µ`/`u`), compound units (`N·m`, `J/(kg·K)`), `Ω`/`ohm`, `°C`/`°F`, `%` and `C` (coulomb) all work; `AU` means astronomical unit.
    - Existing questions: bundle imports and AI-generated/JSON-imported "numerical" questions become numerical automatically when their answer splits into value + unit. Questions imported earlier as free response are promoted once on first load (state schema v4). PDF extraction still produces FRQ; one click on **NUM** converts.
+   - Answers that count things (`24 runs`, `48 chromatids`, `200 per 100,000`) use the **Count** quantity, whose unit is a free label: `24` or `24 runs` (any case, singular or plural) is right, a different word is wrong. Imports detect these automatically; in an editor, pick Count as the quantity.
    - Whole numbers count every digit, stricter than the textbook rule: a `10 ms` key defaults to 2 s.f. and accepts 9.5–10.5 ms (the textbook reading, 1 s.f., would accept 5–15 ms). Lower the s.f. field if a key really is that rough. Keys saved before this default changed were upgraded on first load (state schema v5), unless someone had set their s.f. by hand.
 
    ### Import a question bundle (.zip — questions + images + difficulty)

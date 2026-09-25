@@ -422,7 +422,9 @@ def test_reimporting_the_same_bundle_only_finds_duplicates(env):
 
     j = _stage(env, data).get_json()
     assert j["preview"]["importable"] == 0
-    assert len(j["preview"]["duplicates"]) == 5
+    # The same file again: recognised by its digest, not by fuzzy matching.
+    assert len(j["preview"]["already_imported"]) == 5
+    assert j["preview"]["duplicates"] == []
     job2 = _wait(env, _import(env, j["token"]).get_json()["job_id"])
     assert job2["status"] == "succeeded" and job2["result"]["added"] == 0
     assert len(_bucket(env)) == 5

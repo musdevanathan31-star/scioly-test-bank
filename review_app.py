@@ -6740,21 +6740,9 @@ def _scioly_bucket_key() -> str:
 
 
 def _next_global_q_number(state: dict) -> int:
-    """Return the next numeric Q# that no question in any bucket already uses.
-
-    Synthetic buckets (`_generated_*`, `_scioly_*`) feed off this so newly
-    accepted questions never share a number with a PDF-extracted question or
-    with each other across buckets. Trailing letter suffixes (`1`, `1b`, `1c`)
-    are stripped before comparison.
-    """
-    used: set[int] = set()
-    for qs in state.get("questions", {}).values():
-        for q in qs or []:
-            try:
-                used.add(int(re.sub(r"[a-z]+$", "", str(q.get("number", "0")))))
-            except (ValueError, TypeError):
-                continue
-    return (max(used) + 1) if used else 1
+    """See build_question_bank.next_global_q_number (moved there so CLI
+    tools can number questions without importing this module)."""
+    return bqb.next_global_q_number(state)
 
 
 @app.route("/event/<event_slug>/api/scioly/scrape", methods=["POST"])
