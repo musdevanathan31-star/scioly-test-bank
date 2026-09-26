@@ -26,6 +26,10 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 .roster-tbl th.ev span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:inline-block;
   max-height:180px;overflow:hidden;text-overflow:ellipsis}
 .roster-tbl td.chk{padding:6px 2px;width:28px}
+.roster-tbl td.chk .w{display:none;padding:0 4px;font-size:11px;font-weight:700;color:#8a5a00;
+  background:#fff6e0;border:1px solid #e3c98a;border-radius:3px;cursor:pointer;line-height:1.5}
+.roster-tbl td.chk.wd input{display:none}
+.roster-tbl td.chk.wd .w{display:inline-block}
 .roster-tbl th.who,.roster-tbl td.who{position:sticky;left:0;background:var(--bg,#fff);z-index:1;white-space:nowrap}
 .roster-tbl th.who{background:#fafafa;vertical-align:bottom}
 .roster-tbl tr:hover td{background:var(--row-hover)}
@@ -266,9 +270,17 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
         <tr data-username="{{ u.username }}">
           <td class="who">{{ u.display_name or u.username }}</td>
           {% for slug in selected.event_slugs %}
-          <td class="chk">
-            <input type="checkbox" data-event="{{ slug }}"
+          {% set wd = (withdrawals.get(slug) or {}).get(u.username) %}
+          {% set has = (u.username ~ "|" ~ slug) in has_results %}
+          {# Ticked = on the active roster. A student with submitted results
+             there can't simply be removed: unticking withdraws them (W),
+             keeping their results; clicking W puts them back. The server
+             applies the same rule (assessments.update_roster). #}
+          <td class="chk{{ ' wd' if wd }}"
+              title="{% if wd %}Withdrawn {{ wd.at[:10] }} — past results kept. Click W to put them back on the roster.{% elif has %}Has submitted results — unticking withdraws them (results kept) instead of removing them.{% endif %}">
+            <input type="checkbox" data-event="{{ slug }}" {{ "data-has-results=1" if has or wd }}
                    {{ "checked" if u.username in (roster.get(slug) or []) }}>
+            <button type="button" class="w" title="Withdrawn — click to put back on the roster">W</button>
           </td>
           {% endfor %}
         </tr>
@@ -276,6 +288,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
       </tbody>
     </table>
     </div>
+    <p class="muted" style="font-size:12px;margin-top:6px"><b>W</b> = withdrawn: left the event after submitting a test. Their past results stay (for them and on Scores); they get no new tests for it and aren't counted as missing. Unticking a student who has submitted results withdraws them; a student without results is simply removed.</p>
     <div class="actions"><button id="roster_save" class="primary">Save roster</button></div>
     <div id="roster_msg" class="msg" style="display:none"></div>
     {% endif %}
@@ -380,12 +393,27 @@ document.getElementById("lineup_save").addEventListener("click", async () => {
 });
 
 // Roster grid save
+// Roster cells: W (withdrawn) for a student with results who is unticked.
+document.querySelectorAll("#roster_tbl td.chk").forEach(td => {
+  const box = td.querySelector("input[type=checkbox]");
+  const w = td.querySelector(".w");
+  if(!box || !w) return;
+  box.addEventListener("change", () => {
+    if(!box.checked && box.dataset.hasResults) td.classList.add("wd");
+  });
+  w.addEventListener("click", () => {
+    box.checked = true;
+    td.classList.remove("wd");
+  });
+});
+
 const rosterSave = document.getElementById("roster_save");
 if(rosterSave){
   rosterSave.addEventListener("click", async () => {
     const eventSlugs = [...document.querySelectorAll("#roster_tbl th[data-slug]")].map(th => th.dataset.slug);
     const msgEl = document.getElementById("roster_msg");
     msgEl.style.display = ""; msgEl.className = "msg"; msgEl.textContent = "Saving…";
+    let withdrawnTotal = 0, reinstatedTotal = 0;
     try {
       for(const slug of eventSlugs){
         const usernames = [...document.querySelectorAll(`#roster_tbl tr[data-username]`)]
@@ -397,8 +425,16 @@ if(rosterSave){
         });
         const j = await r.json();
         if(!j.ok) throw new Error(j.error || `failed saving ${slug}`);
+        withdrawnTotal += (j.withdrawn || []).length;
+        reinstatedTotal += (j.reinstated || []).length;
       }
-      msgEl.className = "msg ok"; msgEl.textContent = "Saved.";
+      msgEl.className = "msg ok";
+      const parts = ["Saved."];
+      if(withdrawnTotal) parts.push(`${withdrawnTotal} withdrawn (results kept).`);
+      if(reinstatedTotal) parts.push(`${reinstatedTotal} put back.`);
+      msgEl.textContent = parts.join(" ");
+      // The server decides who is withdrawn and when; show its version.
+      if(withdrawnTotal || reinstatedTotal) setTimeout(() => location.reload(), 1200);
     } catch(err){
       msgEl.className = "msg err"; msgEl.textContent = err.message;
     }

@@ -1284,6 +1284,9 @@ def club_management_page():
         selected=selected,
         all_events=sorted(EVENTS.keys()),
         event_names={slug: ev.name for slug, ev in EVENTS.items()},
+        withdrawals=seasons.get_all_withdrawals(selected_id) if selected else {},
+        has_results=({f"{u}|{slug}" for u, slug in assessments.students_with_results(selected_id)}
+                     if selected else set()),
         students=students,
         roster=roster,
         users=users,
@@ -1362,10 +1365,12 @@ def api_set_roster(season_id, event_slug):
     usernames = [u for u in (data.get("usernames") or [])
                  if u in users and users[u].role == "student"]
     try:
-        seasons.set_roster(season_id, event_slug, usernames)
+        # Unchecking a student with results there withdraws them rather
+        # than removing them (assessments.update_roster).
+        result = assessments.update_roster(season_id, event_slug, usernames, by=g.user.username)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify({"ok": True, "usernames": usernames})
+    return jsonify({"ok": True, "usernames": usernames, **result})
 
 
 @app.route("/api/seasons/<season_id>/copy-roster-from", methods=["POST"])
@@ -1716,9 +1721,22 @@ def student_required(view):
     return wrapped
 
 
-def _student_assessment_context(assessment_id: str):
+def _window_is_students(season_id: str, slug: str, window, username: str) -> bool:
+    """Is this window one of the student's? Yes when they're on the event's
+    active roster, or withdrew from it after the window opened (its results
+    stay theirs). A window that opened after a withdrawal is not."""
+    import seasons as seasons_mod
+    if slug in seasons_mod.student_events(season_id, username):
+        return True
+    rec = seasons_mod.student_withdrawals(season_id, username).get(slug)
+    return rec is not None and not seasons_mod.withdrawn_before(rec, window.opens_at)
+
+
+def _student_assessment_context(assessment_id: str, allow_withdrawn: bool = False):
     """404s an unknown test; 403s if the caller's role isn't student or
     they're not rostered on this test's event for this test's season.
+    `allow_withdrawn` (results and figures only, never taking a test) also
+    admits a student who withdrew after this test's window opened.
     Returns (test, window, season)."""
     import seasons as seasons_mod
 
@@ -1730,7 +1748,9 @@ def _student_assessment_context(assessment_id: str):
         abort(404)
     user = g.user
     if test.event_slug not in seasons_mod.student_events(test.season_id, user.username):
-        abort(403, "You're not rostered for this test's event this season")
+        if not (allow_withdrawn and _window_is_students(test.season_id, test.event_slug, window,
+                                                        user.username)):
+            abort(403, "You're not rostered for this test's event this season")
     return test, window
 
 
@@ -1783,11 +1803,16 @@ def my_assessments_page():
     upcoming, current, past = [], [], []
     if season:
         my_events = set(seasons_mod.student_events(season.season_id, g.user.username))
+        my_withdrawals = seasons_mod.student_withdrawals(season.season_id, g.user.username)
         for w in assessments.load_windows().values():
             if w.season_id != season.season_id or w.archived:
                 continue
             for slug in w.event_slugs:
-                if slug not in my_events:
+                # Withdrawn from this event: only windows that opened
+                # before the withdrawal are still theirs (past results).
+                if slug not in my_events and not (
+                        slug in my_withdrawals
+                        and not seasons_mod.withdrawn_before(my_withdrawals[slug], w.opens_at)):
                     continue
                 for kind in ("exam", "build"):
                     t = assessments.get_assessment_for(w.window_id, slug, kind=kind)
@@ -1804,6 +1829,8 @@ def my_assessments_page():
                              "opens_at": e_opens, "closes_at": e_closes,
                              "is_override": g.user.username in (t.overrides or {})}
                     bucket = _my_assessment_bucket(t, w, resp, g.user.username)
+                    if slug not in my_events:
+                        bucket = "past"      # withdrawn: results only, nothing to take
                     {"upcoming": upcoming, "current": current, "past": past}[bucket].append(entry)
     return render_template("my_assessments.html", upcoming=upcoming, current=current, past=past,
                             season=season)
@@ -1873,7 +1900,7 @@ def serve_assessment_image(assessment_id, fname):
     """
     user = g.user
     if user.role == "student":
-        test, window = _student_assessment_context(assessment_id)   # 404/403s
+        test, window = _student_assessment_context(assessment_id, allow_withdrawn=True)   # 404/403s
         resp = assessments.get_response(assessment_id, user.username)
         taking = (test.status == "live"
                   and assessments.is_window_open(test, window, user.username))
@@ -1908,11 +1935,16 @@ def api_my_assessments():
     out = []
     if season:
         my_events = set(seasons_mod.student_events(season.season_id, g.user.username))
+        my_withdrawals = seasons_mod.student_withdrawals(season.season_id, g.user.username)
         for w in assessments.load_windows().values():
             if w.season_id != season.season_id or w.archived:
                 continue
             for slug in w.event_slugs:
-                if slug not in my_events:
+                # Withdrawn from this event: only windows that opened
+                # before the withdrawal are still theirs (past results).
+                if slug not in my_events and not (
+                        slug in my_withdrawals
+                        and not seasons_mod.withdrawn_before(my_withdrawals[slug], w.opens_at)):
                     continue
                 for kind in ("exam", "build"):
                     t = assessments.get_assessment_for(w.window_id, slug, kind=kind)
@@ -1920,6 +1952,8 @@ def api_my_assessments():
                         continue
                     resp = assessments.get_response(t.assessment_id, g.user.username)
                     bucket = _my_assessment_bucket(t, w, resp, g.user.username)
+                    if slug not in my_events:
+                        bucket = "past"      # withdrawn: results only, nothing to take
                     out.append({
                         "assessment_id": t.assessment_id, "event_slug": slug, "window_label": w.label,
                         "kind": kind,
@@ -2432,11 +2466,16 @@ def api_get_build_grading(assessment_id):
         return jsonify({"error": "not a build assessment"}), 400
     users = auth.load_users()
     roster = []
-    for username in seasons_mod.get_roster(test.season_id, test.event_slug):
+    window = assessments.get_window(test.window_id)
+    active = set(seasons_mod.get_roster(test.season_id, test.event_slug))
+    names = (seasons_mod.roster_for_window(test.season_id, test.event_slug, window.opens_at)
+             if window else sorted(active))
+    for username in names:
         u = users.get(username)
         if u is None or u.disabled:
             continue
-        roster.append({"username": u.username, "display_name": u.display_name or u.username})
+        roster.append({"username": u.username, "display_name": u.display_name or u.username,
+                       "withdrawn": username not in active})
     roster.sort(key=lambda d: d["display_name"].lower())
     responses = {u: {"rubric_values": r.rubric_values,
                      "manual_grade": r.manual_grade.get(assessments.BUILD_GRADE_KEY)}
@@ -2501,7 +2540,7 @@ def api_release_grades(assessment_id):
 @app.route("/my-assessments/<assessment_id>/results")
 @student_required
 def assessment_results_page(assessment_id):
-    test, window = _student_assessment_context(assessment_id)
+    test, window = _student_assessment_context(assessment_id, allow_withdrawn=True)
     resp = assessments.get_response(assessment_id, g.user.username)
     if resp is None or not resp.released:
         abort(403, "Results aren't released yet")
@@ -2681,6 +2720,19 @@ def scores_page():
             rosters[slug] = roster
             for u in roster:
                 students_seen[u] = u
+        # Withdrawn students keep their rows and their results from windows
+        # that opened before they left; later windows aren't theirs, so
+        # they're never counted as missing.
+        withdrawals = seasons_mod.get_all_withdrawals(selected.season_id)
+        for wd in withdrawals.values():
+            for u in wd:
+                students_seen[u] = u
+
+        def _owns(username, slug, window):
+            if username in rosters.get(slug, set()):
+                return True
+            rec = withdrawals.get(slug, {}).get(username)
+            return rec is not None and not seasons_mod.withdrawn_before(rec, window.opens_at)
 
         # Chronological. load_windows() returns dict insertion order -
         # fine in practice but not a guarantee, and the trend sparkline
@@ -2696,7 +2748,7 @@ def scores_page():
                     continue
                 # A student has no business seeing columns for events they
                 # are not rostered in.
-                if is_student and user.username not in rosters.get(slug, set()):
+                if is_student and not _owns(user.username, slug, w):
                     continue
                 t = assessments.get_assessment_for(w.window_id, slug)
                 if t is None or not t.snapshot:
@@ -2748,7 +2800,7 @@ def scores_page():
     summary = []
     for u in students:
         cells = grid.get(u) or {}
-        expected = [c for c in columns if u in rosters.get(c["event_slug"], set())]
+        expected = [c for c in columns if _owns(u, c["event_slug"], c["window"])]
         taken = [c for c in expected if c["assessment"].assessment_id in cells]
         tot_e = sum(cells[c["assessment"].assessment_id]["earned"] for c in taken)
         tot_p = sum(cells[c["assessment"].assessment_id]["possible"] for c in taken)
@@ -2783,7 +2835,8 @@ def scores_page():
         season_events = []
     elif is_student:
         season_events = [slug for slug in selected.event_slugs
-                         if user.username in rosters.get(slug, set())]
+                         if user.username in rosters.get(slug, set())
+                         or user.username in withdrawals.get(slug, {})]
     else:
         season_events = list(selected.event_slugs)
     return render_template("scores.html", all_seasons=all_seasons, selected=selected,

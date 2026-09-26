@@ -290,8 +290,111 @@ def _rosters_transaction():
         _save_rosters_unlocked(data)
 
 
+#: Top-level key in season_rosters.json holding withdrawals, alongside the
+#: season_id keys: {"__withdrawals__": {season_id: {event_slug: {username:
+#: {"at": iso-utc, "by": username}}}}}. Same file and lock as the rosters so
+#: withdrawing (off the active list + recorded) is one atomic write.
+#:
+#: A WITHDRAWN student left an event mid-season after submitting results
+#: there. They are no longer on the active roster -- no new tests, never
+#: counted as missing, never required for grading -- but results from
+#: windows that opened before the withdrawal stay theirs: visible to them
+#: and coaches, and counted in scores. Removing a student who has no results
+#: is still a plain removal; the rule deciding which is which lives in
+#: assessments.update_roster(), since only that module can see results.
+WITHDRAWALS_KEY = "__withdrawals__"
+
+
+def _season_ids(data: dict):
+    return (k for k in data if k != WITHDRAWALS_KEY)
+
+
+def _parse_ts(value: str):
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def get_roster(season_id: str, event_slug: str) -> list[str]:
+    """Active roster only -- withdrawn students are not on it."""
     return list((_load_rosters().get(season_id) or {}).get(event_slug) or [])
+
+
+def get_withdrawals(season_id: str, event_slug: str) -> dict[str, dict]:
+    return dict(((_load_rosters().get(WITHDRAWALS_KEY) or {}).get(season_id) or {}).get(event_slug) or {})
+
+
+def get_all_withdrawals(season_id: str) -> dict[str, dict[str, dict]]:
+    """{event_slug: {username: {"at", "by"}}} for one season."""
+    return {slug: dict(v) for slug, v in
+            ((_load_rosters().get(WITHDRAWALS_KEY) or {}).get(season_id) or {}).items() if v}
+
+
+def withdrawn_before(record: dict, opens_at: str) -> bool:
+    """True when the withdrawal happened at or before a window opened, i.e.
+    the window is AFTER the student left and isn't theirs."""
+    w, o = _parse_ts((record or {}).get("at", "")), _parse_ts(opens_at)
+    if w is None or o is None:
+        return True
+    return w <= o
+
+
+def roster_for_window(season_id: str, event_slug: str, opens_at: str) -> list[str]:
+    """Who a window belongs to: the active roster plus students withdrawn
+    AFTER it opened (their results from it stay theirs)."""
+    data = _load_rosters()
+    active = list((data.get(season_id) or {}).get(event_slug) or [])
+    withdrawn = ((data.get(WITHDRAWALS_KEY) or {}).get(season_id) or {}).get(event_slug) or {}
+    return active + [u for u, rec in withdrawn.items()
+                     if u not in active and not withdrawn_before(rec, opens_at)]
+
+
+def apply_roster_update(season_id: str, event_slug: str, usernames: list[str],
+                        withdraw: set, by: str = "") -> dict:
+    """The roster grid's save, in one transaction: the active roster becomes
+    `usernames`; anyone dropped from it who is in `withdraw` is recorded as
+    withdrawn instead of simply removed; anyone in `usernames` who was
+    withdrawn is reinstated. Students already withdrawn and still left off
+    stay withdrawn. Returns {"removed", "withdrawn", "reinstated"}."""
+    from datetime import datetime, timezone
+    season = get_season(season_id)
+    if season is None:
+        raise ValueError(f"unknown season {season_id!r}")
+    if event_slug not in season.event_slugs:
+        raise ValueError(f"{event_slug!r} is not in season {season_id!r}'s event lineup")
+    new = list(dict.fromkeys(usernames))
+    out = {"removed": [], "withdrawn": [], "reinstated": []}
+    with _rosters_transaction() as data:
+        current = list(data.setdefault(season_id, {}).get(event_slug) or [])
+        wd = data.setdefault(WITHDRAWALS_KEY, {}).setdefault(season_id, {}).setdefault(event_slug, {})
+        for u in new:
+            if u in wd:
+                wd.pop(u)
+                out["reinstated"].append(u)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for u in current:
+            if u in new:
+                continue
+            if u in withdraw:
+                wd[u] = {"at": now, "by": by}
+                out["withdrawn"].append(u)
+            else:
+                out["removed"].append(u)
+        data[season_id][event_slug] = new
+        if not wd:
+            data[WITHDRAWALS_KEY][season_id].pop(event_slug, None)
+    return out
+
+
+def _clear_withdrawals(data: dict, season_id: str, event_slug: str, usernames) -> None:
+    """Being put back on the active roster by any path ends a withdrawal."""
+    wd = ((data.get(WITHDRAWALS_KEY) or {}).get(season_id) or {}).get(event_slug)
+    if wd:
+        for u in usernames:
+            wd.pop(u, None)
 
 
 def get_full_roster(season_id: str) -> dict[str, list[str]]:
@@ -310,6 +413,7 @@ def set_roster(season_id: str, event_slug: str, usernames: list[str]) -> None:
         raise ValueError(f"{event_slug!r} is not in season {season_id!r}'s event lineup")
     with _rosters_transaction() as data:
         data.setdefault(season_id, {})[event_slug] = list(dict.fromkeys(usernames))  # dedupe, preserve order
+        _clear_withdrawals(data, season_id, event_slug, usernames)
 
 
 def add_to_roster(season_id: str, event_slug: str, usernames: list[str]) -> None:
@@ -330,6 +434,7 @@ def add_to_roster(season_id: str, event_slug: str, usernames: list[str]) -> None
     with _rosters_transaction() as data:
         current = data.setdefault(season_id, {}).get(event_slug) or []
         data[season_id][event_slug] = list(dict.fromkeys(list(current) + list(usernames)))
+        _clear_withdrawals(data, season_id, event_slug, usernames)
 
 
 def copy_roster_forward(from_season_id: str, to_season_id: str,
@@ -374,6 +479,7 @@ def delete_season_record(season_id: str) -> bool:
             removed = True
     with _rosters_transaction() as rosters:
         rosters.pop(season_id, None)
+        (rosters.get(WITHDRAWALS_KEY) or {}).pop(season_id, None)
     return removed
 
 
@@ -383,10 +489,15 @@ def remove_user_from_all_rosters(username: str) -> int:
     dialog before an account is deleted."""
     n = 0
     with _rosters_transaction() as rosters:
-        for _season_id, by_event in rosters.items():
+        for season_id in list(_season_ids(rosters)):
+            by_event = rosters[season_id]
             for slug, names in by_event.items():
                 if username in names:
                     by_event[slug] = [u for u in names if u != username]
+                    n += 1
+        for by_event in (rosters.get(WITHDRAWALS_KEY) or {}).values():
+            for wd in by_event.values():
+                if wd.pop(username, None) is not None:
                     n += 1
     return n
 
@@ -404,3 +515,10 @@ def student_events(season_id: str, username: str) -> list[str]:
     per-event roster lists above."""
     roster = _load_rosters().get(season_id) or {}
     return [slug for slug, usernames in roster.items() if username in usernames]
+
+
+def student_withdrawals(season_id: str, username: str) -> dict[str, dict]:
+    """{event_slug: withdrawal record} for the events this student withdrew
+    from this season (they are no longer in student_events for them)."""
+    by_event = (_load_rosters().get(WITHDRAWALS_KEY) or {}).get(season_id) or {}
+    return {slug: wd[username] for slug, wd in by_event.items() if username in wd}

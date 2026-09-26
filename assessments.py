@@ -1682,6 +1682,39 @@ def submit_response(assessment_id: str, username: str, snapshot: list, now: date
     return updated
 
 
+SUBMITTED_STATUSES = ("submitted", "auto_submitted_late")
+
+
+def students_with_results(season_id: str, event_slug: str | None = None) -> set[tuple[str, str]]:
+    """{(username, event_slug)} for every student with a RESULT in that
+    event this season: a submitted exam (submitted, or auto-submitted when
+    the window closed -- an in-progress attempt doesn't count) or a recorded
+    build score. These are the students a roster edit must withdraw rather
+    than remove (update_roster)."""
+    out: set[tuple[str, str]] = set()
+    for t in load_assessments().values():
+        if t.season_id != season_id or (event_slug and t.event_slug != event_slug):
+            continue
+        for username, r in get_responses_for_assessment(t.assessment_id).items():
+            if t.kind == "build":
+                g = (r.manual_grade or {}).get(BUILD_GRADE_KEY)
+                if g and g.get("points_earned") is not None:
+                    out.add((username, t.event_slug))
+            elif r.status in SUBMITTED_STATUSES:
+                out.add((username, t.event_slug))
+    return out
+
+
+def update_roster(season_id: str, event_slug: str, usernames: list[str], by: str = "") -> dict:
+    """A coach's roster edit for one event. Unchecking a student who has
+    results there WITHDRAWS them (seasons.WITHDRAWALS_KEY) instead of
+    removing them, so those results never disappear; checking a withdrawn
+    student reinstates them. Returns {"removed", "withdrawn", "reinstated"}."""
+    import seasons as seasons_mod
+    has = {u for u, slug in students_with_results(season_id, event_slug)}
+    return seasons_mod.apply_roster_update(season_id, event_slug, usernames, withdraw=has, by=by)
+
+
 def assessment_grading_complete(assessment_id: str, snapshot: list, *, kind: str = "exam",
                                 season_id: str = "", event_slug: str = "") -> bool:
     """True iff grading is done.

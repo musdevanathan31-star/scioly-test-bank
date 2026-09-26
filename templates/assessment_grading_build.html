@@ -264,7 +264,7 @@ function renderRoster(){
     // the sum of scored lines" both on first load and after a reload.
     return `
     <tr data-username="${esc(s.username)}">
-      <td>${esc(s.display_name)}</td>
+      <td>${esc(s.display_name)}${s.withdrawn ? ' <span class="muted" title="Withdrew from this event after this window opened">(withdrawn)</span>' : ""}</td>
       ${cells}
       <td><input type="number" step="any" class="override-input" placeholder="override"></td>
       <td class="total-cell ${grade ? "" : "pending"}" data-stored="${grade ? "1" : "0"}">${grade ? `${grade.points_earned} / ${grade.points_possible}` : "not scored"}</td>

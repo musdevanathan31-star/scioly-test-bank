@@ -443,6 +443,12 @@ A season groups events, students, and tests under one label (e.g. "2027"). Open 
 2. If it isn't already current, click **Mark as current** on it — exactly one season is ever current, and that's what "My Assessments" defaults to for students. If you skip this, a yellow banner appears on this page and on the Assessments dashboard ("⚠ No season is marked current…" or "⚠ You're viewing X, but Y is the current season…") — students won't see any tests until you fix it.
 3. Add students: either one-by-one via **Manage Users** on this same Club Management page (role = Student), or in bulk — expand **+ Bulk-add students from CSV**, download the template, fill in `display_name` (required), and optionally `username`/`password`/`events` per row. Leave `username` blank to auto-generate one from the name; leave `password` blank to auto-generate `{school}{season}{username}` (the student changes it after first login via Settings); `events` is a `;`-separated list of event slugs to roster them onto immediately. Upload — the results table shows every generated username/password once, plus any row that failed and why.
 4. On the roster grid below, check students into the season's events (or fix up anything the CSV didn't cover). This roster is what scopes "My Assessments" and the Scores page for each student — it has no effect on who can edit that event's question bank.
+   **A student who leaves an event mid-season:** untick them as usual. If they've already submitted a test in that event (or have a recorded build score), they aren't removed. Their box turns into **W** (withdrawn) instead, and Save keeps it that way:
+   - Their results from earlier weeks stay, both on their own My Assessments/Scores pages and on yours, and still count in averages.
+   - They get no new tests for that event, and later weeks don't show them as missing.
+   - They're never needed to finish grading a build event.
+
+   Click **W** and Save to put them back. A student with no submitted results is simply removed, as before.
 5. Running a new season off an old one's roster? Pick the prior season from **Copy roster from…** and click Copy — only events present in both seasons' lineups copy over, and any since-disabled student is silently skipped.
 
 Note: a season's event lineup only scopes the roster grid and which events an assessment window can target. It never restricts question-bank access — any volunteer/coach with `User.events` access (or coach status) can still browse/edit any event's bank regardless of the current season's lineup.

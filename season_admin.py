@@ -754,7 +754,9 @@ def cmd_accounts(args, data_root: Path) -> None:
         if r.role == "volunteer" and tuple(r.events) != tuple(r.existing.events):
             auth.update_user(r.username, events=r.events)
     for slug, target in new_rosters.items():
-        seasons_mod.set_roster(season_id, slug, target)
+        # Same rule as the Club page: leaving off (--replace) a student with
+        # results there withdraws them instead of removing them.
+        assessments_mod.update_roster(season_id, slug, target, by="season_admin")
     for w, slug, usernames in window_updates:
         assessments_mod.update_window_assignments(w.window_id, slug, usernames)
     if issued:
