@@ -214,7 +214,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `texts.py` | Scrapes the scioly.org wiki for an event into markdown; converts user-supplied source PDFs to markdown |
 | `doc_convert.py` | Normalizes `.docx`/`.doc` test/key files to PDF via headless LibreOffice (`soffice`) so the rest of the pipeline only ever deals with PDFs |
 | `qgen.py` | LLM (Haiku) question generation from source texts; Jaccard-based dedup against the existing bank |
-| `season_admin.py` | Operator CLI, run on the server per instance: `inspect`, `reset` (clean the bank, wipe old seasons, create a new one), `stage-week` (import a week's bundles and publish/go-live the tests). Dry run unless `--apply`; refuses while the service runs; backs up JSON state first |
+| `season_admin.py` | Operator CLI, run on the server per instance: `inspect`, `reset` (clean the bank, wipe old seasons, create a new one), `stage-week` (import a week's bundles and publish/go-live the tests), `accounts` (student and parent-volunteer logins, rosters and event access from a JSON file; new users must change their starting password at first login). Dry run unless `--apply`; refuses while the service runs; backs up JSON state first |
 | `units.py` | Numerical questions: value/unit parsing, the quantity catalog, keys, and grading with unit conversion (via `pint`) |
 | `bundle_import.py` | Question-bundle import (zip of `manifest.json` + `images/`): upload checks, preview, and the background import job |
 | `explanations.py` | Worked solutions (`explanation`, Markdown + LaTeX): cleaning, and the Markdown/LaTeX-to-text conversion the PDF answer keys use |

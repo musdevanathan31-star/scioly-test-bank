@@ -25,6 +25,10 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 </header>
 <div class="wrap">
 
+  {% if current_user.must_change_password %}
+  <div class="banner" id="must_change_banner">Welcome! Before you continue, please choose your own
+    password below. Use the password you were given as your current password.</div>
+  {% endif %}
   <section>
     <h2>My Account</h2>
     <p class="muted">Signed in as <b>{{ current_user.username }}</b> ({{ current_user.role }}).</p>
@@ -111,6 +115,10 @@ document.getElementById("acct_pw_save").addEventListener("click", async () => {
       document.getElementById("acct_current_pw").value = "";
       document.getElementById("acct_new_pw").value = "";
       document.getElementById("acct_new_pw2").value = "";
+      {% if current_user.must_change_password %}
+      // Everything else was locked until now — take them home.
+      setTimeout(() => { location.href = `${APP_ROOT}/`; }, 800);
+      {% endif %}
     }
   } catch(e){
     msg.className = "msg err"; msg.textContent = "Network error: " + e.message; msg.style.display = "block";

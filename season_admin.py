@@ -34,6 +34,13 @@ Commands
   stage-week BUNDLES  import each event's bundle into that event's bank, then
                       create one window and, per event, keep all of the
                       bundle's questions, publish, and (--go-live) go live.
+  accounts FILE       create student and parent-volunteer logins from a
+                      "scioly-accounts/1" JSON file, roster students onto
+                      their events, give volunteers bank access (and with
+                      --assign-windows, this season's windows). New accounts
+                      get the school+season+username starting password and
+                      must change it at first login; the passwords are
+                      written to an owner-only CSV in the backups folder.
 
 BUNDLES is a zip of per-event bundle zips (the practice-test generator's
 weekly "all events" file), a single bundle zip, or a directory of them.
@@ -175,9 +182,9 @@ def _norm_loose(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", re.sub(r"\band\b", " ", s))
 
 
-def map_events(bundles: list[EventBundle]) -> list[tuple[EventBundle, str, bool]]:
-    """[(bundle, slug, exists)] — matched by name/slug/event_match, ignoring
-    case, punctuation and the word "and"; unmatched ones get a new slug."""
+def event_resolver():
+    """A function name -> this instance's event slug (or None), matching
+    name/slug/event_match while ignoring case, punctuation and the word "and"."""
     import events as events_mod
     exact: dict[str, str] = {}
     loose: dict[str, str] = {}
@@ -185,9 +192,16 @@ def map_events(bundles: list[EventBundle]) -> list[tuple[EventBundle, str, bool]
         for key in [ev.name, slug, *ev.event_match]:
             exact.setdefault(_norm(key), slug)
             loose.setdefault(_norm_loose(key), slug)
+    return lambda name: exact.get(_norm(name)) or loose.get(_norm_loose(name))
+
+
+def map_events(bundles: list[EventBundle]) -> list[tuple[EventBundle, str, bool]]:
+    """[(bundle, slug, exists)] — matched by event_resolver(); unmatched
+    ones get a new slug."""
+    resolve = event_resolver()
     out = []
     for b in bundles:
-        slug = exact.get(_norm(b.event_name)) or loose.get(_norm_loose(b.event_name))
+        slug = resolve(b.event_name)
         if slug:
             out.append((b, slug, True))
         else:
@@ -519,6 +533,236 @@ def cmd_stage_week(args, data_root: Path) -> None:
     say("\n" + ("Done." if args.apply else "Dry run — nothing changed. Add --apply to do it."))
 
 
+ACCOUNTS_FORMAT = "scioly-accounts/1"
+
+
+@dataclass
+class AccountRow:
+    role: str                     # "student" | "volunteer"
+    display_name: str
+    username: str                 # given, reused from a previous run, or generated
+    events: list[str]             # slugs; for a volunteer, their resulting bank access
+    existing: object = None       # auth.User, or None for a new account
+    changes: list[str] = field(default_factory=list)
+
+
+def _plan_accounts(doc: dict, season, reset_passwords: bool, replace: bool):
+    """Validate an accounts file against this instance and work out what each
+    row would do. Returns (rows, errors, notes); any error means nothing may
+    be written."""
+    import auth
+
+    errors: list[str] = []
+    notes: list[str] = []
+    if doc.get("format") != ACCOUNTS_FORMAT:
+        errors.append(f'"format" must be "{ACCOUNTS_FORMAT}" (got {doc.get("format")!r})')
+    resolve = event_resolver()
+    users = auth.load_users()
+    taken = set(users)            # usernames claimed so far, this file's rows included
+    in_file: set[str] = set()
+    rows: list[AccountRow] = []
+
+    for role, key in (("student", "students"), ("volunteer", "volunteers")):
+        entries = doc.get(key) or []
+        if not isinstance(entries, list):
+            errors.append(f'"{key}" must be a list')
+            continue
+        for i, e in enumerate(entries):
+            where = f"{key}[{i}]"
+            if not isinstance(e, dict):
+                errors.append(f"{where}: must be an object")
+                continue
+            name = str(e.get("display_name") or "").strip()
+            if not name:
+                errors.append(f"{where}: display_name is required")
+                continue
+            where = f"{where} ({name})"
+
+            slugs: list[str] = []
+            for ev in e.get("events") or []:
+                slug = resolve(ev)
+                if slug is None:
+                    errors.append(f"{where}: unknown event {ev!r}")
+                elif role == "student" and slug not in season.event_slugs:
+                    errors.append(f"{where}: event {ev!r} ({slug}) isn't in season "
+                                  f"{season.season_id}'s lineup")
+                elif slug not in slugs:
+                    slugs.append(slug)
+            if role == "student" and not slugs:
+                notes.append(f"{where}: no events — they can log in but will see no tests")
+
+            username = str(e.get("username") or "").strip().lower()
+            if username and not auth._USERNAME_RE.match(username):
+                errors.append(f"{where}: username {username!r} must be 2-32 lowercase letters, digits "
+                              f"or underscores, starting with a letter")
+                continue
+            if not username:
+                # Re-running the same file must find the account the last run
+                # made rather than minting janedoe2, so an existing account
+                # with the same role and display name counts as this person.
+                base = auth.slugify_username(name)
+                candidates = [base] + [f"{base}{n}"[:32] for n in range(2, 100)]
+                username = next((c for c in candidates
+                                 if c in users and c not in in_file and users[c].role == role
+                                 and users[c].display_name.strip().lower() == name.lower()), "")
+                username = username or next(c for c in candidates if c not in taken)
+            if username in in_file:
+                errors.append(f"{where}: username {username!r} is used more than once in the file")
+                continue
+            in_file.add(username)
+            taken.add(username)
+
+            existing = users.get(username)
+            row = AccountRow(role, name, username, slugs, existing)
+            if existing is None:
+                row.changes.append("create")
+            else:
+                if existing.role != role:
+                    errors.append(f"{where}: {username!r} already exists as a {existing.role}")
+                    continue
+                if existing.disabled:
+                    notes.append(f"{where}: {username!r} is disabled — left that way "
+                                 f"(re-enable it on the Club page)")
+                if reset_passwords:
+                    row.changes.append("reset password")
+                if not existing.display_name:
+                    row.changes.append("set name")
+            if role == "volunteer" and existing is not None:
+                current = list(existing.events)
+                row.events = slugs if replace else current + [s for s in slugs if s not in current]
+                diff = [f"+{s}" for s in row.events if s not in current] + \
+                       [f"-{s}" for s in current if s not in row.events]
+                if diff:
+                    row.changes.append("events " + " ".join(diff))
+            rows.append(row)
+    return rows, errors, notes
+
+
+def _write_credentials(data_root: Path, issued: list[tuple[AccountRow, str]]) -> Path:
+    import csv
+    dest_dir = data_root / ".season_admin_backups"
+    dest_dir.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Created owner-only from the start rather than chmod'ed afterwards, and
+    # never over an earlier run's file (two runs can share a second).
+    for n in range(1, 100):
+        dest = dest_dir / f"{stamp}-accounts-credentials{'' if n == 1 else f'-{n}'}.csv"
+        try:
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise SystemExit(f"couldn't pick a credentials filename in {dest_dir}")
+    with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["username", "display_name", "role", "starting_password", "events"])
+        for row, pw in issued:
+            w.writerow([row.username, row.display_name, row.role, pw, ";".join(row.events)])
+    return dest
+
+
+def cmd_accounts(args, data_root: Path) -> None:
+    import auth
+    import seasons as seasons_mod
+    import assessments as assessments_mod
+
+    try:
+        doc = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"can't read {args.file}: {e}")
+    if not isinstance(doc, dict):
+        raise SystemExit(f"{args.file}: the top level must be a JSON object")
+    file_season = str(doc.get("season") or "")
+    if args.season and file_season and file_season != args.season:
+        raise SystemExit(f"--season {args.season} doesn't match the file's season {file_season!r}")
+    season_id = args.season or file_season
+    season = seasons_mod.get_season(season_id) if season_id else None
+    if season is None:
+        raise SystemExit(f"no season {season_id!r} on this instance — run `reset` first")
+
+    rows, errors, notes = _plan_accounts(doc, season, args.reset_passwords, args.replace)
+    school = os.environ.get("SCHOOL_NAME", "")
+    if not school:
+        notes.append(f"SCHOOL_NAME isn't set in the instance's .env — starting passwords will be "
+                     f"just season+username (e.g. {season_id}janed)")
+
+    for role in ("student", "volunteer"):
+        mine = [r for r in rows if r.role == role]
+        say(f"\n{role.capitalize()}s ({len(mine)}):")
+        for r in mine:
+            say(f"  {r.username:20} {r.display_name[:28]:28} {', '.join(r.changes) or 'no change':30} "
+                f"{' '.join(r.events)}")
+
+    # Rosters: only added to, unless --replace makes the file the whole
+    # roster for every event in the season's lineup.
+    students = [r for r in rows if r.role == "student"]
+    new_rosters: dict[str, list[str]] = {}
+    say(f"\nRosters, season {season_id} ({'replace' if args.replace else 'add only'}):")
+    for slug in season.event_slugs:
+        current = seasons_mod.get_roster(season_id, slug)
+        wanted = [r.username for r in students if slug in r.events]
+        target = wanted if args.replace else current + [u for u in wanted if u not in current]
+        added = [u for u in target if u not in current]
+        removed = [u for u in current if u not in target]
+        if added or removed:
+            new_rosters[slug] = target
+            say(f"  {slug:28} {len(target):3} student(s)  +{len(added)} -{len(removed)}"
+                + (f"  removing: {', '.join(removed)}" if removed else ""))
+
+    window_updates: list[tuple[object, str, list[str]]] = []
+    if args.assign_windows:
+        windows = [w for w in assessments_mod.windows_for_season(season_id) if not w.archived]
+        volunteers = [r for r in rows if r.role == "volunteer"]
+        say(f"\nVolunteer assignments ({len(windows)} window(s)):")
+        for w in windows:
+            for slug in w.event_slugs:
+                current = list(w.assignments.get(slug) or [])
+                add = [r.username for r in volunteers if slug in r.events and r.username not in current]
+                if add:
+                    window_updates.append((w, slug, current + add))
+                    say(f"  {w.label or w.window_id:20} {slug:28} +{', '.join(add)}")
+
+    if notes:
+        say("\nNotes:")
+        for n in notes:
+            say(f"  - {n}")
+    if errors:
+        say("\nErrors — nothing was changed:")
+        for e in errors:
+            say(f"  ! {e}")
+        raise SystemExit(1)
+    if not args.apply:
+        say("\nDry run — nothing changed. Add --apply to do it.")
+        return
+
+    say(f"\nBackup: {backup_state(data_root, 'accounts')}")
+    issued: list[tuple[AccountRow, str]] = []
+    for r in rows:
+        pw = auth.generate_password(school, season_id, r.username)
+        if r.existing is None:
+            auth.create_user(r.username, pw, r.role,
+                             events=r.events if r.role == "volunteer" else None,
+                             display_name=r.display_name, must_change_password=True)
+            issued.append((r, pw))
+            continue
+        if args.reset_passwords:
+            auth.set_password_by_operator(r.username, pw)
+            issued.append((r, pw))
+        if "set name" in r.changes:
+            auth.set_display_name(r.username, r.display_name)
+        if r.role == "volunteer" and tuple(r.events) != tuple(r.existing.events):
+            auth.update_user(r.username, events=r.events)
+    for slug, target in new_rosters.items():
+        seasons_mod.set_roster(season_id, slug, target)
+    for w, slug, usernames in window_updates:
+        assessments_mod.update_window_assignments(w.window_id, slug, usernames)
+    if issued:
+        say(f"Starting passwords for {len(issued)} account(s): {_write_credentials(data_root, issued)}")
+        say("  (owner-only file; each of these must choose their own password at first login)")
+    say("\nDone.")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -559,6 +803,18 @@ def main(argv=None) -> None:
     p.add_argument("--no-validate", action="store_true",
                    help="don't mark imported questions validated")
     p.add_argument("--apply", action="store_true")
+
+    p = sub.add_parser("accounts")
+    p.add_argument("file", help=f'accounts JSON ("format": "{ACCOUNTS_FORMAT}")')
+    p.add_argument("--season", help="defaults to the file's \"season\"")
+    p.add_argument("--replace", action="store_true",
+                   help="make the file the whole roster for every season event, and each listed "
+                        "volunteer's whole event access (default: only add)")
+    p.add_argument("--reset-passwords", action="store_true",
+                   help="also give existing listed accounts a fresh starting password")
+    p.add_argument("--assign-windows", action="store_true",
+                   help="add each volunteer to this season's windows for their events")
+    p.add_argument("--apply", action="store_true")
     args = ap.parse_args(argv)
 
     if args.instance:
@@ -586,7 +842,8 @@ def main(argv=None) -> None:
     sys.path.insert(0, str(HERE))
     import events as events_mod
     data_root = Path(events_mod.DATA_ROOT)
-    {"inspect": cmd_inspect, "reset": cmd_reset, "stage-week": cmd_stage_week}[args.cmd](args, data_root)
+    {"inspect": cmd_inspect, "reset": cmd_reset, "stage-week": cmd_stage_week,
+     "accounts": cmd_accounts}[args.cmd](args, data_root)
 
 
 if __name__ == "__main__":

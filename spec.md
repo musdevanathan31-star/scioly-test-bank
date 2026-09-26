@@ -341,7 +341,22 @@ Safety: dry run unless `--apply`. With `--apply`, the tool refuses to run while 
   - creates or reuses the window and, per event exam assessment still `preparing`: `update_assessment_kept` (every bundle question, bundle order, 1 point), `publish_assessment`, and with `--go-live` `go_live_assessment`
   - re-runs are no-ops: `bundle_import` skips questions whose `(import_meta.bundle, import_meta.id)` already exist, and returns them under `already_imported` / `bundle_questions`; published/live tests are left alone
 
-Event mapping (`map_events`): bundle `event` names are matched against each event's name, slug and `event_match`, ignoring case and punctuation, then again ignoring the word "and" ("Anatomy and Physiology" → `anatomy_physiology`). Unmatched names get a new slug.
+- `accounts FILE [--season S] [--replace] [--reset-passwords] [--assign-windows]`: student and parent-volunteer logins from a JSON file:
+  ```json
+  {"format": "scioly-accounts/1", "season": "2027",
+   "students":   [{"display_name": "Jane Doe", "username": "janed", "events": ["Anatomy and Physiology", "codebusters"]}],
+   "volunteers": [{"display_name": "Pat Doe",  "username": "patd",  "events": ["Anatomy and Physiology"]}]}
+  ```
+  - `username` is optional (derived as in the CSV import; a re-run reuses an existing account with the same role and display name instead of minting `janedoe2`). `events` are names or slugs, resolved like bundle events (below); a student's must be in the season lineup. There are no passwords in the file.
+  - validates the whole file first; any error (unknown event, bad/duplicate username, existing account with another role) changes nothing
+  - new accounts get `auth.generate_password(SCHOOL_NAME, season, username)` and `must_change_password=True`; `--reset-passwords` does the same to existing listed accounts (`auth.set_password_by_operator`). Other existing passwords are untouched. Issued passwords go to an owner-only (0600) `<utc>-accounts-credentials.csv` next to the backups.
+  - students are added to their events' rosters; volunteers' `events` (bank access) are added to. `--replace` makes the file the whole roster of every season event and each listed volunteer's whole access.
+  - `--assign-windows` adds each volunteer to the season's unarchived windows' `assignments` for their events.
+  - an existing account's display name is filled in only if it has none; disabled accounts stay disabled.
+
+Forced first-login password change: `auth.User.must_change_password` (persisted in `auth_users.json`) is set by `accounts` and by the Club page CSV import (which now also stores `display_name`). While it's set, `review_app._require_login` sends every page request to `/settings` (a banner explains) and answers every other request with a JSON 403 `{"must_change_password": true}`. Only `settings_page`, `api_change_password`, `api_set_display_name`, `logout` and the badge pollers are exempt. `change_own_password` clears the flag and, while it's set, refuses a new password equal to the current one.
+
+Event mapping (`map_events`, via `event_resolver`): bundle `event` names are matched against each event's name, slug and `event_match`, ignoring case and punctuation, then again ignoring the word "and" ("Anatomy and Physiology" → `anatomy_physiology`). Unmatched names get a new slug.
 
 Supporting changes: `bundle_import` gained `keep_topics`, `dedup` and exact re-import detection (`_already_imported`), keeps `level`/`chapter` in `import_meta`, and reports `already_imported`; `build_question_bank.next_global_q_number` (moved from `review_app`, which now delegates) so the CLI needn't import the web app; `events.extend_event_topics(slug, topics)`.
 

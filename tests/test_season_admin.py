@@ -231,3 +231,106 @@ def test_instance_guards(tmp_path, monkeypatch):
                            "--events-from", "nowhere.zip", "--apply"])
     with pytest.raises(SystemExit, match="no instance"):
         season_admin.main(["--instance", "chs", "--conf", str(conf), "inspect"])
+
+
+# ---------------------------------------------------------------------------
+# accounts: student + volunteer logins from a JSON file
+# ---------------------------------------------------------------------------
+
+def _accounts_file(tmp_path, **doc):
+    body = {"format": "scioly-accounts/1", "season": "2027", "students": [], "volunteers": []}
+    body.update(doc)
+    p = tmp_path / f"accounts{len(list(tmp_path.glob('accounts*.json')))}.json"
+    p.write_text(json.dumps(body), encoding="utf-8")
+    return str(p)
+
+
+@pytest.fixture()
+def season_2027(env, monkeypatch):
+    run, week, root, bqb = env
+    monkeypatch.setenv("SCHOOL_NAME", "NCMS")
+    run("reset", "--season", "2027", "--events-from", str(week), "--apply")
+    return env
+
+
+def test_accounts_create_roster_and_rerun(season_2027, tmp_path, capsys):
+    run, week, root, bqb = season_2027
+    import auth, seasons
+    f = _accounts_file(tmp_path, students=[
+        {"display_name": "Jane Doe", "events": ["Anatomy & Physiology", "circuit lab"]},
+        {"display_name": "Sam Lee", "username": "saml", "events": ["botany"]},
+    ], volunteers=[{"display_name": "Pat Doe", "username": "patd", "events": ["Anatomy and Physiology"]}])
+
+    before = {p: p.read_bytes() for p in root.glob("*.json")}
+    run("accounts", f)                                            # dry run
+    assert "Dry run" in capsys.readouterr().out
+    assert {p: p.read_bytes() for p in root.glob("*.json")} == before
+
+    run("accounts", f, "--apply")
+    out = capsys.readouterr().out
+    jane = auth.get_user("janedoe")
+    assert jane.role == "student" and jane.display_name == "Jane Doe" and jane.must_change_password
+    assert auth.verify_login("janedoe", "ncms2027janedoe") is not None
+    assert auth.get_user("patd").events == ("anatomy_physiology",)
+    assert auth.get_user("patd").role == "volunteer"
+    assert seasons.get_roster("2027", "anatomy_physiology") == ["janedoe"]
+    assert seasons.get_roster("2027", "circuit_lab") == ["janedoe"]    # reset didn't copy rosters
+    assert seasons.get_roster("2027", "botany") == ["saml"]
+    [creds] = root.joinpath(".season_admin_backups").glob("*-accounts-credentials.csv")
+    assert "ncms2027saml" in creds.read_text(encoding="utf-8")
+    assert "Starting passwords for 3" in out
+
+    # Same file again: finds janedoe (no janedoe2), touches nothing.
+    auth.change_own_password("janedoe", "ncms2027janedoe", "janeschoice1")
+    run("accounts", f, "--apply")
+    out = capsys.readouterr().out
+    assert "janedoe2" not in out and auth.get_user("janedoe2") is None
+    assert auth.verify_login("janedoe", "janeschoice1") is not None
+    assert "Starting passwords" not in out
+
+
+def test_accounts_errors_block_everything(season_2027, tmp_path, capsys):
+    run, week, root, bqb = season_2027
+    import auth
+    f = _accounts_file(tmp_path, students=[
+        {"display_name": "Ok Kid", "events": ["botany"]},
+        {"display_name": "Bad Event", "events": ["Underwater Basket Weaving"]},
+        {"display_name": "Clash", "username": "stu1x", "events": []},
+        {"display_name": "Clash Again", "username": "stu1x", "events": []},
+    ], volunteers=[{"display_name": "Wrong Role", "username": "stu1", "events": []}])
+    with pytest.raises(SystemExit):
+        run("accounts", f, "--apply")
+    out = capsys.readouterr().out
+    assert "unknown event 'Underwater Basket Weaving'" in out
+    assert "more than once" in out and "already exists as a student" in out
+    assert auth.get_user("okkid") is None
+
+
+def test_accounts_replace_and_window_assignment(season_2027, tmp_path):
+    run, week, root, bqb = season_2027
+    import auth, seasons, assessments
+    run("stage-week", str(week), *STAGE, "--apply")
+    run("accounts", _accounts_file(tmp_path, students=[
+        {"display_name": "A Kid", "username": "akid", "events": ["botany", "circuit_lab"]}],
+        volunteers=[{"display_name": "V One", "username": "vone", "events": ["botany"]}]), "--apply")
+    run("accounts", _accounts_file(tmp_path, students=[
+        {"display_name": "B Kid", "username": "bkid", "events": ["botany"]}],
+        volunteers=[{"display_name": "V One", "username": "vone", "events": ["circuit_lab"]}]),
+        "--apply", "--replace", "--assign-windows")
+    assert seasons.get_roster("2027", "botany") == ["bkid"]
+    assert seasons.get_roster("2027", "circuit_lab") == []
+    assert auth.get_user("vone").events == ("circuit_lab",)
+    [w] = assessments.windows_for_season("2027")
+    assert w.assignments.get("circuit_lab") == ["vone"] and not w.assignments.get("botany")
+
+
+def test_accounts_reset_passwords(season_2027, tmp_path):
+    run, week, root, bqb = season_2027
+    import auth
+    f = _accounts_file(tmp_path, students=[{"display_name": "Forgetful", "username": "forg",
+                                            "events": ["botany"]}])
+    run("accounts", f, "--apply")
+    auth.change_own_password("forg", "ncms2027forg", "forgotthis1")
+    run("accounts", f, "--apply", "--reset-passwords")
+    user = auth.get_user("forg")
+    assert user.must_change_password and auth.verify_login("forg", "ncms2027forg") is not None

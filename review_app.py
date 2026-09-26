@@ -177,6 +177,13 @@ _PUBLIC_ENDPOINTS = {"login", "favicon", "static"}
 # these exempt, "active" means the user actually did something.
 _PRESENCE_EXEMPT_ENDPOINTS = {"api_jobs_active_count", "api_presence"}
 
+# What a user flagged must_change_password can still reach (see
+# _require_login): the settings page and its two account endpoints, logout,
+# and the badge pollers the settings page itself runs.
+_PASSWORD_CHANGE_ALLOWED_ENDPOINTS = {
+    "settings_page", "api_change_password", "api_set_display_name", "logout",
+} | _PRESENCE_EXEMPT_ENDPOINTS
+
 
 @app.before_request
 def _require_login():
@@ -192,6 +199,14 @@ def _require_login():
     g.user = user
     if request.endpoint not in _PRESENCE_EXEMPT_ENDPOINTS:
         presence.touch(user.username, user.role)
+    if user.must_change_password and request.endpoint not in _PASSWORD_CHANGE_ALLOWED_ENDPOINTS:
+        # Operator-issued starting passwords follow a guessable formula
+        # (auth.generate_password), so nothing else is reachable until the
+        # user picks their own. Pages redirect to the form; API calls get a
+        # JSON 403 so a fetch() caller sees a reason rather than HTML.
+        if request.method == "GET" and "/api/" not in request.path:
+            return redirect(url_for("settings_page"))
+        return jsonify({"error": "change your password first", "must_change_password": True}), 403
     return None
 
 

@@ -54,3 +54,8 @@ large test packets/
 
 # Scratch/staging output — never source, never committed
 _scratch/
+
+# Account-setup inputs/outputs for season_admin.py `accounts` — contain
+# students' names and starting passwords; never commit.
+*accounts*.json
+*credentials*.csv

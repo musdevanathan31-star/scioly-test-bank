@@ -403,6 +403,31 @@ Run each command once without `--apply` first and read what it says it will do.
 - **`stage-week`** imports each event's questions with their topics as written, adds those topics to the event, creates the window and, per event, keeps all of that event's questions, publishes and (`--go-live`) goes live. Running it again with the same zip does nothing new, and a window label that already exists with different times is refused before anything changes.
 - Every `--apply` run first saves a backup of all state files to `<data root>/.season_admin_backups/`.
 
+#### Creating student and parent-volunteer logins
+
+Put the people in a JSON file (spec.md §4c has the full format; a chat session can generate it from a sign-up sheet):
+
+```json
+{"format": "scioly-accounts/1", "season": "2027",
+ "students":   [{"display_name": "Jane Doe", "username": "janed", "events": ["Anatomy and Physiology", "Codebusters"]}],
+ "volunteers": [{"display_name": "Pat Doe",  "username": "patd",  "events": ["Anatomy and Physiology"]}]}
+```
+
+```
+scp accounts_2027.json <server>:/tmp/
+sudo -u qbank /opt/qbank/venv/bin/python /opt/qbank/app/season_admin.py --instance ncms accounts /tmp/accounts_2027.json
+systemctl stop qbank.service
+sudo -u qbank /opt/qbank/venv/bin/python /opt/qbank/app/season_admin.py --instance ncms accounts /tmp/accounts_2027.json --assign-windows --apply
+systemctl start qbank.service
+rm /tmp/accounts_2027.json
+```
+
+- Event names can be written the way people say them; the dry run lists anything it can't match, and nothing is changed until the whole file is clean.
+- Everyone new gets the starting password **school + season + username**, lowercase (e.g. `ncms2027janed`; `SCHOOL_NAME` comes from the instance's `.env`). The first time they log in they're taken straight to Settings and can't do anything else until they choose their own password.
+- The run prints where it saved a CSV of usernames and starting passwords (readable only by the instance user). Use it for handout slips, then delete it.
+- Running the same file again is safe: existing accounts keep their passwords and students are only added to rosters. `--replace` makes the file the complete roster (and each listed volunteer's complete event access). `--reset-passwords` gives the listed accounts the starting password again, for a student who's forgotten theirs. `--assign-windows` also lets volunteers build their events' tests in the windows that already exist.
+- The JSON file and the credentials CSV contain students' names, so keep them out of git.
+
 ### Taking or building a practice quiz
 
 Click **Quiz** from an event's page, set your filters (topic/count/type/etc. — "Matching only", "True/False only" and "Numerical only" are among the type options), and **▶ Start quiz**. **Skip**/**Submit**/**Next →** move through it; **↺ Another quiz** repeats with the same settings.

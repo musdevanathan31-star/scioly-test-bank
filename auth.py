@@ -64,6 +64,12 @@ class User:
     # an identifier anywhere data is keyed or audited (lastEditedBy etc.
     # keep storing `username`, which doesn't change if this does).
     display_name: str = ""
+    # Set on accounts an operator created with a known starting password
+    # (season_admin.py's `accounts` command, the Club page's CSV import) —
+    # those passwords follow a guessable formula, so review_app's
+    # _require_login confines the user to the change-password form until
+    # they pick their own. Cleared only by change_own_password().
+    must_change_password: bool = False
 
     def can_access(self, slug: str) -> bool:
         return self.role == "coach" or slug in self.events
@@ -87,6 +93,7 @@ def _load_unlocked() -> dict[str, User]:
                 events=tuple(d.get("events") or ()),
                 disabled=bool(d.get("disabled", False)),
                 display_name=d.get("display_name", ""),
+                must_change_password=bool(d.get("must_change_password", False)),
             )
         except Exception:
             continue
@@ -102,6 +109,7 @@ def _save_unlocked(users: dict[str, User]) -> None:
             "events": list(u.events),
             "disabled": u.disabled,
             "display_name": u.display_name,
+            "must_change_password": u.must_change_password,
         }
         for u in users.values()
     }
@@ -178,6 +186,8 @@ def create_user(
     password: str,
     role: str,
     events: list[str] | None = None,
+    display_name: str = "",
+    must_change_password: bool = False,
 ) -> User:
     username = (username or "").strip().lower()
     if not _USERNAME_RE.match(username):
@@ -197,6 +207,8 @@ def create_user(
             password_hash=generate_password_hash(password),
             role=role,
             events=tuple(events or ()),
+            display_name=(display_name or "").strip()[:80],
+            must_change_password=must_change_password,
         )
         users[username] = user
     return user
@@ -279,7 +291,8 @@ def create_users_bulk(rows: list[dict], season_id: str = "") -> dict:
         if not password:
             password = generate_password(school, season_id, username)
         try:
-            create_user(username, password, role="student")
+            create_user(username, password, role="student",
+                        display_name=display_name, must_change_password=True)
         except ValueError as e:
             errors.append({"row": i, "reason": str(e)})
             continue
@@ -302,13 +315,11 @@ def update_user(
         existing = users.get(username)
         if existing is None:
             raise ValueError(f"unknown user {username!r}")
-        updated = User(
-            username=existing.username,
-            password_hash=existing.password_hash,
+        updated = replace(
+            existing,
             role=role if role is not None else existing.role,
             events=tuple(events) if events is not None else existing.events,
             disabled=disabled if disabled is not None else existing.disabled,
-            display_name=existing.display_name,
         )
         users[username] = updated
     return updated
@@ -359,6 +370,10 @@ def change_own_password(username: str, current_password: str, new_password: str)
         raise WrongPasswordError("current password is incorrect")
     if not new_password or len(new_password) < 8:
         raise ValueError("new password must be at least 8 characters")
+    if existing.must_change_password and new_password == current_password:
+        # The starting password is formula-derived and guessable; keeping
+        # it would defeat the point of the forced change.
+        raise ValueError("choose a password different from the one you were given")
     new_hash = generate_password_hash(new_password)
 
     with _users_transaction() as users:
@@ -372,7 +387,7 @@ def change_own_password(username: str, current_password: str, new_password: str)
             raise WrongPasswordError(
                 "password was changed elsewhere while this request was in "
                 "flight; try again")
-        updated = replace(current, password_hash=new_hash)
+        updated = replace(current, password_hash=new_hash, must_change_password=False)
         users[username] = updated
     return updated
 
@@ -385,14 +400,27 @@ def set_display_name(username: str, display_name: str) -> User:
         existing = users.get(username)
         if existing is None:
             raise ValueError(f"unknown user {username!r}")
-        updated = User(
-            username=existing.username,
-            password_hash=existing.password_hash,
-            role=existing.role,
-            events=existing.events,
-            disabled=existing.disabled,
-            display_name=(display_name or "").strip()[:80],
-        )
+        updated = replace(existing, display_name=(display_name or "").strip()[:80])
+        users[username] = updated
+    return updated
+
+
+def set_password_by_operator(username: str, password: str,
+                             must_change_password: bool = True) -> User:
+    """Operator-side password reset (season_admin.py `accounts
+    --reset-passwords`). No current-password check — only reachable from a
+    CLI run on the server, never from a web route. Sets the forced-change
+    flag by default, since an operator-chosen password is one the user
+    didn't pick."""
+    if not password or len(password) < 8:
+        raise ValueError("password must be at least 8 characters")
+    new_hash = generate_password_hash(password)
+    with _users_transaction() as users:
+        existing = users.get(username)
+        if existing is None:
+            raise ValueError(f"unknown user {username!r}")
+        updated = replace(existing, password_hash=new_hash,
+                          must_change_password=must_change_password)
         users[username] = updated
     return updated
 
