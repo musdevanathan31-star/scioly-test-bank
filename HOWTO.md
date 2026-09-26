@@ -149,6 +149,21 @@ Switching type is undo-able like any other destructive edit here — **↶ Undo*
 
 A True/False question behaves like MCQ everywhere else in the app: it auto-grades on a season assessment (no manual grading needed), shows up in Browse under its own **T/F** filter/badge, and exports to markdown/CSV/PDF/Anki like any other type — just with no lettered choices to print.
 
+### Adding a worked solution
+
+Every card on the Extract and Browse pages has a **Solution** box under the answer. Write the working there. Students see it after they answer in the quiz and when their results are released, never during a test.
+
+Write one step per line, numbered, with math between dollar signs:
+
+```
+1. Speed is distance over time: $v = \frac{d}{t}$
+2. Substitute:
+$$v = \frac{12.6\ \text{m}}{3.00\ \text{s}}$$
+3. **Result:** $v = 4.20\ \text{m/s}$
+```
+
+The preview under the box shows how it will look. It also prints under each answer in the Key PDF, with the math written out as plain text (`v = (12.6 m)/(3.00 s)`).
+
 ### Making a numerical question (value + unit)
 
 Use **NUM** for any question whose answer is a measured or calculated amount: a speed, a resistance, a charge, a fraction. Students can answer in any unit of the right kind, and it's graded automatically.
@@ -658,6 +673,8 @@ If your coach has given you a separate window (a makeup or an extension), every 
 ### Taking a test
 
 Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.
+
+After you answer a quiz question, its **Solution** (the worked steps) appears under the feedback when the question has one. Released test results show it under each question too.
 
 **Numerical questions** have two boxes: the **value** and the **unit**. Use any unit that fits (`km/h` and `m/s` both work for a speed); the unit box suggests some. Write the value as `4.2`, `3.0e8`, `3.0 × 10^8` or `3/4`. If the unit box shows ⚠, it doesn't recognise the unit or the unit can't be right for this question. Always include the unit: a right number without one only earns half credit.
 

@@ -2603,7 +2603,7 @@ def apply_annotations(questions: list[dict], ann: dict) -> list[dict]:
             for k in ("text", "choices", "answer", "topic", "focus", "page",
                       "extra_pages", "context_id", "image_descriptions",
                       "lastEditedBy", "lastEditedDateTime", "validation",
-                      "qtype", "matching", "difficulty", "numeric"):
+                      "qtype", "matching", "difficulty", "numeric", "explanation"):
                 if k in ov:
                     # "difficulty" is the one override field with a
                     # meaningful "clear" state: unrated is the *absence*
@@ -2749,6 +2749,11 @@ def _render_question_block(lines: list[str], q: dict, i: int) -> None:
         ans = f"{units.format_key(q['numeric'])} ({q['numeric'].get('sig_figs')} s.f.)"
     if ans:
         lines.append(f"**Answer:** {ans}")
+        lines.append("")
+    if (q.get("explanation") or "").strip():
+        lines.append("**Solution:**")
+        lines.append("")
+        lines.append(q["explanation"].strip())
         lines.append("")
     v = q.get("validation") or {}
     if v and v.get("status") in ("correct", "incorrect", "uncertain"):
@@ -2988,7 +2993,7 @@ def install_graceful_shutdown() -> None:
 
 # Latest schema version. Older state files are migrated forward on load. Bump
 # the constant and add a migrate_to_N entry when a breaking change ships.
-STATE_SCHEMA_VERSION = 5
+STATE_SCHEMA_VERSION = 6
 
 
 def next_global_q_number(state: dict) -> int:
@@ -3005,6 +3010,25 @@ def next_global_q_number(state: dict) -> int:
             except (ValueError, TypeError):
                 continue
     return (max(used) + 1) if used else 1
+
+
+_IMPORT_PLACEHOLDER_RATIONALES = {"Marked validated on import."}
+
+
+def _move_import_rationales_to_explanation(state: dict) -> int:
+    moved = 0
+    for qs in (state.get("questions") or {}).values():
+        for q in qs or []:
+            v = q.get("validation")
+            if not isinstance(v, dict) or (q.get("explanation") or "").strip():
+                continue
+            from_import = v.get("generated") or v.get("model") == "import"
+            text = (v.get("rationale") or "").strip()
+            if from_import and text and text not in _IMPORT_PLACEHOLDER_RATIONALES:
+                q["explanation"] = text
+                v["rationale"] = ""
+                moved += 1
+    return moved
 
 
 def _promote_imported_numericals(state: dict) -> int:
@@ -3061,6 +3085,12 @@ def _migrate_state(state: dict) -> dict:
     # sig_figs someone set by hand to anything else is left alone.
     if v < 5:
         _upgrade_whole_number_sig_figs(state)
+    # v5 → v6: questions have their own `explanation`. Move the worked
+    # solutions that imports and generation used to park in
+    # validation.rationale; a rationale written by an actual validation (AI
+    # or human) is a verdict, not a solution, and stays where it is.
+    if v < 6:
+        _move_import_rationales_to_explanation(state)
     state["_schema_version"] = STATE_SCHEMA_VERSION
     return state
 

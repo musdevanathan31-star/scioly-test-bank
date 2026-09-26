@@ -73,6 +73,7 @@ import archive_ops  # noqa: E402
 import archive_import  # noqa: E402
 import bundle_import  # noqa: E402
 import units  # noqa: E402
+import explanations  # noqa: E402
 import llm_providers  # noqa: E402
 import auth  # noqa: E402
 import seasons  # noqa: E402
@@ -1928,7 +1929,7 @@ def api_take_assessment(assessment_id):
     sanitized = []
     for q in ordered:
         clean = {k: v for k, v in q.items()
-                 if k not in ("correct_answer", "correct_numeric", "source_question_ref")}
+                 if k not in ("correct_answer", "correct_numeric", "explanation", "source_question_ref")}
         if clean.get("qtype") == "matching" and "matching" in clean:
             m = dict(clean["matching"])
             m.pop("pairs", None)
@@ -2008,6 +2009,33 @@ def assessment_grading_page(assessment_id):
                                 event_name=ev.name if ev else test.event_slug)
     return render_template("assessment_grading.html", assessment_id=assessment_id,
                             event_name=ev.name if ev else test.event_slug)
+
+
+def _explanation_flowables(text: str, base_style) -> list:
+    """A question's worked explanation as reportlab paragraphs for a PDF
+    key: list items and display equations indented, math converted to
+    readable text (explanations.to_pdf_paragraphs). [] when there is none."""
+    if not (text or "").strip():
+        return []
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph
+    para = ParagraphStyle("expl", parent=base_style, fontSize=max(8, base_style.fontSize - 1),
+                          leading=max(10, base_style.leading - 1), leftIndent=base_style.leftIndent + 14,
+                          textColor=colors.HexColor("#333333"), spaceBefore=1, spaceAfter=1)
+    item = ParagraphStyle("expl_item", parent=para, leftIndent=para.leftIndent + 12, firstLineIndent=-12)
+    math = ParagraphStyle("expl_math", parent=para, leftIndent=para.leftIndent + 24)
+    out = []
+    for kind, markup in explanations.to_pdf_paragraphs(text):
+        try:
+            out.append(Paragraph(markup, {"item": item, "math": math}.get(kind, para)))
+        except ValueError:
+            # Markup reportlab can't parse (odd characters in source text):
+            # fall back to the plain text rather than failing the export.
+            import html as _html
+            import re as _re
+            out.append(Paragraph(_html.escape(_re.sub(r"<[^>]+>", "", markup)), para))
+    return out
 
 
 def _assessment_pdf(snapshot: list, title: str, subtitle: str,
@@ -2111,7 +2139,7 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
     story.append(Spacer(1, 0.18 * inch))
 
     seen_contexts: set = set()
-    answer_lines: list[str] = []
+    answer_lines: list[tuple[str, str]] = []   # (answer line, explanation)
     for i, q in enumerate(snapshot, start=1):
         ctx, ctx_id = q.get("_context"), q.get("context_id")
         if ctx and ctx_id and ctx_id not in seen_contexts:
@@ -2161,7 +2189,7 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
                 # Free response on the student copy needs somewhere to write.
                 block.append(Spacer(1, 0.55 * inch))
 
-        answer_lines.append(f"{i}. {answer}")
+        answer_lines.append((f"{i}. {answer}", q.get("explanation") or ""))
         block.append(Spacer(1, 8))
         # KeepTogether so a question, its figure and its choices are never
         # split across a page break -- the one formatting rule that actually
@@ -2171,8 +2199,9 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
     if layout == "key":
         story.append(PageBreak())
         story.append(Paragraph("Answer Key", h2))
-        for line in answer_lines:
+        for line, explanation in answer_lines:
             story.append(Paragraph(line, answer_style))
+            story.extend(_explanation_flowables(explanation, answer_style))
 
     total = sum(float(q.get("max_points") or 0) for q in snapshot)
     story.append(Spacer(1, 0.2 * inch))
@@ -3138,6 +3167,8 @@ def api_save(event_slug, pdfname):
                 clean_q["answer"] = units.format_key(clean_q["numeric"])
             except units.UnitError:
                 pass
+        if (q.get("explanation") or "").strip():
+            clean_q["explanation"] = explanations.clean(q["explanation"])
         # difficulty: additive, optional. Absent/None means unrated -- don't
         # set the key at all (matches apply_annotations' "clear pops the
         # key" semantics rather than storing a literal None).
@@ -4885,6 +4916,13 @@ def _apply_question_field_edits(q: dict, data: dict) -> list[str]:
         if k in data:
             q[k] = (data[k] or "").strip()
             edited_fields.append(k)
+    if "explanation" in data:
+        text = explanations.clean(data["explanation"])
+        if text:
+            q["explanation"] = text
+        else:
+            q.pop("explanation", None)
+        edited_fields.append("explanation")
     if "choices" in data and isinstance(data["choices"], list):
         q["choices"] = [{"letter": (c.get("letter") or "").upper()[:1],
                          "text": (c.get("text") or "").strip()}
@@ -5704,7 +5742,7 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
                                    borderWidth=1, borderPadding=8, spaceAfter=8)
 
     n = 0  # global counter for cross-referencing with the answer key
-    answer_lines: list[str] = []
+    answer_lines: list[tuple[str, str]] = []   # (answer line, explanation)
     for topic in sorted(by_topic.keys()):
         story.append(Paragraph(_e(topic), h2))
         # Cluster case-study questions so the shared passage prints once,
@@ -5768,15 +5806,17 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
                     # Inside the KeepTogether block, so an answer can never
                     # be orphaned onto the next page away from its question.
                     block.append(Paragraph(f"<b>Answer:</b> {answer_text}", answer_style))
+                    block.extend(_explanation_flowables(q.get("explanation") or "", answer_style))
                 block.append(Spacer(1, 6))
                 story.append(KeepTogether(block))
-                answer_lines.append(f"Q{n}: {answer_text}")
+                answer_lines.append((f"Q{n}: {answer_text}", q.get("explanation") or ""))
 
     if layout == "key":
         story.append(PageBreak())
         story.append(Paragraph("Answer Key", h1))
-        for line in answer_lines:
+        for line, explanation in answer_lines:
             story.append(Paragraph(line, body))
+            story.extend(_explanation_flowables(explanation, body))
 
     doc.build(story)
     data = buf.getvalue()
@@ -6950,6 +6990,17 @@ _n_migrated = assessments.migrate_legacy_responses()
 if _n_migrated:
     print(f"[startup] migrated {_n_migrated} response(s) from legacy assessment_responses.json "
           f"to per-test/per-student files")
+
+# One-time, idempotent: tests published before questions had worked
+# explanations get them in their frozen snapshots (display-only; see
+# assessments.backfill_snapshot_explanations). No-op once every snapshot
+# entry has the key.
+try:
+    _n_expl = assessments.backfill_snapshot_explanations()
+    if _n_expl:
+        print(f"[startup] added worked explanations to {_n_expl} published question(s)")
+except Exception as _e:  # never let a display backfill stop the app starting
+    print(f"[startup] explanation backfill skipped: {_e}")
 
 
 def main() -> None:

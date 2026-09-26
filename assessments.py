@@ -692,6 +692,9 @@ def _snapshot_one_question(q: dict, bucket: str, max_points: float) -> dict:
         "image_descriptions": dict(q.get("image_descriptions") or {}),
         "context_id": q.get("context_id"),
         "source_question_ref": {"bucket": bucket, "number": q.get("number")},
+        # Worked solution. Frozen with the rest of the key and, like the key,
+        # stripped from the take page (api_take_assessment's sanitiser).
+        "explanation": (q.get("explanation") or "").strip(),
     }
     if qtype == "matching":
         entry["matching"] = q.get("matching") or {"left": [], "right": [], "pairs": {}}
@@ -884,6 +887,12 @@ def _render_question(q: dict, index: int, *, include_answers: bool) -> list[str]
     return lines
 
 
+def _with_explanation(q: dict, lines: list[str], include_answers: bool) -> list[str]:
+    if include_answers and (q.get("explanation") or "").strip():
+        lines += ["**Solution:**", "", q["explanation"].strip(), ""]
+    return lines
+
+
 def render_questions_markdown(snapshot: list, *, title: str, subtitle: str = "",
                               answers: str = "none") -> str:
     """Render questions as markdown.
@@ -915,7 +924,8 @@ def render_questions_markdown(snapshot: list, *, title: str, subtitle: str = "",
             for line in (ctx.get("text") or "").splitlines():
                 out.append(f"> {line}")
             out.append("")
-        out.extend(_render_question(q, i, include_answers=(answers == "inline")))
+        out.extend(_with_explanation(q, _render_question(q, i, include_answers=(answers == "inline")),
+                                     answers == "inline"))
 
     if answers == "section":
         out.extend(["---", "", "## Answer key", ""])
@@ -926,6 +936,10 @@ def render_questions_markdown(snapshot: list, *, title: str, subtitle: str = "",
             else:
                 val = q.get("correct_answer") or ""
             out.append(f"{i}. {val or '(no key recorded)'}")
+            # Indented under its list item so the solution stays attached to
+            # its answer in any markdown renderer.
+            for line in (q.get("explanation") or "").strip().splitlines():
+                out.append(f"   {line}" if line.strip() else "")
         out.append("")
 
     total = sum(float(q.get("max_points") or 0) for q in snapshot)
@@ -1223,6 +1237,52 @@ def migrate_test_to_assessment_names() -> list[str]:
             old.rename(new)
             moved.append(f"{old.name} -> {new.name}")
     return moved
+
+
+def backfill_snapshot_explanations() -> int:
+    """One-time, idempotent: give snapshot entries frozen before questions
+    had an `explanation` field (2026-09-25) the one their bank question has
+    now, found via source_question_ref. Only fills an entry that has no
+    "explanation" key at all (it then gets one, "" if the question has
+    none), so it never overwrites anything and has nothing left to do after
+    its first run. Safe for a frozen snapshot: the explanation is display
+    text for results and keys, not part of what anything is graded against.
+    Returns the number of entries filled."""
+    import dataclasses
+    import build_question_bank as bqb
+    import events as events_mod
+
+    tests = load_assessments()
+    todo = {aid: t for aid, t in tests.items()
+            if t.snapshot and any("explanation" not in q for q in t.snapshot)}
+    if not todo:
+        return 0
+    bank: dict[tuple[str, str, str], str] = {}
+    for slug in {t.event_slug for t in todo.values()}:
+        if slug not in events_mod.EVENTS:
+            continue
+        bqb.set_event(slug)
+        if not bqb.EVENT.state_file.exists():
+            continue
+        for bucket, qs in (bqb._load_state().get("questions") or {}).items():
+            for q in qs or []:
+                bank[(slug, bucket, str(q.get("number")))] = (q.get("explanation") or "").strip()
+    filled = 0
+    with _assessments_transaction() as store:
+        for aid in todo:
+            t = store.get(aid)
+            if t is None or not t.snapshot:
+                continue
+            snap = []
+            for q in t.snapshot:
+                if "explanation" not in q:
+                    ref = q.get("source_question_ref") or {}
+                    text = bank.get((t.event_slug, str(ref.get("bucket")), str(ref.get("number"))), "")
+                    q = dict(q, explanation=text)
+                    filled += bool(text)
+                snap.append(q)
+            store[aid] = dataclasses.replace(t, snapshot=snap)
+    return filled
 
 
 def migrate_legacy_responses() -> int:

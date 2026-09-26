@@ -352,13 +352,17 @@ def candidate_to_question(cand: dict, number: str, source_label: str) -> dict:
         # Store under a sentinel key — no actual image attached yet. The
         # review-page chat panel reads this when seeding its system prompt.
         q["image_descriptions"] = {"__pending__": pending}
+    if rationale:
+        # The candidate's derivation is the question's worked explanation
+        # (its own field — a later AI/human validation doesn't overwrite it).
+        import explanations
+        q["explanation"] = explanations.clean(rationale)
     if rationale or snippet:
-        # Reuse the validation slot — LLM-generated questions come with their
-        # own derivation already; mark as such so the markdown renders it.
+        # The validation slot still records provenance ("LLM-derived").
         q["validation"] = {
             "status":         "uncertain",
             "correct_answer": None,
-            "rationale":      rationale,
+            "rationale":      "",
             "source":         f"LLM-derived from: {snippet[:80]}" if snippet else "LLM-derived",
             "validated_at":   datetime.now().isoformat(timespec="seconds"),
             "model":          bqb.VISION_MODEL,

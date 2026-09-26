@@ -217,6 +217,7 @@ so the next `scp` happens before a download run starts failing mid-batch.
 | `season_admin.py` | Operator CLI, run on the server per instance: `inspect`, `reset` (clean the bank, wipe old seasons, create a new one), `stage-week` (import a week's bundles and publish/go-live the tests). Dry run unless `--apply`; refuses while the service runs; backs up JSON state first |
 | `units.py` | Numerical questions: value/unit parsing, the quantity catalog, keys, and grading with unit conversion (via `pint`) |
 | `bundle_import.py` | Question-bundle import (zip of `manifest.json` + `images/`): upload checks, preview, and the background import job |
+| `explanations.py` | Worked solutions (`explanation`, Markdown + LaTeX): cleaning, and the Markdown/LaTeX-to-text conversion the PDF answer keys use |
 | `scrape_scioly.py` | Pulls public questions from scio.ly/practice's JSON API; normalizes them into the canonical Question shape, including scio.ly's own `difficulty` rating when present |
 | `review_app.py` | Flask review UI — single server, multi-event, with a Generate page (sources + LLM generation) per event |
 | `common_ui.py` | Shared CSS/JS (design tokens, modal/badge/toolbar components, `confirmModal()`, job-progress modal) — imported by both `review_app.py` and `admin_app.py` so the two Flask processes render an identical look without duplicating the stylesheet |
@@ -311,6 +312,12 @@ so the next `scp` happens before a download run starts failing mid-batch.
    - Existing questions: bundle imports and AI-generated/JSON-imported "numerical" questions become numerical automatically when their answer splits into value + unit. Questions imported earlier as free response are promoted once on first load (state schema v4). PDF extraction still produces FRQ; one click on **NUM** converts.
    - Answers that count things (`24 runs`, `48 chromatids`, `200 per 100,000`) use the **Count** quantity, whose unit is a free label: `24` or `24 runs` (any case, singular or plural) is right, a different word is wrong. Imports detect these automatically; in an editor, pick Count as the quantity.
    - Whole numbers count every digit, stricter than the textbook rule: a `10 ms` key defaults to 2 s.f. and accepts 9.5–10.5 ms (the textbook reading, 1 s.f., would accept 5–15 ms). Lower the s.f. field if a key really is that rough. Keys saved before this default changed were upgraded on first load (state schema v5), unless someone had set their s.f. by hand.
+
+   ### Worked solutions (explanations)
+   - Every question can carry a **Solution**: a worked explanation in Markdown + LaTeX, with one step per line (`1.`, `2.`, …), `$…$` for inline math and `$$…$$` for an equation on its own line. Edit it in the Solution box on the Extract and Browse cards, with a live preview.
+   - **Students see it** in quiz feedback after answering and on their released results. The test itself never shows it, and it's removed from what the take page receives. Coaches see it on the grading page.
+   - **Exports:** the bank markdown/PDF (with answers) and the assessment ⬇ Key include it under each answer. The PDF can't typeset LaTeX, so math there is converted to readable text (`v = (12.6 m)/(3.00 s)`, `E = mc²`, `√(2h/g)`).
+   - It's separate from the AI/human validation note, so re-validating a question never overwrites it. Imported bundles' `justification`, and the rationale of AI-generated or JSON-imported questions, land here. Questions imported before this existed were moved over automatically (state schema v6).
 
    ### Import a question bundle (.zip — questions + images + difficulty)
    - For questions drafted in another Claude conversation with [`QUESTION_EXPORT_PROMPT.md`](QUESTION_EXPORT_PROMPT.md): that prompt has the other chat package everything into a zip of `manifest.json` + `images/`. Unlike the JSON import above, a bundle keeps **real image files**, **difficulty** (0.0-1.0), **true/false** and **numerical** questions, **multi-answer MCQs** (`"A, C"`), per-question **justification**, and **shared context blocks** (a passage/table/figure several questions refer to). A bare `manifest.json` also works, just without images.

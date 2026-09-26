@@ -45,6 +45,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 import build_question_bank as bqb
+import explanations
 import qgen
 import units
 from text_utils import parse_answer_letters
@@ -444,11 +445,15 @@ def convert_question(bq: dict, *, digest: str, topics: list[str], season: str,
 
     justification = str(bq.get("justification") or "").strip()
     snippet = str(bq.get("source_snippet") or "").strip()[:240]
+    if justification:
+        # The worked solution is the question's own content, not a verdict:
+        # it lives in `explanation`, where no later validation overwrites it.
+        q["explanation"] = explanations.clean(justification)
     if justification or snippet:
         q["validation"] = {
             "status":               "uncertain",
             "correct_answer":       None,
-            "rationale":            justification,
+            "rationale":            "",
             "source":               f"Imported bundle; from: {snippet[:80]}" if snippet else "Imported bundle",
             "validated_at":         datetime.now().isoformat(timespec="seconds"),
             "model":                "import",

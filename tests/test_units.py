@@ -244,7 +244,7 @@ def test_migration_promotes_imported_numericals():
     assert q2["qtype"] == "frq" and "numeric" not in q2
     assert q3["qtype"] == "frq"
     assert q1["numeric"]["sig_figs"] == 2                  # "10" counts both digits
-    assert state["_schema_version"] == bqb.STATE_SCHEMA_VERSION == 5
+    assert state["_schema_version"] == bqb.STATE_SCHEMA_VERSION
 
 
 def test_migration_upgrades_old_whole_number_sig_figs():

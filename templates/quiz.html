@@ -1,5 +1,9 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>{{ event_name }} · Quiz · {{ school_name }} Sci-Oly Question Banks</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
 <style>
 {{ common_css|safe }}
 .quiz-wrap{max-width:760px;margin:24px auto;padding:0 20px}
@@ -581,6 +585,7 @@ function submitAnswer(timedOut){
   } else {
     document.getElementById("q_frq").disabled = true;
   }
+  showExplanation(q);
   document.getElementById("btn_submit").style.display = "none";
   document.getElementById("btn_skip").disabled = true;
   document.getElementById("btn_next").style.display = "";
@@ -632,6 +637,7 @@ function submitMatchingAnswer(q, timedOut){
     if(rightEl) rightEl.classList.add("correct");
   });
   document.querySelectorAll(".q-match-pick").forEach(sel => sel.disabled = true);
+  showExplanation(q);
   document.getElementById("btn_submit").style.display = "none";
   document.getElementById("btn_skip").disabled = true;
   document.getElementById("btn_next").style.display = "";
@@ -687,6 +693,7 @@ async function submitNumericalAnswer(q, timedOut){
         : `✗ ${timedOut ? "Out of time" : "Not quite"} — ${esc(v.message || "")}. Answer was <b>${esc(v.expected)}</b>${range}.${conv}`);
   valEl.disabled = true; unitEl.disabled = true;
   document.getElementById("btn_submit").disabled = false;
+  showExplanation(q);
   document.getElementById("btn_submit").style.display = "none";
   document.getElementById("btn_skip").disabled = true;
   document.getElementById("btn_next").style.display = "";
@@ -695,6 +702,15 @@ async function submitNumericalAnswer(q, timedOut){
 
 // Fractional SCORE only ever comes from matching questions' partial credit
 // — show as a clean integer for an all-MCQ/FRQ run, one decimal otherwise.
+// The question's worked solution under the feedback, once an answer is in.
+function showExplanation(q){
+  const fb = document.getElementById("q_feedback");
+  const box = explanationBoxHTML(q.explanation);
+  if(!box) return;
+  fb.insertAdjacentHTML("beforeend", box);
+  renderMathSafe(fb);
+}
+
 function formatScore(s){ return Number.isInteger(s) ? String(s) : s.toFixed(1); }
 
 document.getElementById("btn_submit").addEventListener("click", () => submitAnswer(false));

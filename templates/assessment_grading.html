@@ -1,5 +1,9 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><link rel="icon" href="{{ url_for('favicon') }}"><link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}"><title>Grade · {{ event_name }} · {{ school_name }} Sci-Oly Question Banks</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
 <style>
 {{ common_css|safe }}
 .wrap{padding:18px;max-width:900px;margin:0 auto}
@@ -171,6 +175,7 @@ function render(){
       <div class="auto-block">
         <h3>Q${esc(q.number)} <span class="muted" style="font-weight:400">(${q.max_points} pt · auto-graded)</span></h3>
         <p class="muted" style="font-size:12px">${esc(q.text)}</p>
+        ${explanationBoxHTML(q.explanation)}
         ${rows || '<p class="muted">No submissions yet.</p>'}
       </div>`;
     }
@@ -204,6 +209,7 @@ function render(){
     <div class="frq-block">
       <h3>Q${esc(q.number)} <span class="muted" style="font-weight:400">(${q.max_points} pt)</span></h3>
       <p class="muted" style="font-size:12px">${esc(q.text)}</p>
+      ${explanationBoxHTML(q.explanation)}
       <div class="expected">
         <span class="lbl">Expected answer</span>
         ${expected
@@ -213,6 +219,7 @@ function render(){
       ${rows || '<p class="muted">No submissions yet.</p>'}
     </div>`;
   }).join("");
+  renderMathSafe(root);
   // One save path for both the number box and the ✓ Full button — two
   // copies of this fetch would be two places to keep in sync.
   async function saveGrade(row, points_earned){

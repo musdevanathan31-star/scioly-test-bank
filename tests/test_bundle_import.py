@@ -253,10 +253,11 @@ def test_classifier_sees_the_bundle_topic_name():
     assert seen and seen[0].startswith("Ohm's Law ")
 
 
-def test_justification_rides_on_validation_and_context_is_prefixed():
+def test_justification_becomes_the_explanation_and_context_is_prefixed():
     q, _ = _convert(_q(8, justification="because", context_id="ctx1"))
-    assert q["validation"]["status"] == "uncertain"
-    assert q["validation"]["rationale"] == "because"
+    assert q["explanation"] == "because"
+    assert q["validation"]["status"] == "uncertain"    # provenance only
+    assert q["validation"]["rationale"] == ""
     assert q["context_id"] == "impdeadbeef_ctx1"
 
 

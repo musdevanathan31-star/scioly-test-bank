@@ -225,6 +225,16 @@ a{color:var(--accent);text-decoration:none}
 /* Groups the navigation menu into bands (take tests / question bank /
    running the club / everyone) so a long list reads as four short ones. */
 .nav-sep{height:1px;background:var(--line);margin:6px 8px}
+
+/* Worked explanations (renderExplanationHTML): Markdown + KaTeX math. */
+.explanation{font-size:13px;line-height:1.5;color:#333}
+.explanation p{margin:4px 0}
+.explanation ol,.explanation ul{margin:4px 0;padding-left:22px}
+.explanation li{margin:2px 0}
+.explanation code{background:#f3f3f3;padding:0 3px;border-radius:3px}
+.explanation .katex-display{margin:6px 0}
+.explanation-box{margin-top:8px;padding:8px 12px;background:#f6f8fb;border-left:3px solid #6b8fbf;border-radius:0 4px 4px 0}
+.explanation-box > .lbl{font-size:11px;font-weight:600;color:#44618a;text-transform:uppercase;letter-spacing:.03em}
 """
 
 # Common JS helpers injected into every page. Provides:
@@ -812,6 +822,72 @@ window.hydrateLocalTimes = function(root){
   });
 };
 document.addEventListener("DOMContentLoaded", function(){ window.hydrateLocalTimes(); });
+
+// ---- worked explanations (explanations.py) ----------------------------
+// A question's `explanation` is Markdown + LaTeX. This renders the small
+// Markdown subset explanations use -- paragraphs, numbered/bulleted lists,
+// **bold**, *italic*, `code` -- with every $...$ / $$...$$ span protected
+// first so Markdown never touches math, and all text HTML-escaped. Call
+// renderMathSafe() on the container afterwards for KaTeX.
+window.renderExplanationHTML = function(text){
+  const escH = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let src = String(text || "").replace(/\r\n?/g, "\n").trim();
+  if(!src) return "";
+  const math = [];
+  src = src.replace(/\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g, m => {
+    math.push(m.startsWith("$$") ? m.replace(/\s*\n\s*/g, " ") : m);
+    return "\u0001" + (math.length - 1) + "\u0001";
+  });
+  const inline = s => escH(s)
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^\w*])\*(?!\s)(.+?)\*(?![\w*])/g, "$1<i>$2</i>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\u0001(\d+)\u0001/g, (m, i) => escH(math[+i]));
+  let html = "", list = null;
+  const close = () => { if(list){ html += `</${list}>`; list = null; } };
+  for(const raw of src.split("\n")){
+    const line = raw.trim();
+    let m;
+    if(!line){ close(); continue; }
+    // A display equation right after a list step belongs to that step --
+    // keep it inside the item rather than breaking the list in two.
+    if(list && /^\u0001(\d+)\u0001$/.test(line) && math[+line.slice(1, -1)].startsWith("$$")){
+      const eq = inline(line);
+      html = html.replace(/<\/li>$/, () => `<div>${eq}</div></li>`);
+      continue;
+    }
+    if((m = line.match(/^(\d+)[.)]\s+(.*)$/))){
+      if(list !== "ol"){ close(); html += `<ol start="${+m[1]}">`; list = "ol"; }
+      html += `<li>${inline(m[2])}</li>`;
+    } else if((m = line.match(/^[-*•]\s+(.*)$/))){
+      if(list !== "ul"){ close(); html += "<ul>"; list = "ul"; }
+      html += `<li>${inline(m[1])}</li>`;
+    } else {
+      close();
+      html += `<p>${inline(line.replace(/^#+\s*/, ""))}</p>`;
+    }
+  }
+  close();
+  return html;
+};
+// KaTeX auto-render if the page loaded it (its deferred scripts may still
+// be loading on first paint -- retried once on window load).
+window.renderMathSafe = function(el){
+  const go = () => {
+    if(typeof renderMathInElement !== "function") return false;
+    try { renderMathInElement(el, {delimiters: [{left: "$$", right: "$$", display: true},
+                                                {left: "$", right: "$", display: false}],
+                                   throwOnError: false}); } catch(e){}
+    return true;
+  };
+  if(!go()) window.addEventListener("load", go, {once: true});
+};
+// "Solution" box: label + rendered explanation, or "" when there is none.
+window.explanationBoxHTML = function(text, label){
+  const body = window.renderExplanationHTML(text);
+  return body ? `<div class="explanation-box"><div class="lbl">${label || "Solution"}</div>`
+              + `<div class="explanation">${body}</div></div>` : "";
+};
 
 // ---- numerical questions (units.py) ----------------------------------
 // Unit conversion and grading live server-side only (units.py, via

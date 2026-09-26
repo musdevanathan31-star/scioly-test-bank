@@ -150,6 +150,10 @@ header{background:#fff;border-bottom:1px solid var(--line)}
 .dc-thinking .dc-star{display:inline-block;color:#d97757;font-size:17px;
   animation:dc-star-spin 1.1s ease-in-out infinite}
 .ie-num{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.ie-expl{flex:1;display:flex;flex-direction:column;gap:4px}
+.ie-expl textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.ie-expl .expl-preview:empty{display:none}
+.ie-expl .expl-preview{padding:4px 8px;background:#f6f8fb;border-radius:4px}
 .ie-num input[type=text]{width:110px}
 </style></head>
 <body>
@@ -753,6 +757,13 @@ function renderCard(q){
         <label class="ie-lbl">Answer</label>
         <input type="text" class="qf" data-field="answer" value="${esc(q.answer)}">
       </div>`}
+      <div class="ie-row">
+        <label class="ie-lbl" title="Worked solution, shown to students in quiz feedback and on released results. Markdown + LaTeX: one step per line (1. 2. 3.), $…$ inline math, $$…$$ for an equation on its own line.">Solution</label>
+        <div class="ie-expl">
+          <textarea class="qf" data-field="explanation" rows="3" placeholder="1. Step one: $v = \\frac{d}{t}$&#10;2. …">${esc(q.explanation || "")}</textarea>
+          <div class="explanation expl-preview">${renderExplanationHTML(q.explanation || "")}</div>
+        </div>
+      </div>
       <div class="ie-actions">
         <span class="save-status" data-role="save-status"></span>
         <button class="ghost undo-btn" style="display:none" title="Undo the last autosaved change to this question">↺ Undo</button>
@@ -857,6 +868,7 @@ function scheduleAutosave(card, q, field, value){
     st.snapshot = {
       topic: q.topic, focus: q.focus, text: q.text, answer: q.answer,
       choices: (q.choices || []).map(c => ({...c})),
+      explanation: q.explanation || "",
     };
     if(q.matching) st.snapshot.matching = JSON.parse(JSON.stringify(q.matching));
     if(q._is_numerical && q.numeric) st.snapshot.numeric = {...q.numeric};
@@ -953,8 +965,21 @@ document.getElementById("results").addEventListener("input", e => {
     scheduleAutosave(card, q, "matching", _readMatchingFromCard(card, q));
   } else {
     scheduleAutosave(card, q, field, e.target.value);
+    if(field === "explanation") _refreshExplanationPreview(card, e.target.value);
   }
 });
+// Live preview under the Solution box, debounced so KaTeX isn't re-run on
+// every keystroke.
+let _explPreviewTimer = null;
+function _refreshExplanationPreview(card, text){
+  clearTimeout(_explPreviewTimer);
+  _explPreviewTimer = setTimeout(() => {
+    const el = card.querySelector(".expl-preview");
+    if(!el) return;
+    el.innerHTML = renderExplanationHTML(text);
+    renderMath(el);
+  }, 300);
+}
 document.getElementById("results").addEventListener("change", e => {
   if(e.target.classList.contains("qf") && e.target.dataset.field === "numeric"){
     const card = e.target.closest(".qcard");

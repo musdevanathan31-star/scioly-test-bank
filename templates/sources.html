@@ -1190,6 +1190,7 @@ function importedQuestionCardsHtml(questions){
       ${q.choices && q.choices.length ? `<ul>${q.choices.map(ch =>
         `<li><b>${esc(ch.letter)}.</b> ${esc(ch.text)}</li>`).join("")}</ul>` : ""}
       <div class="ans"><b>Answer:</b> ${esc(q.answer || "(none)")}</div>
+      ${explanationBoxHTML(q.explanation)}
       ${pending ? `<div class="ratio">🖼️ Diagram recommended: ${esc(pending)}</div>` : ""}
     </div>`;
   }).join("");
