@@ -17,6 +17,12 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 .window-card{border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin-bottom:12px}
 .window-card .hdr{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
 .window-card .hdr h3{margin:0;font-size:14px}
+.window-card .win-toggle{padding:0 8px;margin-right:8px;font-size:16px;line-height:1.3;align-self:center}
+.window-card .hdr h3{flex:1}
+.window-card .win-summary{display:none;font-size:12px}
+.window-card.collapsed .win-summary{display:block}
+.window-card.collapsed .win-body{display:none}
+.window-card.collapsed .hdr{margin-bottom:2px}
 .window-card .hdr .range{font-size:12px;color:var(--muted)}
 .event-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--line-soft)}
 .event-row:first-of-type{border-top:none}
@@ -50,6 +56,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
   {% include "_user_badge.html" %}
 </header>
 <div class="wrap">
+  <span class="server-clock" data-server-now="{{ server_now_utc }}"{% if current_user.role == "coach" %} data-warn="1"{% endif %}></span>
 
   <section>
     {% if selected and not current %}
@@ -107,8 +114,14 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 
   {% for entry in windows %}
   {% set w = entry.window %}
-  <div class="window-card" data-window-id="{{ w.window_id }}">
+  {# Collapsible: toggled by the ▾ button, remembered per window in this
+     browser (localStorage), and windows that have already closed start
+     collapsed. The one-line summary is what a collapsed card shows. #}
+  {% set _statuses = entry.assessments|map(attribute="assessment.status")|list %}
+  <div class="window-card" data-window-id="{{ w.window_id }}" data-closes="{{ w.closes_at }}">
     <div class="hdr">
+      <button type="button" class="ghost win-toggle" aria-expanded="true"
+              title="Collapse or expand this window">▾</button>
       <h3>{{ w.label or (w.opens_at[:10]) }}</h3>
       <span class="range"><span class="local-dt" data-iso="{{ w.opens_at }}">{{ w.opens_at|replace("T", " ") }}</span> → <span class="local-dt" data-iso="{{ w.closes_at }}">{{ w.closes_at|replace("T", " ") }}</span></span>
       {% if current_user.role == "coach" and hard_delete_enabled() %}
@@ -117,6 +130,11 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
               title="Permanently delete this assessment window, its assessments and every student response under it.">🗑 Delete window</button>
       {% endif %}
     </div>
+    <div class="win-summary muted">
+      {{ entry.assessments|length }} test{{ "" if entry.assessments|length == 1 else "s" }}:
+      {% for st in _statuses|unique|sort %}{{ _statuses|select("equalto", st)|list|length }} {{ "scheduled" if st == "preparing" else st }}{{ ", " if not loop.last }}{% endfor %}
+    </div>
+    <div class="win-body">
     {% for et in entry.assessments %}
     <div class="event-row" data-assessment-id="{{ et.assessment.assessment_id }}">
       <span class="name">{{ et.event_slug }}{% if et.kind == "build" %} <span class="muted" style="font-weight:400;font-size:11px">(build)</span>{% endif %}</span>
@@ -204,6 +222,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     </div>
     {% endif %}
     {% endfor %}
+    </div>{# .win-body #}
   </div>
   {% endfor %}
 
@@ -499,5 +518,33 @@ document.addEventListener("click", async e => {
   const w = e.target.closest(".purge-window-btn");
   if(w && await hardDelete("assessment_window", w.dataset.window, `window “${w.dataset.label}”`)) location.reload();
 });
+
+// ---- collapsible window cards ------------------------------------------
+// Per-window choice in localStorage; a window with no stored choice starts
+// collapsed once it has closed. Wrapped in try/catch: storage can be
+// unavailable (private mode), and the page must still work without it.
+(function(){
+  const KEY = "assessmentWindowCollapsed";
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch(e){ saved = {}; }
+  const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){} };
+  const apply = (card, collapsed) => {
+    card.classList.toggle("collapsed", collapsed);
+    const btn = card.querySelector(".win-toggle");
+    btn.textContent = collapsed ? "▸" : "▾";
+    btn.setAttribute("aria-expanded", String(!collapsed));
+  };
+  document.querySelectorAll(".window-card[data-window-id]").forEach(card => {
+    const id = card.dataset.windowId;
+    const closed = Date.parse(card.dataset.closes) < Date.now();
+    apply(card, id in saved ? !!saved[id] : closed);
+    card.querySelector(".win-toggle").addEventListener("click", () => {
+      const collapsed = !card.classList.contains("collapsed");
+      apply(card, collapsed);
+      saved[id] = collapsed;
+      persist();
+    });
+  });
+})();
 </script>
 </body></html>

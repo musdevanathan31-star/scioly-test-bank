@@ -856,7 +856,7 @@ def _render_question(q: dict, index: int, *, include_answers: bool) -> list[str]
     elif qtype == "tf":
         # Without this branch a tf item (choices: []) silently falls through
         # to the FRQ blank-lines branch below.
-        lines.append("True / False ______")
+        lines.append(TF_PAPER_TEXT)
         lines.append("")
         if include_answers:
             lines.append(f"**Answer:** {q.get('correct_answer') or '(no key recorded)'}")
@@ -1602,6 +1602,11 @@ def _grade_tf(picked: str | None, correct_answer: str, max_points: float = 1.0) 
           and bqb._normalize_tf_answer(picked) is not None
           and bqb._normalize_tf_answer(picked) == bqb._normalize_tf_answer(correct_answer))
     return {"correct": ok, "points_earned": max_points if ok else 0.0, "points_possible": max_points}
+
+
+#: How a True/False question is answered on paper (markdown exports); the
+#: PDFs use the same wording (review_app.TF_PAPER_MARKUP).
+TF_PAPER_TEXT = "True        False        *(circle one)*"
 
 
 def _grade_numerical(numeric: dict, value, unit, max_points: float = 1.0) -> dict:

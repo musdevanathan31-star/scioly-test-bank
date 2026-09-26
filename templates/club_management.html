@@ -18,6 +18,16 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
 .roster-tbl th,.roster-tbl td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
 .roster-tbl th{background:#fafafa;font-weight:600;color:var(--fg-soft)}
 .roster-tbl td.chk{text-align:center}
+/* Narrow roster: rotated event headers, checkbox-wide columns, the student
+   column pinned while the events scroll sideways. */
+.roster-scroll{overflow-x:auto;max-width:100%}
+.roster-tbl{width:auto}
+.roster-tbl th.ev{vertical-align:bottom;padding:8px 2px;width:28px;text-align:center}
+.roster-tbl th.ev span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:inline-block;
+  max-height:180px;overflow:hidden;text-overflow:ellipsis}
+.roster-tbl td.chk{padding:6px 2px;width:28px}
+.roster-tbl th.who,.roster-tbl td.who{position:sticky;left:0;background:var(--bg,#fff);z-index:1;white-space:nowrap}
+.roster-tbl th.who{background:#fafafa;vertical-align:bottom}
 .roster-tbl tr:hover td{background:var(--row-hover)}
 .csv-results{margin-top:10px}
 .csv-results table{width:100%;border-collapse:collapse;font-size:12px}
@@ -240,17 +250,21 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
     {% elif not students %}
     <p class="muted">No student accounts yet — create some via the Manage Users section above, or the CSV upload above.</p>
     {% else %}
+    {# Event headers are rotated to read bottom-to-top so each event column is
+       only as wide as its checkbox. The slug the Save button needs is in
+       data-slug, not the (display-name) header text. #}
+    <div class="roster-scroll">
     <table class="roster-tbl" id="roster_tbl">
       <thead><tr>
-        <th>Student</th>
+        <th class="who">Student</th>
         {% for slug in selected.event_slugs %}
-        <th>{{ slug }}</th>
+        <th class="ev" data-slug="{{ slug }}" title="{{ slug }}"><span>{{ (event_names or {}).get(slug, slug) }}</span></th>
         {% endfor %}
       </tr></thead>
       <tbody>
         {% for u in students %}
         <tr data-username="{{ u.username }}">
-          <td>{{ u.display_name or u.username }}</td>
+          <td class="who">{{ u.display_name or u.username }}</td>
           {% for slug in selected.event_slugs %}
           <td class="chk">
             <input type="checkbox" data-event="{{ slug }}"
@@ -261,6 +275,7 @@ section p.muted{margin:4px 0 14px 0;font-size:12px}
         {% endfor %}
       </tbody>
     </table>
+    </div>
     <div class="actions"><button id="roster_save" class="primary">Save roster</button></div>
     <div id="roster_msg" class="msg" style="display:none"></div>
     {% endif %}
@@ -368,7 +383,7 @@ document.getElementById("lineup_save").addEventListener("click", async () => {
 const rosterSave = document.getElementById("roster_save");
 if(rosterSave){
   rosterSave.addEventListener("click", async () => {
-    const eventSlugs = [...document.querySelectorAll("#roster_tbl th")].slice(1).map(th => th.textContent.trim());
+    const eventSlugs = [...document.querySelectorAll("#roster_tbl th[data-slug]")].map(th => th.dataset.slug);
     const msgEl = document.getElementById("roster_msg");
     msgEl.style.display = ""; msgEl.className = "msg"; msgEl.textContent = "Saving…";
     try {

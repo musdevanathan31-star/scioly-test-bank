@@ -2736,7 +2736,7 @@ def _render_question_block(lines: list[str], q: dict, i: int) -> None:
     if q.get("qtype") == "matching":
         _render_matching_block(lines, q.get("matching") or {})
     elif q.get("qtype") == "tf":
-        lines.append("**True / False** ______")
+        lines.append("**True        False**        *(circle one)*")
         lines.append("")
     elif q.get("qtype") == "numerical":
         lines.append("**Numerical answer:** ______")

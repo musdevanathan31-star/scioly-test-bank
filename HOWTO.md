@@ -449,7 +449,11 @@ Note: a season's event lineup only scopes the roster grid and which events an as
 
 ### Prepare and publish an assessment
 
-The Assessments dashboard's **⬇ Test** and **⬇ Key** buttons download the paper version. You get a PDF with any question figures embedded; if the server doesn't have `reportlab` installed you get markdown instead, which is the same content without the images. Add `.md` to the URL if you specifically want the text to edit.
+**The dashboard shows the server's clock** at the top: the server's time in UTC and the same moment in your time zone. Windows open and close by that clock, so check it if a time looks off. Coaches also get a ⚠ warning when their own device's clock is more than a minute away from the server's.
+
+**Each window can be collapsed** with the ▾ button next to its name, leaving a one-line summary ("26 tests: 26 live"). Your choice is remembered in this browser. Windows that have already closed start collapsed, so the dashboard shows the current week by default; click ▸ to look back at an old one.
+
+The Assessments dashboard's **⬇ Test** and **⬇ Key** buttons download the paper version. True/False questions print with **True    False (circle one)** under the statement, so the paper copy works for offline practice. You get a PDF with any question figures embedded; if the server doesn't have `reportlab` installed you get markdown instead, which is the same content without the images. Add `.md` to the URL if you specifically want the text to edit.
 
 On the **Tests** dashboard, pick the season, then:
 1. Expand **+ New assessment window** — give it a label, opens/closes datetime (pre-filled to next Wednesday 1:30–2:30 PM as a convenience default; stretch `closes_at` onto a later day for a multi-day window), and check off which of the season's events are tested in this window. Create. Times are entered and shown in **your own device's local clock, whatever zone that is** — the app converts to an absolute instant behind the scenes, so it doesn't matter whether the coach who scheduled it and the student taking it are in different time zones; everywhere a time is displayed it's shown with your zone's abbreviation (e.g. "6:00 PM EDT") so you can tell which clock you're reading.
@@ -696,6 +700,8 @@ Until your coach releases scores, your result isn't visible — not on the page 
 If your coach has given you a separate window (a makeup or an extension), every time you see is **yours**, not the class's — the assessment list, the countdown on the test itself, and the open/close times all show your own window, and the list marks it "(your window)" so it's clear why it differs from a classmate's.
 
 ### Taking a test
+
+The top of My Assessments shows the **server's time** (and the same moment in your time zone); tests open and close by that clock.
 
 Tests are bucketed **Upcoming** (rostered, but the window hasn't opened — no questions visible yet, not even via a direct API call), **Current** (window open — click **Take test**), and **Past** (already submitted, or window closed). While taking a test you see one question at a time with Prev/Next, a countdown to when the window closes, and **no indication of whether your answer is right** — that only shows up after grading. Your answers autosave as you go, so reloading mid-test never loses progress, and your question order stays the same across reloads even though it's shuffled differently from other students. Click **Submit test** when done, or it auto-submits whatever you've saved if the window closes while you're still working.
 

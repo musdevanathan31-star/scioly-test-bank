@@ -243,6 +243,17 @@ def _inject_school_logo():
 
 
 @app.context_processor
+def _inject_server_now():
+    """The server's current time as an absolute UTC instant, for the
+    server-clock badge (common_ui.py hydrateServerClock). Assessment windows
+    are stored as UTC instants and compared against this clock, so showing
+    it — next to the viewer's own time zone — makes a time-zone mistake
+    visible before a window opens at the wrong hour."""
+    from datetime import timezone as _tz
+    return {"server_now_utc": datetime.now(_tz.utc).isoformat(timespec="seconds")}
+
+
+@app.context_processor
 def _inject_school_name():
     return {"school_name": os.environ.get("SCHOOL_NAME", "NCMS").upper()}
 
@@ -1272,6 +1283,7 @@ def club_management_page():
         current=current,
         selected=selected,
         all_events=sorted(EVENTS.keys()),
+        event_names={slug: ev.name for slug, ev in EVENTS.items()},
         students=students,
         roster=roster,
         users=users,
@@ -2026,6 +2038,12 @@ def assessment_grading_page(assessment_id):
                             event_name=ev.name if ev else test.event_slug)
 
 
+# How a True/False question is answered on paper (both PDF exports): the two
+# words, spaced apart, to circle one. Plain-text twin: assessments.TF_PAPER_TEXT.
+TF_PAPER_MARKUP = ("True&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;False"
+                   "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<i>(circle one)</i>")
+
+
 def _explanation_flowables(text: str, base_style) -> list:
     """A question's worked explanation as reportlab paragraphs for a PDF
     key: list items and display equations indented, math converted to
@@ -2195,6 +2213,10 @@ def _assessment_pdf(snapshot: list, title: str, subtitle: str,
                     f"<b>{_e(c.get('letter','?'))}.</b> {_e(c.get('text',''))}",
                     choice_style))
             answer = _e(q.get("correct_answer") or "—")
+            if qtype == "tf":
+                # A bare statement on paper gives no hint it's a True/False
+                # item; print both words to circle (offline practice).
+                block.append(Paragraph(TF_PAPER_MARKUP, choice_style))
             if qtype == "numerical":
                 sf = (q.get("correct_numeric") or {}).get("sig_figs")
                 if sf:
@@ -5782,7 +5804,7 @@ def _export_pdf(all_qs: list[dict], context_lookup: dict | None = None,
                     ))
                 pairs_str = "—"
                 if q.get("qtype") == "tf":
-                    block.append(Paragraph("True / False ______", choice_style))
+                    block.append(Paragraph(TF_PAPER_MARKUP, choice_style))
                 if q.get("qtype") == "numerical":
                     block.append(Paragraph("Answer: ______________ (include units)", choice_style))
                 if q.get("qtype") == "matching":

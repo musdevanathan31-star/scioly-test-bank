@@ -226,6 +226,10 @@ a{color:var(--accent);text-decoration:none}
    running the club / everyone) so a long list reads as four short ones. */
 .nav-sep{height:1px;background:var(--line);margin:6px 8px}
 
+/* Server clock badge (hydrateServerClock). */
+.server-clock{display:block;font-size:12px;color:var(--muted,#666);margin:0 0 10px}
+.server-clock-warn{color:#b04000;font-weight:600;margin-left:6px}
+
 /* Worked explanations (renderExplanationHTML): Markdown + KaTeX math. */
 .explanation{font-size:13px;line-height:1.5;color:#333}
 .explanation p{margin:4px 0}
@@ -822,6 +826,35 @@ window.hydrateLocalTimes = function(root){
   });
 };
 document.addEventListener("DOMContentLoaded", function(){ window.hydrateLocalTimes(); });
+
+// ---- server clock -------------------------------------------------------
+// A .server-clock span carrying the server's UTC "now" (server_now_utc, a
+// template context value) shows the server's time and the same instant in
+// the viewer's own time zone, ticking from the offset between the two
+// clocks measured at page load. With data-warn="1" (rendered for coaches
+// only) it also flags a device clock more than a minute off the server's.
+// Assessment windows open and close by the server's clock.
+window.hydrateServerClock = function(){
+  document.querySelectorAll(".server-clock[data-server-now]").forEach(el => {
+    const server = Date.parse(el.dataset.serverNow);
+    if(isNaN(server)) return;
+    const offset = server - Date.now();           // + means the device is behind
+    const utcFmt = new Intl.DateTimeFormat(undefined, {timeZone: "UTC", dateStyle: "medium",
+                                                        timeStyle: "medium"});
+    const localFmt = new Intl.DateTimeFormat(undefined, {weekday: "short", hour: "numeric",
+                                                          minute: "2-digit", second: "2-digit",
+                                                          timeZoneName: "short"});
+    const skew = el.dataset.warn === "1" && Math.abs(offset) > 60000
+      ? ` <span class="server-clock-warn" title="Your device's clock differs from the server's. Windows open and close by the server's clock.">⚠ your device clock is ${Math.round(Math.abs(offset) / 60000)} min ${offset > 0 ? "behind" : "ahead"}</span>` : "";
+    const tick = () => {
+      const now = new Date(Date.now() + offset);
+      el.innerHTML = `🕒 Server time: <b>${utcFmt.format(now)} UTC</b> = ${localFmt.format(now)} your time${skew}`;
+    };
+    tick();
+    setInterval(tick, 1000);
+  });
+};
+document.addEventListener("DOMContentLoaded", function(){ window.hydrateServerClock(); });
 
 // ---- worked explanations (explanations.py) ----------------------------
 // A question's `explanation` is Markdown + LaTeX. This renders the small
